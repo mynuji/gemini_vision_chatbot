@@ -1,0 +1,14 @@
+# ESP-IDF
+build/
+managed_components/
+dependencies.lock
+sdkconfig.old
+*.bin
+*.elf
+*.map
+
+# IDE
+.vscode/
+.idea/
+.cache/
+.DS_Store

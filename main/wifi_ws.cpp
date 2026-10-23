@@ -1,0 +1,262 @@
+#include "wifi_ws.h"
+
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_system.h"
+#include "esp_websocket_client.h"
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "nvs_flash.h"
+#include <string.h>
+
+static const char *TAG = "WIFI_WS";
+
+static esp_websocket_client_handle_t s_ws_client = NULL;
+static volatile bool s_is_ws_connected = false;
+static SemaphoreHandle_t s_send_mutex = NULL;
+
+static wifi_ws_state_cb_t s_state_cb = NULL;
+static wifi_ws_rx_cb_t s_rx_cb = NULL;
+
+static char s_ws_uri[128] = {0};
+
+static void notify_state(wifi_ws_state_t state, const char *info) {
+    if (s_state_cb != NULL) {
+        s_state_cb(state, info);
+    }
+}
+
+static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
+    esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
+
+    switch (event_id) {
+    case WEBSOCKET_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "WebSocket Connected to %s", s_ws_uri);
+        s_is_ws_connected = true;
+        notify_state(WIFI_WS_STATE_WS_CONNECTED, "JETSON CONNECTED");
+        break;
+
+    case WEBSOCKET_EVENT_DISCONNECTED:
+        ESP_LOGW(TAG, "WebSocket Disconnected from %s", s_ws_uri);
+        s_is_ws_connected = false;
+        notify_state(WIFI_WS_STATE_DISCONNECTED, "JETSON DISCONNECTED");
+        break;
+
+    case WEBSOCKET_EVENT_DATA:
+        if (data->data_len > 0 && s_rx_cb != NULL) {
+            s_rx_cb((uint8_t)data->op_code, (const uint8_t *)data->data_ptr, (size_t)data->data_len);
+        }
+        break;
+
+    case WEBSOCKET_EVENT_ERROR:
+        if (data != NULL) {
+            ESP_LOGE(TAG, "WebSocket Error! type=%d, sock_errno=%d, tls_err=0x%x, http_status=%d",
+                     data->error_handle.error_type,
+                     data->error_handle.esp_transport_sock_errno,
+                     data->error_handle.esp_tls_last_esp_err,
+                     data->error_handle.esp_ws_handshake_status_code);
+        } else {
+            ESP_LOGE(TAG, "WebSocket Error event received (data is null)");
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "Wi-Fi Station started, connecting to AP...");
+        notify_state(WIFI_WS_STATE_WIFI_CONNECTING, "CONNECTING WIFI...");
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
+        int reason = disconn ? disconn->reason : -1;
+        ESP_LOGW(TAG, "Wi-Fi Disconnected, reason: %d (%s), retrying...", reason,
+                 (reason == 201) ? "NO_AP_FOUND" : (reason == 202 || reason == 15) ? "AUTH_FAIL" : "OTHER");
+        s_is_ws_connected = false;
+        notify_state(WIFI_WS_STATE_DISCONNECTED, "WIFI DISCONNECTED");
+
+        static bool scanned_once = false;
+        if (reason == 201 && !scanned_once) {
+            scanned_once = true;
+            ESP_LOGI(TAG, "Scanning for visible 2.4GHz Wi-Fi networks nearby...");
+            wifi_scan_config_t scan_cfg = {};
+            esp_err_t scan_err = esp_wifi_scan_start(&scan_cfg, true);
+            if (scan_err == ESP_OK) {
+                uint16_t ap_num = 0;
+                esp_wifi_scan_get_ap_num(&ap_num);
+                if (ap_num > 0) {
+                    wifi_ap_record_t *ap_list = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * ap_num);
+                    if (ap_list) {
+                        esp_wifi_scan_get_ap_records(&ap_num, ap_list);
+                        ESP_LOGI(TAG, "==== Found %d 2.4GHz Wi-Fi APs ====", ap_num);
+                        for (int i = 0; i < ap_num && i < 20; i++) {
+                            ESP_LOGI(TAG, "  - SSID: '%s' (RSSI: %d, Ch: %d)",
+                                     ap_list[i].ssid, ap_list[i].rssi, ap_list[i].primary);
+                        }
+                        free(ap_list);
+                    }
+                } else {
+                    ESP_LOGW(TAG, "No Wi-Fi networks found in 2.4GHz scan!");
+                }
+            }
+        }
+
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Got IP: " IPSTR ", GW: " IPSTR ", Mask: " IPSTR ", FreeHeap: %uKB",
+                 IP2STR(&event->ip_info.ip),
+                 IP2STR(&event->ip_info.gw),
+                 IP2STR(&event->ip_info.netmask),
+                 (unsigned int)(esp_get_free_internal_heap_size() / 1024));
+        notify_state(WIFI_WS_STATE_WIFI_CONNECTED, "WIFI OK, WS CONN...");
+
+        // IP를 받았으므로 WebSocket 접속 시작
+        if (s_ws_uri[0] != '\0') {
+            if (s_ws_client != NULL) {
+                esp_websocket_client_stop(s_ws_client);
+                esp_websocket_client_destroy(s_ws_client);
+                s_ws_client = NULL;
+            }
+
+            esp_websocket_client_config_t ws_cfg = {};
+            ws_cfg.uri = s_ws_uri;
+            ws_cfg.reconnect_timeout_ms = 2000;
+            ws_cfg.network_timeout_ms = 8000;
+            ws_cfg.task_stack = 6144;
+            ws_cfg.buffer_size = 4096;
+
+            ESP_LOGI(TAG, "Starting WebSocket client with URI: %s (Heap before init: %uKB)",
+                     s_ws_uri, (unsigned int)(esp_get_free_internal_heap_size() / 1024));
+            s_ws_client = esp_websocket_client_init(&ws_cfg);
+            if (s_ws_client != NULL) {
+                esp_websocket_register_events(s_ws_client, WEBSOCKET_EVENT_ANY, websocket_event_handler, (void *)s_ws_client);
+                esp_websocket_client_start(s_ws_client);
+                notify_state(WIFI_WS_STATE_WS_CONNECTING, "CONNECTING TO JETSON...");
+            } else {
+                ESP_LOGE(TAG, "esp_websocket_client_init failed! Out of memory? (FreeHeap: %uKB)",
+                         (unsigned int)(esp_get_free_internal_heap_size() / 1024));
+            }
+        }
+    }
+}
+
+esp_err_t wifi_ws_init(void) {
+    ESP_LOGI(TAG, "Initializing NVS Flash, Netif & Event Loop...");
+
+    if (s_send_mutex == NULL) {
+        s_send_mutex = xSemaphoreCreateMutex();
+    }
+
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_flash_init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ret = esp_event_loop_create_default();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(ret);
+    }
+
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.static_rx_buf_num = 4;
+    cfg.dynamic_rx_buf_num = 16;
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+
+    return ESP_OK;
+}
+
+esp_err_t wifi_ws_start(const char *ssid, const char *pass, const char *ws_uri) {
+    if (ssid == NULL || ws_uri == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    strncpy(s_ws_uri, ws_uri, sizeof(s_ws_uri) - 1);
+    s_ws_uri[sizeof(s_ws_uri) - 1] = '\0';
+
+    wifi_config_t wifi_config = {};
+    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    if (pass != NULL) {
+        strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password) - 1);
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    // 실시간 오디오 저지연 전송을 위해 절전 모드 비활성화
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
+    ESP_LOGI(TAG, "Wi-Fi STA started for SSID: %s (Power Save: NONE)", ssid);
+    return ESP_OK;
+}
+
+bool wifi_ws_is_connected(void) {
+    return s_is_ws_connected && (s_ws_client != NULL) && esp_websocket_client_is_connected(s_ws_client);
+}
+
+esp_err_t wifi_ws_send_bin(const uint8_t *data, size_t len) {
+    if (data == NULL || len == 0) return ESP_ERR_INVALID_ARG;
+    if (!wifi_ws_is_connected()) return ESP_ERR_INVALID_STATE;
+    if (s_send_mutex == NULL) return ESP_ERR_INVALID_STATE;
+
+    if (xSemaphoreTake(s_send_mutex, pdMS_TO_TICKS(2500)) == pdTRUE) {
+        esp_err_t ret = ESP_OK;
+        if (wifi_ws_is_connected()) {
+            int sent = esp_websocket_client_send_bin(s_ws_client, (const char *)data, len, pdMS_TO_TICKS(2500));
+            if (sent < 0) ret = ESP_FAIL;
+        } else {
+            ret = ESP_ERR_INVALID_STATE;
+        }
+        xSemaphoreGive(s_send_mutex);
+        return ret;
+    } else {
+        ESP_LOGW(TAG, "wifi_ws_send_bin mutex timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+}
+
+esp_err_t wifi_ws_send_text(const char *text) {
+    if (text == NULL) return ESP_ERR_INVALID_ARG;
+    if (!wifi_ws_is_connected()) return ESP_ERR_INVALID_STATE;
+    if (s_send_mutex == NULL) return ESP_ERR_INVALID_STATE;
+
+    if (xSemaphoreTake(s_send_mutex, pdMS_TO_TICKS(2500)) == pdTRUE) {
+        esp_err_t ret = ESP_OK;
+        if (wifi_ws_is_connected()) {
+            int sent = esp_websocket_client_send_text(s_ws_client, text, strlen(text), pdMS_TO_TICKS(2500));
+            if (sent < 0) ret = ESP_FAIL;
+        } else {
+            ret = ESP_ERR_INVALID_STATE;
+        }
+        xSemaphoreGive(s_send_mutex);
+        return ret;
+    } else {
+        ESP_LOGW(TAG, "wifi_ws_send_text mutex timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+}
+
+void wifi_ws_set_state_callback(wifi_ws_state_cb_t cb) {
+    s_state_cb = cb;
+}
+
+void wifi_ws_set_rx_callback(wifi_ws_rx_cb_t cb) {
+    s_rx_cb = cb;
+}
