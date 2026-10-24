@@ -347,8 +347,9 @@ void chat_state_handle_speaker_finished(void) {
     ESP_LOGI(TAG, "Speaker playback finished. s_close_session=%d, s_session_active=%d, cur_state=%d",
              (int)s_close_session_after_speaking, (int)s_session_active, (int)s_chat_state);
     if (s_close_session_after_speaking) {
-        ESP_LOGI(TAG, "Touch manual speech_end response finished. Ending session -> IDLE");
+        ESP_LOGI(TAG, "Session close requested. Ending conversation session -> IDLE");
         s_close_session_after_speaking = false;
+        s_session_active = false;
         chat_state_set(CHAT_STATE_IDLE);
     } else if (s_session_active) {
         ESP_LOGI(TAG, "Speaker playback finished. Multi-turn auto-listening...");

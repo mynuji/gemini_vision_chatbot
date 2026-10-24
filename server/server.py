@@ -331,6 +331,24 @@ def is_vision_query(text):
         return False
     return any(k in text for k in VISION_KEYWORDS)
 
+SESSION_END_KEYWORDS = (
+    "그만 대화", "대화 그만", "그만하자", "그만할래", "그만할게",
+    "대화 끝", "대화 종료", "이제 그만", "끝내자", "끝낼게",
+    "그만 이야기", "그만 얘기", "바이바이", "잘 가", "들어가",
+    "대화 멈춰", "종료해줘", "종료하자", "대화 중단", "대화 닫아",
+    "그만들을래", "그만들을게"
+)
+
+def is_session_end_query(text):
+    """사용자가 대화를 중단/종료하고자 하는 의도인지 판정"""
+    if not text:
+        return False
+    no_space = text.replace(" ", "")
+    for k in SESSION_END_KEYWORDS:
+        if k in text or k.replace(" ", "") in no_space:
+            return True
+    return False
+
 def is_meaningful_speech(text):
     """TV 소음, 비언어 잡음, 괄호 환각, 무의미한 단발성 소리(기침, 헛기침 등)를 필터링하여 유효한 사용자의 발화인지 판정"""
     if not text:
@@ -932,7 +950,8 @@ async def handler(websocket, path=None):
                 "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 사람과 말하듯 자연스러운 구어체 문장으로만 대답해. "
                 "답변은 소리 내어 읽기 좋게 보통 두세 문장 이내로 간결하게 해. "
                 "사진이 함께 주어지면 그것은 네 카메라로 지금 앞을 찍은 장면이니, 보이는 것을 바탕으로 자연스럽게 설명해. "
-                "사용자가 이전에 한 말을 반드시 기억하고 문맥에 맞게 대답해."
+                "사용자가 이전에 한 말을 반드시 기억하고 문맥에 맞게 대답해. "
+                "사용자가 '이제 그만하자', '대화 끝내자', '잘 가' 등 대화를 종료하자고 하면, '네, 좋은 하루 보내세요. 언제든 알렉사라고 불러주세요'처럼 다정하게 작별 인사를 한두 문장으로 해."
             )
         }
     ]
@@ -952,8 +971,12 @@ async def handler(websocket, path=None):
         interrupted_holder["last_completed_session"] = None
         interrupted_holder["active_ai_response"] = None
 
+        should_close = close_session_after or is_session_end_query(user_text)
+        if is_session_end_query(user_text):
+            print(f"\n[대화 종료 의도 감지] '{user_text}' -> 작별 인사 후 세션 종료(Alexa 대기 상태 전환) 예약")
+
         image_bytes = None
-        if is_vision_query(user_text):
+        if not should_close and is_vision_query(user_text):
             print(f"\n[시각 질의 감지] '{user_text}' -> ESP32 카메라 촬영 요청 전송!")
             try:
                 loop = asyncio.get_running_loop()
@@ -972,10 +995,14 @@ async def handler(websocket, path=None):
         await process_ai_response(
             websocket, user_text, chat_history,
             time.perf_counter(), asr_ms,
-            close_session_after=close_session_after,
+            close_session_after=should_close,
             interrupted_holder=interrupted_holder,
             image_bytes=image_bytes
         )
+
+        if should_close:
+            chat_history[:] = [chat_history[0]] if chat_history else []
+            print("[대화 세션 종료] 대화 이력 초기화 완료 -> 다음 Alexa 호출 대기")
 
     try:
         async for message in websocket:
