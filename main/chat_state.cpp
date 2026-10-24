@@ -448,19 +448,34 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                             audio_pipeline_set_server_done(true);
                         }
                     } else if (strcmp(message->valuestring, "THINKING...") == 0 || strcmp(message->valuestring, "THINKING") == 0) {
-                        audio_pipeline_set_discard_tts(false);
-                        if (s_chat_state != CHAT_STATE_THINKING) {
-                            ESP_LOGI(TAG, "Server status THINKING received -> Switching state to THINKING");
-                            chat_state_set(CHAT_STATE_THINKING);
+                        if (s_chat_state != CHAT_STATE_IDLE) {
+                            audio_pipeline_set_discard_tts(false);
+                            if (s_chat_state != CHAT_STATE_THINKING) {
+                                ESP_LOGI(TAG, "Server status THINKING received -> Switching state to THINKING");
+                                chat_state_set(CHAT_STATE_THINKING);
+                            }
                         }
                     } else if (strcmp(message->valuestring, "SPEAKING...") == 0 || strcmp(message->valuestring, "SPEAKING") == 0) {
-                        audio_pipeline_set_discard_tts(false);
-                        if (s_chat_state != CHAT_STATE_SPEAKING) {
-                            ESP_LOGI(TAG, "Server status SPEAKING received -> Switching state to SPEAKING");
-                            chat_state_set(CHAT_STATE_SPEAKING);
+                        if (s_chat_state != CHAT_STATE_IDLE) {
+                            audio_pipeline_set_discard_tts(false);
+                            if (s_chat_state != CHAT_STATE_SPEAKING) {
+                                ESP_LOGI(TAG, "Server status SPEAKING received -> Switching state to SPEAKING");
+                                chat_state_set(CHAT_STATE_SPEAKING);
+                            }
+                        }
+                    } else if (strcmp(message->valuestring, "LISTENING...") == 0 || strcmp(message->valuestring, "LISTENING") == 0) {
+                        if (s_chat_state != CHAT_STATE_IDLE) {
+                            if (s_chat_state != CHAT_STATE_LISTENING) {
+                                ESP_LOGI(TAG, "Server status LISTENING received -> Switching state to LISTENING");
+                                chat_state_set(CHAT_STATE_LISTENING);
+                            }
+                        } else {
+                            ESP_LOGW(TAG, "Ignoring server LISTENING status while in IDLE state");
                         }
                     } else {
-                        display_ui_set_status(message->valuestring);
+                        if (s_chat_state != CHAT_STATE_IDLE) {
+                            display_ui_set_status(message->valuestring);
+                        }
                     }
                     handled = true;
                 } else if (strcmp(type->valuestring, "capture") == 0) {
@@ -514,18 +529,24 @@ void chat_state_handle_server_text(const char *text, size_t len) {
             }
         } else if (strncmp(safe_buf, "STATUS:", 7) == 0) {
             const char *st = safe_buf + 7;
-            if (strcmp(st, "THINKING...") == 0 || strcmp(st, "THINKING") == 0) {
-                audio_pipeline_set_discard_tts(false);
-                if (s_chat_state != CHAT_STATE_THINKING) {
-                    chat_state_set(CHAT_STATE_THINKING);
+            if (s_chat_state != CHAT_STATE_IDLE) {
+                if (strcmp(st, "THINKING...") == 0 || strcmp(st, "THINKING") == 0) {
+                    audio_pipeline_set_discard_tts(false);
+                    if (s_chat_state != CHAT_STATE_THINKING) {
+                        chat_state_set(CHAT_STATE_THINKING);
+                    }
+                } else if (strcmp(st, "SPEAKING...") == 0 || strcmp(st, "SPEAKING") == 0) {
+                    audio_pipeline_set_discard_tts(false);
+                    if (s_chat_state != CHAT_STATE_SPEAKING) {
+                        chat_state_set(CHAT_STATE_SPEAKING);
+                    }
+                } else if (strcmp(st, "LISTENING...") == 0 || strcmp(st, "LISTENING") == 0) {
+                    if (s_chat_state != CHAT_STATE_LISTENING) {
+                        chat_state_set(CHAT_STATE_LISTENING);
+                    }
+                } else {
+                    display_ui_set_status(st);
                 }
-            } else if (strcmp(st, "SPEAKING...") == 0 || strcmp(st, "SPEAKING") == 0) {
-                audio_pipeline_set_discard_tts(false);
-                if (s_chat_state != CHAT_STATE_SPEAKING) {
-                    chat_state_set(CHAT_STATE_SPEAKING);
-                }
-            } else {
-                display_ui_set_status(st);
             }
         }
     }

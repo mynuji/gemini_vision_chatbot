@@ -1224,8 +1224,12 @@ async def handler(websocket, path=None):
                                     pre_speech_buffer.clear()
                                     rx_accum = np.array([], dtype=np.float32)
 
-                                    # 클라이언트가 확실하게 청취(LISTENING) 모드로 동기화되도록 통보
-                                    await websocket.send(json.dumps({"type": "status", "message": "LISTENING..."}))
+                                    if reason != "touch":
+                                        # 클라이언트가 확실하게 청취(LISTENING) 모드로 동기화되도록 통보 (음성 끼어들기 시에만)
+                                        await websocket.send(json.dumps({"type": "status", "message": "LISTENING..."}))
+                                    else:
+                                        # 화면 터치로 중단한 경우 세션을 대기(IDLE) 상태로 완전히 종료
+                                        await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": True}))
 
                                 # [B] 음성 발화 완료 신호 (클라이언트 VAD 감지)
                                 elif msg_type == "speech_end":
