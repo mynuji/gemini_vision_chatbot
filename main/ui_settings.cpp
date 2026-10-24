@@ -2,6 +2,7 @@
 #include "settings_manager.h"
 #include "display_ui.h"
 #include "audio_io.h"
+#include "audio_pipeline.h"
 #include "bsp_board.h"
 #include "wifi_ws.h"
 
@@ -27,6 +28,7 @@ typedef enum {
     SUBVIEW_WIFI,
     SUBVIEW_SERVER,
     SUBVIEW_BRIGHTNESS,
+    SUBVIEW_MIC_GAIN,
     SUBVIEW_INFO
 } subview_t;
 
@@ -47,6 +49,7 @@ static void create_volume_view(lv_obj_t *parent);
 static void create_wifi_view(lv_obj_t *parent);
 static void create_server_view(lv_obj_t *parent);
 static void create_brightness_view(lv_obj_t *parent);
+static void create_mic_gain_view(lv_obj_t *parent);
 static void create_info_view(lv_obj_t *parent);
 
 esp_err_t ui_settings_init(void) {
@@ -125,6 +128,9 @@ static void show_view(subview_t view) {
         case SUBVIEW_BRIGHTNESS:
             create_brightness_view(s_settings_container);
             break;
+        case SUBVIEW_MIC_GAIN:
+            create_mic_gain_view(s_settings_container);
+            break;
         case SUBVIEW_INFO:
             create_info_view(s_settings_container);
             break;
@@ -142,14 +148,15 @@ static void on_menu_btn_click(lv_event_t *e) {
     else if (id == 2) show_view(SUBVIEW_WIFI);
     else if (id == 3) show_view(SUBVIEW_SERVER);
     else if (id == 4) show_view(SUBVIEW_BRIGHTNESS);
-    else if (id == 5) show_view(SUBVIEW_INFO);
-    else if (id == 6) {
+    else if (id == 5) show_view(SUBVIEW_MIC_GAIN);
+    else if (id == 6) show_view(SUBVIEW_INFO);
+    else if (id == 7) {
         // 저장 후 재부팅
         settings_manager_save(&s_edit_cfg);
         audio_io_play_tone(1600.0f, 150);
         vTaskDelay(pdMS_TO_TICKS(200));
         esp_restart();
-    } else if (id == 7) {
+    } else if (id == 8) {
         // 기본값 복원
         settings_manager_reset_to_default();
         audio_io_play_tone(600.0f, 150);
@@ -192,12 +199,13 @@ static void create_main_menu(lv_obj_t *parent) {
         "2. Wi-Fi Config",
         "3. Server Address",
         "4. Display Brightness",
-        "5. System Info",
-        "6. Save & Reboot",
-        "7. Factory Reset"
+        "5. Mic Sensitivity",
+        "6. System Info",
+        "7. Save & Reboot",
+        "8. Factory Reset"
     };
 
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 8; i++) {
         lv_obj_t *btn = lv_list_add_btn(list, NULL, items[i]);
         lv_obj_set_size(btn, lv_pct(100), 38);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
@@ -641,7 +649,62 @@ static void create_brightness_view(lv_obj_t *parent) {
 }
 
 // ----------------------------------------------------------------------------
-// [6] 시스템 정보 화면
+// [6] 마이크 민감도(게인) 서브화면
+// ----------------------------------------------------------------------------
+static lv_obj_t *s_mic_label = NULL;
+
+static void on_mic_slider_changed(lv_event_t *e) {
+    lv_obj_t *slider = lv_event_get_target(e);
+    int val = (int)lv_slider_get_value(slider);
+    s_edit_cfg.mic_gain = (uint8_t)val;
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "MIC GAIN: %.1fx", val / 10.0f);
+    lv_label_set_text(s_mic_label, buf);
+
+    // 오디오 파이프라인에 실시간 게인 즉각 반영!
+    audio_pipeline_set_mic_gain((uint8_t)val);
+}
+
+static void create_mic_gain_view(lv_obj_t *parent) {
+    s_mic_label = lv_label_create(parent);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "MIC GAIN: %.1fx", s_edit_cfg.mic_gain / 10.0f);
+    lv_label_set_text(s_mic_label, buf);
+    lv_obj_set_style_text_color(s_mic_label, lv_color_hex(0xFF9900), 0);
+    lv_obj_align(s_mic_label, LV_ALIGN_TOP_MID, 0, 20);
+
+    lv_obj_t *desc = lv_label_create(parent);
+    lv_label_set_text(desc, "(Range: 1.0x ~ 6.0x)");
+    lv_obj_set_style_text_color(desc, lv_color_hex(0x888888), 0);
+    lv_obj_align(desc, LV_ALIGN_TOP_MID, 0, 42);
+
+    lv_obj_t *slider = lv_slider_create(parent);
+    lv_slider_set_range(slider, 10, 60);
+    lv_slider_set_value(slider, s_edit_cfg.mic_gain, LV_ANIM_OFF);
+    lv_obj_set_size(slider, 160, 18);
+    lv_obj_align(slider, LV_ALIGN_CENTER, 0, -5);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0x444444), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0xFF9900), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
+    lv_obj_add_event_cb(slider, on_mic_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_t *save_btn = lv_btn_create(parent);
+    lv_obj_set_size(save_btn, 80, 32);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -30);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_t *lbl = lv_label_create(save_btn);
+    lv_label_set_text(lbl, "APPLY");
+    lv_obj_center(lbl);
+    lv_obj_add_event_cb(save_btn, (lv_event_cb_t)[](lv_event_t *e){
+        settings_manager_set_mic_gain(s_edit_cfg.mic_gain);
+        audio_io_play_tone(1200.0f, 60);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+}
+
+// ----------------------------------------------------------------------------
+// [7] 시스템 정보 화면
 // ----------------------------------------------------------------------------
 static void create_info_view(lv_obj_t *parent) {
     lv_obj_t *title = lv_label_create(parent);

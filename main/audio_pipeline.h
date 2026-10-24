@@ -59,6 +59,16 @@ uint32_t audio_pipeline_get_played_bytes(void);
  */
 void audio_pipeline_reset_played_bytes(void);
 
+/**
+ * @brief 마이크 수음 디지털 게인/민감도 실시간 설정 (10 ~ 60, 즉 1.0x ~ 6.0x)
+ */
+void audio_pipeline_set_mic_gain(uint8_t gain);
+
+/**
+ * @brief 현재 설정된 마이크 게인 반환
+ */
+uint8_t audio_pipeline_get_mic_gain(void);
+
 #ifdef __cplusplus
 }
 #endif

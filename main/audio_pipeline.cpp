@@ -49,6 +49,7 @@ static volatile bool s_spk_flush_requested = false;
 static volatile bool s_ref_flush_requested = false;
 
 // 발화 감지(VAD) 타이밍 제어용
+static volatile uint8_t s_mic_gain = 35; // 10 ~ 60 (1.0x ~ 6.0x)
 static uint32_t s_mic_stream_start_ms = 0;
 static uint32_t s_last_speech_ms = 0;
 static bool s_has_user_spoken = false;
@@ -239,11 +240,14 @@ static void audio_feed_task(void *pvParameters) {
 
         // [마이크 감도 개선]
         // 스피커가 출력 중일 때는 자체 스피커 소리가 마이크로 피드백되어 AEC 왜곡 및 오작동이 발생하는 것을 방지하기 위해 1.0배(원음) 유지
-        // 스피커가 조용할 때(대화 청취 중 등)만 작은 목소리를 잘 수음하도록 디지털 게인 3.5배(+11dB) 적용
+        // 스피커가 조용할 때(대화 청취 중 등)만 작은 목소리를 잘 수음하도록 사용자 설정 디지털 게인(1.0x ~ 6.0x) 적용
         bool is_playing = s_is_speaker_playing || (s_spk_buffered_bytes > 0);
         if (!is_playing) {
+            uint8_t gain = s_mic_gain;
+            if (gain < 10) gain = 10;
+            if (gain > 60) gain = 60;
             for (int i = 0; i < feed_chunksize; i++) {
-                int32_t val = (int32_t)mic_buf[i] * 35 / 10;
+                int32_t val = (int32_t)mic_buf[i] * (int32_t)gain / 10;
                 if (val > 32767) val = 32767;
                 else if (val < -32768) val = -32768;
                 mic_buf[i] = (int16_t)val;
@@ -435,6 +439,12 @@ static void ws_tx_task(void *pvParameters) {
 esp_err_t audio_pipeline_init(void) {
     if (s_pipeline_initialized) return ESP_OK;
 
+    const app_settings_t *cfg = settings_manager_get();
+    if (cfg && cfg->mic_gain >= 10 && cfg->mic_gain <= 60) {
+        s_mic_gain = cfg->mic_gain;
+    }
+    ESP_LOGI(TAG, "Audio Pipeline initialized with mic gain: %u (%.1fx)", s_mic_gain, s_mic_gain / 10.0f);
+
     ESP_LOGI(TAG, "Initializing Audio Pipeline RingBuffers in PSRAM...");
 
     if (s_spk_ringbuf == NULL) {
@@ -585,4 +595,15 @@ uint32_t audio_pipeline_get_played_bytes(void) {
 
 void audio_pipeline_reset_played_bytes(void) {
     s_spk_total_played_bytes = 0;
+}
+
+void audio_pipeline_set_mic_gain(uint8_t gain) {
+    if (gain < 10) gain = 10;
+    if (gain > 60) gain = 60;
+    s_mic_gain = gain;
+    ESP_LOGI(TAG, "Mic gain updated to %u (%.1fx)", (unsigned int)gain, gain / 10.0f);
+}
+
+uint8_t audio_pipeline_get_mic_gain(void) {
+    return s_mic_gain;
 }

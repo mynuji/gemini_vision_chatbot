@@ -150,3 +150,10 @@ esp_err_t settings_manager_set_brightness(uint8_t brightness) {
     s_settings.brightness = brightness;
     return settings_manager_save(&s_settings);
 }
+
+esp_err_t settings_manager_set_mic_gain(uint8_t mic_gain) {
+    if (mic_gain < 10) mic_gain = 10;
+    if (mic_gain > 60) mic_gain = 60;
+    s_settings.mic_gain = mic_gain;
+    return settings_manager_save(&s_settings);
+}

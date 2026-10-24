@@ -51,6 +51,11 @@ esp_err_t settings_manager_set_volume(uint8_t volume);
  */
 esp_err_t settings_manager_set_brightness(uint8_t brightness);
 
+/**
+ * @brief 마이크 감도 설정만 빠르게 변경 및 저장 (10 ~ 60, 즉 1.0x ~ 6.0x)
+ */
+esp_err_t settings_manager_set_mic_gain(uint8_t mic_gain);
+
 #ifdef __cplusplus
 }
 #endif
