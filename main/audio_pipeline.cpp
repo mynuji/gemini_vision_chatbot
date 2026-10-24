@@ -43,6 +43,9 @@ static volatile bool s_pipeline_initialized = false;
 static volatile size_t s_spk_buffered_bytes = 0;
 static volatile uint32_t s_spk_total_played_bytes = 0;
 static volatile bool s_discard_tts_audio = false;
+static volatile bool s_tx_flush_requested = false;
+static volatile bool s_spk_flush_requested = false;
+static volatile bool s_ref_flush_requested = false;
 
 // 발화 감지(VAD) 타이밍 제어용
 static uint32_t s_mic_stream_start_ms = 0;
@@ -77,12 +80,25 @@ static void spk_play_task(void *pvParameters) {
             continue;
         }
 
+        if (s_spk_flush_requested || s_discard_tts_audio) {
+            s_spk_flush_requested = false;
+            size_t flush_size = 0;
+            void *flush_item = NULL;
+            while ((flush_item = xRingbufferReceiveUpTo(s_spk_ringbuf, &flush_size, 0, 4096)) != NULL) {
+                vRingbufferReturnItem(s_spk_ringbuf, flush_item);
+            }
+            s_spk_buffered_bytes = 0;
+            prebuffering = true;
+            empty_spk_count = 0;
+        }
+
         // 지터 방지용 프리버퍼링 체크
         if (prebuffering) {
             size_t cur_buffered = s_spk_buffered_bytes;
 
             if (cur_buffered >= SPK_PREBUFFER_THRESHOLD || (s_server_done && cur_buffered > 0)) {
                 prebuffering = false;
+                empty_spk_count = 0;
                 s_is_speaker_playing = true;
                 if (chat_state_get() != CHAT_STATE_SPEAKING) {
                     chat_state_set(CHAT_STATE_SPEAKING);
@@ -94,10 +110,12 @@ static void spk_play_task(void *pvParameters) {
                 s_server_done = false;
                 s_is_speaker_playing = false;
                 prebuffering = true;
+                empty_spk_count = 0;
                 chat_state_handle_speaker_finished();
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             } else {
+                empty_spk_count = 0;
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
@@ -191,6 +209,14 @@ static void audio_feed_task(void *pvParameters) {
         }
 
         // 2. 스피커 참조 데이터(Ref) 인출
+        if (s_ref_flush_requested && s_ref_ringbuf != NULL) {
+            s_ref_flush_requested = false;
+            size_t flush_size = 0;
+            void *flush_item = NULL;
+            while ((flush_item = xRingbufferReceiveUpTo(s_ref_ringbuf, &flush_size, 0, 4096)) != NULL) {
+                vRingbufferReturnItem(s_ref_ringbuf, flush_item);
+            }
+        }
         if (s_ref_ringbuf != NULL) {
             size_t item_size = 0;
             uint8_t *ref_item = (uint8_t *)xRingbufferReceiveUpTo(s_ref_ringbuf, &item_size, 0, chunk_bytes);
@@ -375,6 +401,15 @@ static void ws_tx_task(void *pvParameters) {
             continue;
         }
 
+        if (s_tx_flush_requested) {
+            s_tx_flush_requested = false;
+            size_t flush_size = 0;
+            void *flush_item = NULL;
+            while ((flush_item = xRingbufferReceiveUpTo(s_tx_ringbuf, &flush_size, 0, 4096)) != NULL) {
+                vRingbufferReturnItem(s_tx_ringbuf, flush_item);
+            }
+        }
+
         size_t item_size = 0;
         uint8_t *item = (uint8_t *)xRingbufferReceiveUpTo(s_tx_ringbuf, &item_size, pdMS_TO_TICKS(50), 1024);
 
@@ -505,23 +540,9 @@ void audio_pipeline_clear_audio(void) {
     s_spk_buffered_bytes = 0;
     s_barge_in_prebuf_count = 0;
 
-    // 1. 재생 버퍼 비우기 (스피커 출력 즉각 중단)
-    if (s_spk_ringbuf != NULL) {
-        size_t item_size = 0;
-        void *item = NULL;
-        while ((item = xRingbufferReceiveUpTo(s_spk_ringbuf, &item_size, 0, 4096)) != NULL) {
-            vRingbufferReturnItem(s_spk_ringbuf, item);
-        }
-    }
-
-    // 3. 에코 레퍼런스 비우기
-    if (s_ref_ringbuf != NULL) {
-        size_t item_size = 0;
-        void *item = NULL;
-        while ((item = xRingbufferReceiveUpTo(s_ref_ringbuf, &item_size, 0, 4096)) != NULL) {
-            vRingbufferReturnItem(s_ref_ringbuf, item);
-        }
-    }
+    // 해당 버퍼의 유일한 컨슈머 태스크들에 플러시 플래그 설정 (FreeRTOS Ringbuffer 멀티 컨슈머 데드락 원천 차단)
+    s_spk_flush_requested = true;
+    s_ref_flush_requested = true;
 
     // 4. 스피커 침묵
     audio_io_spk_write_silence(20);
@@ -530,14 +551,8 @@ void audio_pipeline_clear_audio(void) {
 void audio_pipeline_enable_mic_streaming(bool enable) {
     s_mic_streaming_enabled = enable;
     if (enable) {
-        // 새 발화 청취 시작 시 송신 링버퍼에 남아있는 이전 잔여 데이터 청소
-        if (s_tx_ringbuf != NULL) {
-            size_t item_size = 0;
-            void *item = NULL;
-            while ((item = xRingbufferReceiveUpTo(s_tx_ringbuf, &item_size, 0, 4096)) != NULL) {
-                vRingbufferReturnItem(s_tx_ringbuf, item);
-            }
-        }
+        // 새 발화 청취 시작 시 송신 링버퍼 비우기를 ws_tx_task에 요청 (멀티 컨슈머 데드락 방지)
+        s_tx_flush_requested = true;
         s_mic_stream_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
         s_last_speech_ms = s_mic_stream_start_ms;
         s_has_user_spoken = false;

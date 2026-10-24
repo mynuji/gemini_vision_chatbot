@@ -157,22 +157,7 @@ static void camera_preview_task(void *pvParameters) {
     display_ui_stop_camera_preview();
     camera_io_set_high_res(false);
 
-    switch (s_chat_state) {
-        case CHAT_STATE_SPEAKING:
-            display_ui_set_emotion(UI_EMOTION_SPEAKING, UI_EMOTION_SPEAKING, "SPEAKING...");
-            break;
-        case CHAT_STATE_THINKING:
-            display_ui_set_emotion(UI_EMOTION_SLEEPY, UI_EMOTION_SLEEPY, "THINKING...");
-            break;
-        case CHAT_STATE_LISTENING:
-            display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, "LISTENING...");
-            break;
-        case CHAT_STATE_IDLE:
-        default:
-            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, "SAY 'ALEXA' OR TOUCH");
-            break;
-    }
-
+    s_camera_preview_active = false;
     s_preview_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -194,6 +179,9 @@ void chat_state_start_camera_preview(void) {
 }
 
 void chat_state_stop_camera_preview(void) {
+    if (!s_camera_preview_active && s_preview_task_handle == NULL) {
+        return;
+    }
     if (s_camera_preview_active) {
         ESP_LOGI(TAG, "Requesting camera preview to stop");
         s_camera_preview_active = false;
@@ -206,7 +194,7 @@ void chat_state_stop_camera_preview(void) {
             wait_cnt++;
         }
     }
-    // 프리뷰 활성 여부와 상관없이 LCD를 눈 모양으로 즉시 복원
+    // LCD를 눈 모양으로 즉시 복원
     display_ui_stop_camera_preview();
 }
 
@@ -236,7 +224,9 @@ void chat_state_set(chat_state_t new_state) {
 
     if (s_chat_state == new_state) {
         if (new_state == CHAT_STATE_IDLE) {
-            display_ui_set_status("SAY 'ALEXA' OR TOUCH");
+            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, "SAY 'ALEXA' OR TOUCH");
+        } else if (new_state == CHAT_STATE_LISTENING) {
+            display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, "LISTENING...");
         }
         if (s_state_mutex != NULL) xSemaphoreGive(s_state_mutex);
         return;
@@ -435,7 +425,6 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     handled = true;
                 } else if (strcmp(type->valuestring, "status") == 0 && cJSON_IsString(message)) {
                     if (strcmp(message->valuestring, "DONE") == 0 || strcmp(message->valuestring, "END") == 0) {
-                        chat_state_stop_camera_preview();
                         cJSON *close_item = cJSON_GetObjectItem(root, "close_session");
                         if (cJSON_IsBool(close_item) && cJSON_IsTrue(close_item)) {
                             ESP_LOGI(TAG, "Server requested session close (close_session: true)");
@@ -443,18 +432,19 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                         }
 
                         if (audio_pipeline_is_spk_buffer_empty() && !audio_pipeline_is_speaker_playing()) {
-                            // 오디오 응답 없이 바로 DONE이 온 경우(예: 무음/인식 실패 등)
+                            // 오디오 응답 없이 바로 DONE이 온 경우(예: 무음/인식 실패 등)에만 프리뷰 종료 및 즉시 복귀
+                            chat_state_stop_camera_preview();
                             if (s_close_session_after_speaking) {
-                                ESP_LOGI(TAG, "Touch manual speech_end completed with no audio. Ending session -> IDLE");
+                                ESP_LOGI(TAG, "Speech_end completed with no audio. Ending session -> IDLE");
                                 s_close_session_after_speaking = false;
                                 chat_state_set(CHAT_STATE_IDLE);
                             } else if (s_session_active) {
-                                // 사용자가 Alexa/터치로 시작한 대화는 60초 동안 음성이 없을 때만 종료되므로 계속 LISTENING 유지!
                                 chat_state_set(CHAT_STATE_LISTENING);
                             } else {
                                 chat_state_set(CHAT_STATE_IDLE);
                             }
                         } else {
+                            // 스피커로 AI 음성이 아직 출력 중인 경우: 프리뷰를 끄지 않고 유지하며, 재생 완료 대기!
                             audio_pipeline_set_server_done(true);
                         }
                     } else if (strcmp(message->valuestring, "THINKING...") == 0 || strcmp(message->valuestring, "THINKING") == 0) {
@@ -481,7 +471,11 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     handled = true;
                 } else if (strcmp(type->valuestring, "preview_stop") == 0) {
                     ESP_LOGI(TAG, "Received preview_stop command from server");
-                    chat_state_stop_camera_preview();
+                    if (audio_pipeline_is_spk_buffer_empty() && !audio_pipeline_is_speaker_playing()) {
+                        chat_state_stop_camera_preview();
+                    } else {
+                        ESP_LOGI(TAG, "Speaker still playing. Deferring preview stop until speaker finished.");
+                    }
                     handled = true;
                 }
             }
@@ -494,8 +488,8 @@ void chat_state_handle_server_text(const char *text, size_t len) {
     // 2. 일반 문자열 처리
     if (!handled) {
         if (strcmp(safe_buf, "DONE") == 0 || strcmp(safe_buf, "END") == 0) {
-            chat_state_stop_camera_preview();
             if (audio_pipeline_is_spk_buffer_empty() && !audio_pipeline_is_speaker_playing()) {
+                chat_state_stop_camera_preview();
                 if (s_close_session_after_speaking) {
                     ESP_LOGI(TAG, "Touch manual speech_end completed with no audio. Ending session -> IDLE");
                     s_close_session_after_speaking = false;

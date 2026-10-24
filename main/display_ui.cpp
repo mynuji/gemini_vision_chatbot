@@ -341,11 +341,12 @@ esp_lcd_panel_handle_t display_ui_get_panel_handle(void) {
 }
 
 void display_ui_start_camera_preview(void) {
-  ESP_LOGI(TAG, "Entering camera live preview mode (LVGL widget switch)");
+  if (s_camera_preview_mode) return;
   s_camera_preview_mode = true;
+  ESP_LOGI(TAG, "Entering camera live preview mode (LVGL widget switch)");
   display_ui_pause_auto_blink(true);
 
-  if (lvgl_port_lock(150)) {
+  if (lvgl_port_lock(1000)) {
     if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
@@ -354,25 +355,24 @@ void display_ui_start_camera_preview(void) {
       lv_obj_clear_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
       lv_obj_invalidate(s_cam_img);
     }
+    // 사용자의 요청에 따라 카메라 영상을 거울처럼 좌우 반전하여 표시
+    if (s_panel_handle) {
+      esp_lcd_panel_mirror(s_panel_handle, true, false);
+    }
     lvgl_port_unlock();
-  }
-
-  // 사용자의 요청에 따라 카메라 영상을 거울처럼 좌우 반전하여 표시
-  if (s_panel_handle) {
-    esp_lcd_panel_mirror(s_panel_handle, true, false);
   }
 }
 
 void display_ui_stop_camera_preview(void) {
-  ESP_LOGI(TAG, "Exiting camera live preview mode (restoring LVGL UI)");
+  if (!s_camera_preview_mode) return;
   s_camera_preview_mode = false;
-
-  if (s_panel_handle) {
-    // 캐릭터 눈 UI를 위한 좌우 미러링 복원
-    esp_lcd_panel_mirror(s_panel_handle, true, false);
-  }
+  ESP_LOGI(TAG, "Exiting camera live preview mode (restoring LVGL UI)");
 
   if (lvgl_port_lock(1000)) {
+    if (s_panel_handle) {
+      // 캐릭터 눈 UI를 위한 좌우 미러링 복원
+      esp_lcd_panel_mirror(s_panel_handle, true, false);
+    }
     if (s_cam_img) lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
     if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
