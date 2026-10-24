@@ -1021,7 +1021,7 @@ async def handler(websocket, path=None):
                             import io
                             from PIL import Image
                             img = Image.open(io.BytesIO(message))
-                            rotated_img = img.rotate(-90, expand=True) # 시계 방향 90도 회전
+                            rotated_img = img.rotate(90, expand=True) # 시계 방향 90도 회전
                             buf = io.BytesIO()
                             rotated_img.save(buf, format="JPEG", quality=90)
                             message = buf.getvalue()

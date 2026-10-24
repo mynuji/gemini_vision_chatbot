@@ -88,12 +88,12 @@ static void camera_preview_task(void *pvParameters) {
         esp_jpeg_image_output_t out_info = {};
         esp_err_t dec_ret = esp_jpeg_decode(&jpeg_cfg, &out_info);
         if (dec_ret == ESP_OK) {
-            // [요구사항 1] 화면 시계방향 90도 회전 + 1:1 중앙 크롭
+            // [시계방향 90도 정방향 회전]
             for (int y = 0; y < 240; y++) {
-                int src_x = y + 40;
+                int src_x = 279 - y;
                 uint16_t *dst_row = crop_buf + (y * 240);
                 for (int x = 0; x < 240; x++) {
-                    int src_y = 239 - x;
+                    int src_y = x;
                     dst_row[x] = dec_buf[src_y * 320 + src_x];
                 }
             }
@@ -109,18 +109,10 @@ static void camera_preview_task(void *pvParameters) {
         wifi_ws_send_text("{\"type\":\"image_failed\"}");
     }
 
-    // 2. 프리뷰 속도 극대화를 위해 카메라 해상도를 QVGA(320x240)로 동적 전환
-    // (JPEG 디코딩 연산량 및 데이터 크기가 1/4로 줄어들어 15~20+ FPS 달성 가능)
-    sensor_t *cam_sensor = esp_camera_sensor_get();
-    if (cam_sensor) {
-        cam_sensor->set_framesize(cam_sensor, FRAMESIZE_QVGA);
-        camera_fb_t *dummy = camera_io_get_fb(pdMS_TO_TICKS(100));
-        if (dummy) camera_io_return_fb(dummy);
-    }
-
+    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (센서 해상도 변경 없이 안정적 고속 스트리밍)
     uint32_t frame_count = 0;
     while (s_camera_preview_active) {
-        camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(80));
+        camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(100));
         if (fb != NULL) {
             if (fb->format == PIXFORMAT_JPEG && fb->len > 0) {
                 esp_jpeg_image_cfg_t jpeg_cfg = {};
@@ -129,22 +121,21 @@ static void camera_preview_task(void *pvParameters) {
                 jpeg_cfg.outbuf = (uint8_t *)dec_buf;
                 jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
                 jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
-                // QVGA는 1:1 디코딩(초고속), VGA는 1/2 스케일 디코딩
-                jpeg_cfg.out_scale = (fb->width > 320) ? JPEG_IMAGE_SCALE_1_2 : JPEG_IMAGE_SCALE_0;
+                jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
                 jpeg_cfg.flags.swap_color_bytes = 1; // LVGL CONFIG_LV_COLOR_16_SWAP=y 규격 일치
                 jpeg_cfg.advanced.working_buffer = work_buf;
                 jpeg_cfg.advanced.working_buffer_size = work_sz;
 
                 esp_jpeg_image_output_t out_info = {};
                 if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
-                    // [16x16 블록 타일링 90도 회전] PSRAM 캐시 미스를 1/16로 줄여 초고속 회전 복사
+                    // [16x16 블록 타일링 시계방향 90도 회전] 캐시 최적화
                     for (int by = 0; by < 240; by += 16) {
                         for (int bx = 0; bx < 240; bx += 16) {
                             for (int y = by; y < by + 16; y++) {
-                                int src_x = y + 40;
+                                int src_x = 279 - y;
                                 uint16_t *dst_row = crop_buf + (y * 240);
                                 for (int x = bx; x < bx + 16; x++) {
-                                    int src_y = 239 - x;
+                                    int src_y = x;
                                     dst_row[x] = dec_buf[src_y * 320 + src_x];
                                 }
                             }
@@ -159,14 +150,10 @@ static void camera_preview_task(void *pvParameters) {
             }
             camera_io_return_fb(fb);
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(1);
     }
 
     ESP_LOGI(TAG, "Exiting camera preview loop (total %u frames rendered), restoring LVGL UI", (unsigned int)frame_count);
-    // 다음 시각 질문을 위해 센서 해상도를 다시 고화질 VGA로 복원
-    if (cam_sensor) {
-        cam_sensor->set_framesize(cam_sensor, FRAMESIZE_VGA);
-    }
     free(dec_buf);
     free(work_buf);
     display_ui_stop_camera_preview();
