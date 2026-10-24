@@ -97,7 +97,7 @@ static void camera_preview_task(void *pvParameters) {
                     dst_row[x] = dec_buf[src_y * 320 + src_x];
                 }
             }
-            display_ui_refresh_camera_preview();
+            display_ui_draw_preview_frame(crop_buf);
             ESP_LOGI(TAG, "First frame decoded, rotated 90 deg CW & displayed on LCD");
         } else {
             ESP_LOGE(TAG, "First frame esp_jpeg_decode failed: 0x%x", dec_ret);
@@ -109,10 +109,21 @@ static void camera_preview_task(void *pvParameters) {
         wifi_ws_send_text("{\"type\":\"image_failed\"}");
     }
 
-    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (센서 해상도 변경 없이 안정적 고속 스트리밍)
+    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (다이렉트 LCD 초고속 스트리밍)
     uint32_t frame_count = 0;
     while (s_camera_preview_active) {
-        camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(100));
+        // [10초 버퍼 큐 랙 완전 해결] 큐에 쌓인 과거 프레임을 즉시 비우고 현재의 100% 최신 프레임만 획득
+        camera_fb_t *fb = NULL;
+        while (1) {
+            camera_fb_t *next_fb = camera_io_get_fb(0);
+            if (!next_fb) break;
+            if (fb) camera_io_return_fb(fb);
+            fb = next_fb;
+        }
+        if (!fb) {
+            fb = camera_io_get_fb(pdMS_TO_TICKS(40));
+        }
+
         if (fb != NULL) {
             if (fb->format == PIXFORMAT_JPEG && fb->len > 0) {
                 esp_jpeg_image_cfg_t jpeg_cfg = {};
@@ -141,7 +152,8 @@ static void camera_preview_task(void *pvParameters) {
                             }
                         }
                     }
-                    display_ui_refresh_camera_preview();
+                    // LVGL 대신 LCD 컨트롤러에 다이렉트 고속 SPI DMA 전송
+                    display_ui_draw_preview_frame(crop_buf);
                     frame_count++;
                     if (frame_count % 30 == 0) {
                         ESP_LOGI(TAG, "Camera preview streaming active: %u frames rendered", (unsigned int)frame_count);
