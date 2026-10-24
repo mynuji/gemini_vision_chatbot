@@ -53,19 +53,24 @@ void display_ui_pause_auto_blink(bool pause);
 esp_lcd_panel_handle_t display_ui_get_panel_handle(void);
 
 /**
- * @brief 카메라 실시간 프리뷰 모드 시작 (LVGL 일시정지, LCD 직접 제어)
+ * @brief 카메라 실시간 프리뷰 모드 시작 (눈 표정 숨김, 카메라 위젯 표시)
  */
 void display_ui_start_camera_preview(void);
 
 /**
- * @brief 카메라 실시간 프리뷰 모드 종료 (LVGL 재개 및 표정 화면 복구)
+ * @brief 카메라 실시간 프리뷰 모드 종료 (카메라 위젯 숨김, 눈 표정 복원)
  */
 void display_ui_stop_camera_preview(void);
 
 /**
- * @brief 실시간 프리뷰 중 240x240 RGB565 버퍼를 LCD에 직접 전송
+ * @brief 카메라 프리뷰용 240x240 RGB565 버퍼 포인터 반환 (PSRAM)
  */
-void display_ui_draw_preview_frame(const void *rgb565_buf);
+uint16_t *display_ui_get_preview_buffer(void);
+
+/**
+ * @brief 새 카메라 프레임이 버퍼에 채워졌을 때 화면 갱신 트리거
+ */
+void display_ui_refresh_camera_preview(void);
 
 #ifdef __cplusplus
 }

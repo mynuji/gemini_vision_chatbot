@@ -35,23 +35,23 @@ static inline uint16_t convert_rgb565_to_spi_bgr565(uint16_t val) {
 }
 
 static void camera_preview_task(void *pvParameters) {
-    ESP_LOGI(TAG, "Camera live preview task started");
+    ESP_LOGW(TAG, "==================================================");
+    ESP_LOGW(TAG, ">>> CAMERA PREVIEW TASK STARTED (LVGL WIDGET) <<<");
+    ESP_LOGW(TAG, "==================================================");
 
     display_ui_start_camera_preview();
 
+    uint16_t *crop_buf = display_ui_get_preview_buffer();
     size_t dec_sz = 320 * 240 * sizeof(uint16_t);
-    size_t crop_sz = 240 * 240 * sizeof(uint16_t);
     size_t work_sz = 65536;
 
     uint16_t *dec_buf = (uint16_t *)heap_caps_malloc(dec_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    uint16_t *crop_buf = (uint16_t *)heap_caps_malloc(crop_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     void *work_buf = heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
-    if (dec_buf == NULL || crop_buf == NULL || work_buf == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for camera preview (dec=%p, crop=%p, work=%p)",
-                 dec_buf, crop_buf, work_buf);
+    if (dec_buf == NULL || work_buf == NULL || crop_buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for camera preview: dec=%p, work=%p, crop=%p",
+                 dec_buf, work_buf, crop_buf);
         if (dec_buf) free(dec_buf);
-        if (crop_buf) free(crop_buf);
         if (work_buf) free(work_buf);
         display_ui_stop_camera_preview();
         s_camera_preview_active = false;
@@ -91,11 +91,10 @@ static void camera_preview_task(void *pvParameters) {
             for (int y = 0; y < 240; y++) {
                 const uint16_t *src_line = dec_buf + (y * 320) + 40;
                 uint16_t *dst_line = crop_buf + (y * 240);
-                for (int x = 0; x < 240; x++) {
-                    dst_line[x] = convert_rgb565_to_spi_bgr565(src_line[x]);
-                }
+                memcpy(dst_line, src_line, 240 * sizeof(uint16_t));
             }
-            display_ui_draw_preview_frame(crop_buf);
+            display_ui_refresh_camera_preview();
+            ESP_LOGI(TAG, "First frame decoded & displayed on LCD successfully!");
         } else {
             ESP_LOGE(TAG, "First frame esp_jpeg_decode failed: 0x%x", dec_ret);
         }
@@ -107,6 +106,7 @@ static void camera_preview_task(void *pvParameters) {
     }
 
     // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행
+    uint32_t frame_count = 0;
     while (s_camera_preview_active) {
         camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(100));
         if (fb != NULL) {
@@ -127,11 +127,13 @@ static void camera_preview_task(void *pvParameters) {
                     for (int y = 0; y < 240; y++) {
                         const uint16_t *src_line = dec_buf + (y * 320) + 40;
                         uint16_t *dst_line = crop_buf + (y * 240);
-                        for (int x = 0; x < 240; x++) {
-                            dst_line[x] = convert_rgb565_to_spi_bgr565(src_line[x]);
-                        }
+                        memcpy(dst_line, src_line, 240 * sizeof(uint16_t));
                     }
-                    display_ui_draw_preview_frame(crop_buf);
+                    display_ui_refresh_camera_preview();
+                    frame_count++;
+                    if (frame_count % 30 == 0) {
+                        ESP_LOGI(TAG, "Camera preview streaming active: %u frames rendered", (unsigned int)frame_count);
+                    }
                 }
             }
             camera_io_return_fb(fb);
@@ -139,9 +141,8 @@ static void camera_preview_task(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(30));
     }
 
-    ESP_LOGI(TAG, "Exiting camera preview loop, restoring LVGL UI");
+    ESP_LOGI(TAG, "Exiting camera preview loop (total %u frames rendered), restoring LVGL UI", (unsigned int)frame_count);
     free(dec_buf);
-    free(crop_buf);
     free(work_buf);
     display_ui_stop_camera_preview();
 
@@ -164,6 +165,7 @@ static void camera_preview_task(void *pvParameters) {
     s_preview_task_handle = NULL;
     vTaskDelete(NULL);
 }
+
 
 void chat_state_start_camera_preview(void) {
     if (s_camera_preview_active && s_preview_task_handle != NULL) {
@@ -430,7 +432,9 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     }
                     handled = true;
                 } else if (strcmp(type->valuestring, "capture") == 0) {
-                    ESP_LOGI(TAG, "Server requested camera capture -> Starting camera live preview");
+                    ESP_LOGW(TAG, "==========================================================");
+                    ESP_LOGW(TAG, ">>> RECEIVED CAPTURE COMMAND FROM JETSON SERVER! <<<");
+                    ESP_LOGW(TAG, "==========================================================");
                     chat_state_start_camera_preview();
                     handled = true;
                 }

@@ -34,6 +34,9 @@ static lv_obj_t *s_left_eye = NULL;
 static lv_obj_t *s_right_eye = NULL;
 static lv_obj_t *s_status_label = NULL;
 static lv_obj_t *s_center_label = NULL;
+static lv_obj_t *s_cam_img = NULL;
+static lv_img_dsc_t s_cam_img_dsc = {};
+static uint16_t *s_crop_buf = NULL;
 
 static ui_emotion_t s_current_left_emotion = (ui_emotion_t)-1;
 static ui_emotion_t s_current_right_emotion = (ui_emotion_t)-1;
@@ -148,6 +151,27 @@ esp_err_t display_ui_init(void) {
   lv_label_set_text(s_status_label, "");
   lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -5);
   lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+
+  // 카메라 실시간 프리뷰용 이미지 오브젝트 및 PSRAM 버퍼 준비
+  s_crop_buf = (uint16_t *)heap_caps_malloc(240 * 240 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (s_crop_buf) {
+    memset(s_crop_buf, 0, 240 * 240 * sizeof(uint16_t));
+    s_cam_img_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
+    s_cam_img_dsc.header.always_zero = 0;
+    s_cam_img_dsc.header.reserved = 0;
+    s_cam_img_dsc.header.w = 240;
+    s_cam_img_dsc.header.h = 240;
+    s_cam_img_dsc.data_size = 240 * 240 * sizeof(lv_color_t);
+    s_cam_img_dsc.data = (const uint8_t *)s_crop_buf;
+
+    s_cam_img = lv_img_create(s_screen);
+    lv_obj_align(s_cam_img, LV_ALIGN_CENTER, 0, 0);
+    lv_img_set_src(s_cam_img, &s_cam_img_dsc);
+    lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
+    ESP_LOGI(TAG, "Camera preview LVGL image object ready");
+  } else {
+    ESP_LOGE(TAG, "Failed to allocate 115KB PSRAM for camera preview buffer");
+  }
 
   lvgl_port_unlock();
 
@@ -303,16 +327,18 @@ esp_lcd_panel_handle_t display_ui_get_panel_handle(void) {
 }
 
 void display_ui_start_camera_preview(void) {
-  ESP_LOGI(TAG, "Entering camera live preview mode (pausing LVGL)");
+  ESP_LOGI(TAG, "Entering camera live preview mode (LVGL widget switch)");
   display_ui_pause_auto_blink(true);
 
   lvgl_port_lock(-1);
-  // LVGL 화면 위젯들을 숨겨서 화면 간섭 및 잔상 방지
   if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
   if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
   if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
   if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
-  lvgl_port_stop();
+  if (s_cam_img) {
+    lv_obj_clear_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(s_cam_img);
+  }
   lvgl_port_unlock();
 
   // 전방 카메라 정방향(사물/글자) 출력을 위해 좌우 미러링 일시 해제
@@ -322,36 +348,31 @@ void display_ui_start_camera_preview(void) {
 }
 
 void display_ui_stop_camera_preview(void) {
-  ESP_LOGI(TAG, "Exiting camera live preview mode (resuming LVGL)");
+  ESP_LOGI(TAG, "Exiting camera live preview mode (LVGL widget restore)");
   if (s_panel_handle) {
     // 캐릭터 눈 UI를 위한 좌우 미러링 복원
     esp_lcd_panel_mirror(s_panel_handle, true, false);
   }
-  lvgl_port_resume();
-  display_ui_pause_auto_blink(false);
 
   lvgl_port_lock(-1);
+  if (s_cam_img) lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
   if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
   if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
   if (s_status_label) lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
-  if (lv_scr_act()) {
-    lv_obj_invalidate(lv_scr_act());
-  }
+  if (lv_scr_act()) lv_obj_invalidate(lv_scr_act());
   lvgl_port_unlock();
+
+  display_ui_pause_auto_blink(false);
 }
 
-void display_ui_draw_preview_frame(const void *rgb565_buf) {
-  if (s_panel_handle == NULL || rgb565_buf == NULL) {
-    return;
+uint16_t *display_ui_get_preview_buffer(void) {
+  return s_crop_buf;
+}
+
+void display_ui_refresh_camera_preview(void) {
+  lvgl_port_lock(-1);
+  if (s_cam_img) {
+    lv_obj_invalidate(s_cam_img);
   }
-  const uint16_t *pixels = (const uint16_t *)rgb565_buf;
-  const int lines_per_chunk = 40; // 240 * 40 * 2 = 19,200 bytes (max_transfer_sz 내 완벽 분할)
-  for (int y = 0; y < 240; y += lines_per_chunk) {
-    const uint16_t *chunk_ptr = pixels + (y * 240);
-    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, 240, y + lines_per_chunk, chunk_ptr);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "draw_bitmap chunk at y=%d failed: 0x%x", y, err);
-      break;
-    }
-  }
+  lvgl_port_unlock();
 }
