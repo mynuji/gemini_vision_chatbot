@@ -108,6 +108,7 @@ esp_err_t display_ui_init(void) {
   esp_lcd_panel_disp_on_off(s_panel_handle, true);
   // 5. LVGL 포트 초기화
   lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+  port_cfg.task_max_sleep_ms = 10; // 지연 없는 초고속 실시간 화면 갱신 (기본 500ms -> 10ms 단축)
   lvgl_port_init(&port_cfg);
 
   lvgl_port_display_cfg_t disp_cfg = {};
@@ -331,7 +332,7 @@ esp_lcd_panel_handle_t display_ui_get_panel_handle(void) {
 }
 
 void display_ui_start_camera_preview(void) {
-  ESP_LOGI(TAG, "Entering camera live preview mode (direct hardware SPI pipeline)");
+  ESP_LOGI(TAG, "Entering camera live preview mode (LVGL widget switch)");
   s_camera_preview_mode = true;
   display_ui_pause_auto_blink(true);
 
@@ -340,6 +341,10 @@ void display_ui_start_camera_preview(void) {
     if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
     if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_img) {
+      lv_obj_clear_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_invalidate(s_cam_img);
+    }
     lvgl_port_unlock();
   }
 
@@ -347,9 +352,6 @@ void display_ui_start_camera_preview(void) {
   if (s_panel_handle) {
     esp_lcd_panel_mirror(s_panel_handle, false, false);
   }
-
-  // LVGL 타이머 일시 정지 (카메라 프리뷰 동안 불필요한 LVGL 연산 및 SPI 버스 경합 완전 차단)
-  lvgl_port_stop();
 }
 
 void display_ui_stop_camera_preview(void) {
@@ -361,9 +363,6 @@ void display_ui_stop_camera_preview(void) {
     // 캐릭터 눈 UI를 위한 좌우 미러링 복원
     esp_lcd_panel_mirror(s_panel_handle, true, false);
   }
-
-  // LVGL 타이머 재개
-  lvgl_port_resume();
 
   if (lvgl_port_lock(150)) {
     if (s_cam_img) lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
@@ -382,13 +381,15 @@ uint16_t *display_ui_get_preview_buffer(void) {
 }
 
 void display_ui_refresh_camera_preview(void) {
-  // 하드웨어 직결 파이프라인으로 전환되어 LVGL 무효화 불필요
+  if (lvgl_port_lock(100)) {
+    if (s_cam_img && !lv_obj_has_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN)) {
+      lv_obj_invalidate(s_cam_img);
+    }
+    lvgl_port_unlock();
+  }
 }
 
 void display_ui_draw_preview_frame(const uint16_t *rgb565_buf) {
-  // [아두이노 방식 직접 전송] LVGL의 6분할 슬라이싱 및 태스크 스케줄링 대기를 완전히 건너뛰고,
-  // 40MHz SPI DMA를 통해 LCD 패널로 240x240 전체 프레임을 23ms 만에 직접 전송 (지연 0초!)
-  if (s_panel_handle && rgb565_buf) {
-    esp_lcd_panel_draw_bitmap(s_panel_handle, 0, 0, 240, 240, rgb565_buf);
-  }
+  // s_crop_buf는 이미 s_cam_img_dsc에 바인딩되어 있으므로 화면 무효화(invalidate) 트리거
+  display_ui_refresh_camera_preview();
 }
