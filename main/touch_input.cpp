@@ -22,8 +22,8 @@ typedef enum {
     TOUCH_CHIP_FT6236
 } touch_chip_type_t;
 
-static touch_chip_type_t s_chip_type = TOUCH_CHIP_NONE;
-static uint8_t s_detected_addr = 0;
+static touch_chip_type_t s_chip_type = TOUCH_CHIP_CHSC6X;
+static uint8_t s_detected_addr = CHSC6X_I2C_ADDR;
 static bool s_i2c_initialized = false;
 
 static volatile uint32_t s_last_touch_isr_time = 0;
@@ -78,7 +78,21 @@ static void i2c_scan_bus(void) {
         if (probe_i2c_chip(addr)) {
             ESP_LOGI(TAG, " -> Found I2C device at address: 0x%02X", addr);
             devices_found++;
+            if (addr == CHSC6X_I2C_ADDR && s_chip_type == TOUCH_CHIP_NONE) {
+                s_chip_type = TOUCH_CHIP_CHSC6X;
+                s_detected_addr = addr;
+                ESP_LOGI(TAG, "Identified CHSC6X Touch Controller at 0x%02X!", addr);
+            } else if (addr == CST816S_I2C_ADDR && s_chip_type == TOUCH_CHIP_NONE) {
+                s_chip_type = TOUCH_CHIP_CST816S;
+                s_detected_addr = addr;
+                ESP_LOGI(TAG, "Identified CST816S Touch Controller at 0x%02X!", addr);
+            } else if (addr == FT6236_I2C_ADDR && s_chip_type == TOUCH_CHIP_NONE) {
+                s_chip_type = TOUCH_CHIP_FT6236;
+                s_detected_addr = addr;
+                ESP_LOGI(TAG, "Identified FT6236 Touch Controller at 0x%02X!", addr);
+            }
         }
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
     if (devices_found == 0) {
         ESP_LOGW(TAG, "No I2C devices responded on the bus!");
@@ -108,21 +122,11 @@ esp_err_t touch_input_init(void) {
 
         i2c_scan_bus();
 
-        if (probe_i2c_chip(CHSC6X_I2C_ADDR)) {
-            s_chip_type = TOUCH_CHIP_CHSC6X;
-            s_detected_addr = CHSC6X_I2C_ADDR;
-            ESP_LOGI(TAG, "Found CHSC6X Touch Controller at 0x%02X!", s_detected_addr);
-        } else if (probe_i2c_chip(CST816S_I2C_ADDR)) {
-            s_chip_type = TOUCH_CHIP_CST816S;
-            s_detected_addr = CST816S_I2C_ADDR;
-            ESP_LOGI(TAG, "Found CST816S Touch Controller at 0x%02X!", s_detected_addr);
-        } else if (probe_i2c_chip(FT6236_I2C_ADDR)) {
-            s_chip_type = TOUCH_CHIP_FT6236;
-            s_detected_addr = FT6236_I2C_ADDR;
-            ESP_LOGI(TAG, "Found FT6236 Touch Controller at 0x%02X!", s_detected_addr);
+        if (s_chip_type != TOUCH_CHIP_NONE) {
+            ESP_LOGI(TAG, "Touch Controller configured successfully! Type=%d, Addr=0x%02X",
+                     (int)s_chip_type, s_detected_addr);
         } else {
-            ESP_LOGW(TAG, "No known I2C Touch Controller detected. Using GPIO INT single-touch fallback.");
-            s_chip_type = TOUCH_CHIP_NONE;
+            ESP_LOGW(TAG, "No known I2C Touch Controller identified. Using GPIO INT single-touch fallback.");
         }
     } else {
         ESP_LOGE(TAG, "I2C master init failed: %s", esp_err_to_name(ret));
@@ -158,10 +162,11 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
         esp_err_t ret = i2c_master_read_from_device(I2C_TOUCH_PORT, s_detected_addr,
                                                    data, 5, pdMS_TO_TICKS(20));
         if (ret == ESP_OK) {
-            // CHSC6X: data[0] & 0x01 (touch down)
-            if ((data[0] & 0x01) || pin_active) {
-                x = ((uint16_t)(data[2] & 0x0F) << 8) | data[1];
-                y = ((uint16_t)(data[2] & 0xF0) << 4) | data[3];
+            // Seeed 공식 CHSC6X 프로토콜: data[0] == 0x01 (Touch Down)
+            // data[2] = X좌표 (0~239), data[4] = Y좌표 (0~239)
+            if (data[0] == 0x01 || pin_active) {
+                x = 239 - (int16_t)data[2]; // LCD 가로 반전(mirror_x) 보정
+                y = (int16_t)data[4];
                 pressed = true;
             }
         }
@@ -194,19 +199,21 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
 
     // 상단 10회 연속 터치 감지 (터치가 새로 눌렸을 때判定: false -> true)
     if (pressed && !s_is_pressed) {
-        // 상단 영역 판정: Y <= 70 (빨간 점 주변)
-        bool is_top_area = (s_chip_type != TOUCH_CHIP_NONE) ? (y <= 70) : false;
+        // 상단 영역 판정: Y <= 100 (화면 상단 절반 가까이)
+        // 또는 3초 이내에 연속해서 탭하는 중인 경우 설정 메뉴 진입으로 간주!
+        bool is_rapid_tapping = (now - s_last_top_tap_time < 3000) && (s_top_tap_count > 0);
+        bool is_top_area = (y <= 100) || is_rapid_tapping;
 
         if (is_top_area) {
             // 상단 탭: 설정 메뉴 카운트만 증가시키고, 일반 대화 터치 플래그는 세팅하지 않음!
-            if (now - s_last_top_tap_time < 1500) {
+            if (now - s_last_top_tap_time < 3000) {
                 s_top_tap_count++;
             } else {
-                s_top_tap_count = 1; // 1.5초 이상 지났으면 리셋 후 1부터 시작
+                s_top_tap_count = 1; // 3.0초 이상 지났으면 리셋 후 1부터 시작
             }
             s_last_top_tap_time = now;
 
-            ESP_LOGI(TAG, "Top red-dot area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
+            ESP_LOGI(TAG, "Top area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
 
             // 가벼운 피드백 클릭 틱 소리 (2400Hz, 15ms)
             audio_io_play_tone(2400.0f, 15);
@@ -221,7 +228,7 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
                 }
             }
         } else {
-            // 화면 중앙/하단 터치 (Y > 70): 일반 대화용 터치(수동 호출 / 대화 중단) 플래그 발생!
+            // 화면 하단(Y > 100) 단일 터치: 일반 대화용 터치(수동 호출 / 대화 중단) 플래그 발생!
             s_top_tap_count = 0;
             s_chat_touch_event_flag = true;
             ESP_LOGI(TAG, "Chat touch area tapped (x=%d, y=%d) -> Chat event flagged", x, y);
