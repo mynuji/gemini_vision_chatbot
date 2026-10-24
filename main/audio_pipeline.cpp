@@ -279,12 +279,11 @@ static void audio_fetch_task(void *pvParameters) {
             bool is_playing = s_is_speaker_playing || (s_spk_buffered_bytes > 0);
             // 끼어들기(Barge-in) 감지:
             // 1) 스피커 재생 중 (is_playing == true, SPEAKING):
-            //    AEC 에코 제거 후 잔여 에코(peak < 1400)와 사용자의 실제 음성(peak > 1800)을 구분합니다.
-            //    4프레임(약 128ms) 이상 연속 피크 1800 이상 감지 시 사용자의 실제 음성 끼어들기로 정확히 판정합니다.
+            //    AEC 에코 제거 후 실제 사용자 음성(peak > 800) 감지 시 2프레임(약 64ms)만으로 즉각 반응
             // 2) AI 생각 중 (is_playing == false, THINKING):
-            //    스피커가 무음이므로 peak > 500, 3프레임(약 96ms) 확인으로 신속하게 끼어들기 판정합니다.
-            bool voice_candidate = (res->vad_state == VAD_SPEECH && (is_playing ? (peak > 1800) : (peak > 500)));
-            int required_confirm_frames = is_playing ? 4 : 3;
+            //    스피커가 무음이므로 peak > 350, 2프레임 확인으로 신속하게 끼어들기 판정
+            bool voice_candidate = (res->vad_state == VAD_SPEECH && (is_playing ? (peak > 800) : (peak > 350)));
+            int required_confirm_frames = 2;
 
             if (voice_candidate) {
                 barge_in_confirm_count++;

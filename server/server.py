@@ -317,9 +317,19 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
                     _models_without_thinking_config.add(model)
                     continue
                 print(f"\n[Gemini] {model} 호출 실패 -> 대체 모델 시도: {e}")
-                break
-
     raise last_error or RuntimeError("사용 가능한 Gemini 모델이 없습니다.")
+
+VISION_KEYWORDS = (
+    "앞에", "보이는", "보여", "이거", "이게", "사진", "카메라", "찍어",
+    "봐봐", "봐줘", "물건", "뭐야", "무엇", "글자", "읽어줘", "어떤",
+    "풍경", "모습", "색깔", "색상", "표정", "누구", "사람", "인식", "시각"
+)
+
+def is_vision_query(text):
+    """사용자 발화에 시각적 분석이 필요한 키워드가 포함되어 있는지 판정"""
+    if not text:
+        return False
+    return any(k in text for k in VISION_KEYWORDS)
 
 def is_meaningful_speech(text):
     """TV 소음, 비언어 잡음, 괄호 환각, 무의미한 단발성 소리(기침, 헛기침 등)를 필터링하여 유효한 사용자의 발화인지 판정"""
@@ -927,6 +937,39 @@ async def handler(websocket, path=None):
         }
     ]
 
+    pending_image_future = None
+
+    async def handle_user_turn(user_text, asr_ms=0.0, close_session_after=False):
+        nonlocal pending_image_future
+        interrupted_holder["session"] = None
+        interrupted_holder["last_completed_session"] = None
+        interrupted_holder["active_ai_response"] = None
+
+        image_bytes = None
+        if is_vision_query(user_text):
+            print(f"\n[시각 질의 감지] '{user_text}' -> ESP32 카메라 촬영 요청 전송!")
+            try:
+                loop = asyncio.get_running_loop()
+                pending_image_future = loop.create_future()
+                await websocket.send(json.dumps({"type": "capture"}))
+                image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=3.5)
+                if image_bytes:
+                    print(f"[시각 질의 준비 완료] 사진 첨부하여 Gemini Vision 질의 시작 ({len(image_bytes)} bytes)")
+            except asyncio.TimeoutError:
+                print("[시각 질의] 카메라 사진 수신 시간 초과 -> 텍스트만으로 질의 진행")
+            except Exception as e:
+                print(f"[시각 질의] 사진 수신 예외: {e}")
+            finally:
+                pending_image_future = None
+
+        await process_ai_response(
+            websocket, user_text, chat_history,
+            time.perf_counter(), asr_ms,
+            close_session_after=close_session_after,
+            interrupted_holder=interrupted_holder,
+            image_bytes=image_bytes
+        )
+
     try:
         async for message in websocket:
             try:
@@ -934,6 +977,13 @@ async def handler(websocket, path=None):
                 # (1) 바이너리 데이터: ESP32 마이크 PCM 음성 스트리밍 (16kHz, 16bit, Mono)
                 # ------------------------------------------------------
                 if isinstance(message, bytes):
+                    # 카메라 JPEG 사진 감지 (JPEG SOI 매직 바이트: 0xFF 0xD8)
+                    if len(message) > 4 and message[:2] == b"\xff\xd8":
+                        print(f"\n[카메라 수신] 📷 ESP32로부터 JPEG 사진 수신 완료 ({len(message)} bytes)")
+                        if pending_image_future and not pending_image_future.done():
+                            pending_image_future.set_result(message)
+                        continue
+
                     new_samples = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
                     rx_accum = np.concatenate([rx_accum, new_samples]) if len(rx_accum) > 0 else new_samples
                     
@@ -947,16 +997,16 @@ async def handler(websocket, path=None):
                         vad_prob = vad_model(audio_tensor, SAMPLE_RATE).item()
                         
                         is_ai_busy = ai_task and not ai_task.done()
-                        current_threshold = 0.65 if is_ai_busy else VAD_THRESHOLD
+                        current_threshold = 0.50 if is_ai_busy else VAD_THRESHOLD
                         
                         if vad_prob > current_threshold:
                             silence_time = 0.0
                             barge_in_counter += 1
                             
                             # AI 답변 출력 중 끼어들기 감지:
-                            # 발화 종료 직후 1.2초 동안은 잔여 숨소리/노이즈로 인한 AI 답변 취소 방지, 4프레임 연속 시에만 취소 (TV 오작동 방지)
+                            # 2프레임 연속 시 즉시 취소하여 자연스러운 말 끼어들기 보장
                             time_since_speech_end = time.perf_counter() - t_speech_end
-                            if is_ai_busy and barge_in_counter >= 4 and time_since_speech_end > 1.2:
+                            if is_ai_busy and barge_in_counter >= 2 and time_since_speech_end > 0.5:
                                 print("\n[음성 끼어들기] AI 답변 일시 중단 (세션 보관)")
                                 ai_task.cancel()
                                 try:
@@ -1000,11 +1050,8 @@ async def handler(websocket, path=None):
                                         print(f"[음성 인식 완료] {user_text or '(인식 실패 또는 무음)'} ({asr_ms:.0f}ms)")
                                         
                                         if is_meaningful_speech(user_text):
-                                            interrupted_holder["session"] = None
-                                            interrupted_holder["last_completed_session"] = None
-                                            interrupted_holder["active_ai_response"] = None
                                             ai_task = asyncio.create_task(
-                                                process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms, interrupted_holder=interrupted_holder)
+                                                handle_user_turn(user_text, asr_ms)
                                             )
                                         else:
                                             # TV 소리, 잡음, 무음 등 의미 있는 발화가 아님 -> 직전 답변 이어말하기 검토
@@ -1151,11 +1198,8 @@ async def handler(websocket, path=None):
                                             print(f"[음성 인식 완료] {user_text or '(인식 실패 또는 무음)'} ({asr_ms:.0f}ms)")
                                             
                                             if is_meaningful_speech(user_text):
-                                                interrupted_holder["session"] = None
-                                                interrupted_holder["last_completed_session"] = None
-                                                interrupted_holder["active_ai_response"] = None
                                                 ai_task = asyncio.create_task(
-                                                    process_ai_response(websocket, user_text, chat_history, time.perf_counter(), asr_ms, interrupted_holder=interrupted_holder)
+                                                    handle_user_turn(user_text, asr_ms)
                                                 )
                                             else:
                                                 if interrupted_holder.get("session") is not None:
@@ -1239,11 +1283,8 @@ async def handler(websocket, path=None):
                                             user_text, asr_ms = await run_whisper_cpp(full_audio)
                                             print(f"[음성 인식 완료] {user_text or '(인식 실패 또는 무음)'} ({asr_ms:.0f}ms)")
                                             if is_meaningful_speech(user_text):
-                                                interrupted_holder["session"] = None
-                                                interrupted_holder["last_completed_session"] = None
-                                                interrupted_holder["active_ai_response"] = None
                                                 ai_task = asyncio.create_task(
-                                                    process_ai_response(websocket, user_text, chat_history, time.perf_counter(), asr_ms, close_session_after=True, interrupted_holder=interrupted_holder)
+                                                    handle_user_turn(user_text, asr_ms, close_session_after=True)
                                                 )
                                             else:
                                                 if interrupted_holder.get("session") is not None:

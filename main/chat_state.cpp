@@ -3,7 +3,9 @@
 #include "audio_io.h"
 #include "display_ui.h"
 #include "wifi_ws.h"
+#include "camera_io.h"
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -11,6 +13,30 @@
 #include <string.h>
 
 static const char *TAG = "CHAT_STATE";
+
+static void capture_and_send_task(void *pvParameters) {
+    display_ui_set_status("CAPTURING...");
+    uint8_t *jpeg = NULL;
+    size_t jpeg_len = 0;
+    uint16_t w = 0, h = 0;
+    esp_err_t err = camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h);
+    if (err == ESP_OK && jpeg != NULL && jpeg_len > 0) {
+        ESP_LOGI(TAG, "Camera capture success (%u bytes, %ux%u), sending to Jetson...",
+                 (unsigned int)jpeg_len, (unsigned int)w, (unsigned int)h);
+        display_ui_set_status("SENDING PHOTO...");
+        char meta[96];
+        snprintf(meta, sizeof(meta), "{\"type\":\"image_start\",\"size\":%u}", (unsigned int)jpeg_len);
+        wifi_ws_send_text(meta);
+        wifi_ws_send_bin(jpeg, jpeg_len);
+        free(jpeg);
+        display_ui_set_status("THINKING...");
+    } else {
+        ESP_LOGW(TAG, "Camera capture failed (err=0x%x)", err);
+        wifi_ws_send_text("{\"type\":\"image_failed\"}");
+        display_ui_set_status("CAM FAIL");
+    }
+    vTaskDelete(NULL);
+}
 
 static chat_state_t s_chat_state = CHAT_STATE_IDLE;
 static bool s_session_active = false;
@@ -258,6 +284,10 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     } else {
                         display_ui_set_status(message->valuestring);
                     }
+                    handled = true;
+                } else if (strcmp(type->valuestring, "capture") == 0) {
+                    ESP_LOGI(TAG, "Server requested camera capture -> Spawning capture task");
+                    xTaskCreatePinnedToCoreWithCaps(capture_and_send_task, "cam_cap", 4096, NULL, 4, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
                     handled = true;
                 }
             }
