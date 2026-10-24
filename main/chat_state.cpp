@@ -81,20 +81,24 @@ static void camera_preview_task(void *pvParameters) {
         jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
         jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
         jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
-        jpeg_cfg.flags.swap_color_bytes = 0;
+        jpeg_cfg.flags.swap_color_bytes = 1; // LVGL CONFIG_LV_COLOR_16_SWAP=y 규격 일치
         jpeg_cfg.advanced.working_buffer = work_buf;
         jpeg_cfg.advanced.working_buffer_size = work_sz;
 
         esp_jpeg_image_output_t out_info = {};
         esp_err_t dec_ret = esp_jpeg_decode(&jpeg_cfg, &out_info);
         if (dec_ret == ESP_OK) {
+            // [요구사항 1] 화면 시계방향 90도 회전 + 1:1 중앙 크롭
             for (int y = 0; y < 240; y++) {
-                const uint16_t *src_line = dec_buf + (y * 320) + 40;
-                uint16_t *dst_line = crop_buf + (y * 240);
-                memcpy(dst_line, src_line, 240 * sizeof(uint16_t));
+                int src_x = y + 40;
+                uint16_t *dst_row = crop_buf + (y * 240);
+                for (int x = 0; x < 240; x++) {
+                    int src_y = 239 - x;
+                    dst_row[x] = dec_buf[src_y * 320 + src_x];
+                }
             }
             display_ui_refresh_camera_preview();
-            ESP_LOGI(TAG, "First frame decoded & displayed on LCD successfully!");
+            ESP_LOGI(TAG, "First frame decoded, rotated 90 deg CW & displayed on LCD");
         } else {
             ESP_LOGE(TAG, "First frame esp_jpeg_decode failed: 0x%x", dec_ret);
         }
@@ -118,16 +122,20 @@ static void camera_preview_task(void *pvParameters) {
                 jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
                 jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
                 jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
-                jpeg_cfg.flags.swap_color_bytes = 0;
+                jpeg_cfg.flags.swap_color_bytes = 1; // LVGL CONFIG_LV_COLOR_16_SWAP=y 규격 일치
                 jpeg_cfg.advanced.working_buffer = work_buf;
                 jpeg_cfg.advanced.working_buffer_size = work_sz;
 
                 esp_jpeg_image_output_t out_info = {};
                 if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+                    // [요구사항 1] 화면 시계방향 90도 회전 + 1:1 중앙 크롭
                     for (int y = 0; y < 240; y++) {
-                        const uint16_t *src_line = dec_buf + (y * 320) + 40;
-                        uint16_t *dst_line = crop_buf + (y * 240);
-                        memcpy(dst_line, src_line, 240 * sizeof(uint16_t));
+                        int src_x = y + 40;
+                        uint16_t *dst_row = crop_buf + (y * 240);
+                        for (int x = 0; x < 240; x++) {
+                            int src_y = 239 - x;
+                            dst_row[x] = dec_buf[src_y * 320 + src_x];
+                        }
                     }
                     display_ui_refresh_camera_preview();
                     frame_count++;

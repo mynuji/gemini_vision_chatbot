@@ -1016,6 +1016,19 @@ async def handler(websocket, path=None):
                     # 카메라 JPEG 사진 감지 (JPEG SOI 매직 바이트: 0xFF 0xD8)
                     if len(message) > 4 and message[:2] == b"\xff\xd8":
                         print(f"\n[카메라 수신] 📷 ESP32로부터 JPEG 사진 수신 완료 ({len(message)} bytes)")
+                        # [요구사항 3] LLM에 전송하는 사진도 시계방향으로 90도 회전
+                        try:
+                            import io
+                            from PIL import Image
+                            img = Image.open(io.BytesIO(message))
+                            rotated_img = img.rotate(-90, expand=True) # 시계 방향 90도 회전
+                            buf = io.BytesIO()
+                            rotated_img.save(buf, format="JPEG", quality=90)
+                            message = buf.getvalue()
+                            print(f"[카메라 회전] 🔄 시계 방향 90도 회전 완료 ({rotated_img.width}x{rotated_img.height}, {len(message)} bytes)")
+                        except Exception as rot_err:
+                            print(f"[카메라 회전 경고] PIL 회전 처리 예외 (원형 그대로 전송): {rot_err}")
+
                         if pending_image_future and not pending_image_future.done():
                             pending_image_future.set_result(message)
                         continue
