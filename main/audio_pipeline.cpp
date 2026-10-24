@@ -235,11 +235,11 @@ static void audio_feed_task(void *pvParameters) {
 
         // [마이크 감도 개선]
         // 스피커가 출력 중일 때는 자체 스피커 소리가 마이크로 피드백되어 AEC 왜곡 및 오작동이 발생하는 것을 방지하기 위해 1.0배(원음) 유지
-        // 스피커가 조용할 때(대화 청취 중 등)만 작은 목소리를 잘 수음하도록 디지털 게인 2.0배(+6dB) 적용
+        // 스피커가 조용할 때(대화 청취 중 등)만 작은 목소리를 잘 수음하도록 디지털 게인 3.5배(+11dB) 적용
         bool is_playing = s_is_speaker_playing || (s_spk_buffered_bytes > 0);
         if (!is_playing) {
             for (int i = 0; i < feed_chunksize; i++) {
-                int32_t val = (int32_t)mic_buf[i] * 2;
+                int32_t val = (int32_t)mic_buf[i] * 35 / 10;
                 if (val > 32767) val = 32767;
                 else if (val < -32768) val = -32768;
                 mic_buf[i] = (int16_t)val;
@@ -364,7 +364,7 @@ static void audio_fetch_task(void *pvParameters) {
             if (now_ms - s_mic_stream_start_ms > 400) {
                 if (res->vad_state == VAD_SPEECH) {
                     s_vad_speech_frames++;
-                    if (s_vad_speech_frames >= 4) {
+                    if (s_vad_speech_frames >= 3) {
                         s_last_speech_ms = now_ms;
                         s_has_user_spoken = true;
                         chat_state_activity_occurred(); // 60초 침묵 타이머 리셋
