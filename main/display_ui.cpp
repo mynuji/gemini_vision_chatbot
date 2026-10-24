@@ -301,3 +301,37 @@ void display_ui_start_auto_blink(void) {
 esp_lcd_panel_handle_t display_ui_get_panel_handle(void) {
   return s_panel_handle;
 }
+
+void display_ui_start_camera_preview(void) {
+  ESP_LOGI(TAG, "Entering camera live preview mode (pausing LVGL)");
+  display_ui_pause_auto_blink(true);
+  lvgl_port_lock(-1);
+  lvgl_port_stop();
+  lvgl_port_unlock();
+
+  // 전방 카메라 정방향(사물/글자) 출력을 위해 좌우 미러링 일시 해제
+  if (s_panel_handle) {
+    esp_lcd_panel_mirror(s_panel_handle, false, false);
+  }
+}
+
+void display_ui_stop_camera_preview(void) {
+  ESP_LOGI(TAG, "Exiting camera live preview mode (resuming LVGL)");
+  if (s_panel_handle) {
+    // 캐릭터 눈 UI를 위한 좌우 미러링 복원
+    esp_lcd_panel_mirror(s_panel_handle, true, false);
+  }
+  lvgl_port_resume();
+  display_ui_pause_auto_blink(false);
+  lvgl_port_lock(-1);
+  if (lv_scr_act()) {
+    lv_obj_invalidate(lv_scr_act());
+  }
+  lvgl_port_unlock();
+}
+
+void display_ui_draw_preview_frame(const void *rgb565_buf) {
+  if (s_panel_handle && rgb565_buf) {
+    esp_lcd_panel_draw_bitmap(s_panel_handle, 0, 0, 240, 240, rgb565_buf);
+  }
+}

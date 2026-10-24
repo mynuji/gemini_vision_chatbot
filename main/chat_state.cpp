@@ -12,31 +12,9 @@
 #include "freertos/semphr.h"
 #include <string.h>
 
-static const char *TAG = "CHAT_STATE";
+#include "jpeg_decoder.h"
 
-static void capture_and_send_task(void *pvParameters) {
-    display_ui_set_status("CAPTURING...");
-    uint8_t *jpeg = NULL;
-    size_t jpeg_len = 0;
-    uint16_t w = 0, h = 0;
-    esp_err_t err = camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h);
-    if (err == ESP_OK && jpeg != NULL && jpeg_len > 0) {
-        ESP_LOGI(TAG, "Camera capture success (%u bytes, %ux%u), sending to Jetson...",
-                 (unsigned int)jpeg_len, (unsigned int)w, (unsigned int)h);
-        display_ui_set_status("SENDING PHOTO...");
-        char meta[96];
-        snprintf(meta, sizeof(meta), "{\"type\":\"image_start\",\"size\":%u}", (unsigned int)jpeg_len);
-        wifi_ws_send_text(meta);
-        wifi_ws_send_bin(jpeg, jpeg_len);
-        free(jpeg);
-        display_ui_set_status("THINKING...");
-    } else {
-        ESP_LOGW(TAG, "Camera capture failed (err=0x%x)", err);
-        wifi_ws_send_text("{\"type\":\"image_failed\"}");
-        display_ui_set_status("CAM FAIL");
-    }
-    vTaskDelete(NULL);
-}
+static const char *TAG = "CHAT_STATE";
 
 static chat_state_t s_chat_state = CHAT_STATE_IDLE;
 static bool s_session_active = false;
@@ -46,6 +24,149 @@ static uint32_t s_listening_start_ms = 0;
 static uint32_t s_last_barge_in_ms = 0;
 static uint32_t s_last_state_change_ms = 0;
 static SemaphoreHandle_t s_state_mutex = NULL;
+
+static TaskHandle_t s_preview_task_handle = NULL;
+static volatile bool s_camera_preview_active = false;
+
+static inline uint16_t convert_rgb565_to_spi_bgr565(uint16_t val) {
+    // GC9A01 LCD_RGB_ENDIAN_BGR 모드와 SPI MSB 전송에 맞춰 R/B 채널 및 바이트 스왑
+    uint16_t bgr = ((val & 0x001F) << 11) | (val & 0x07E0) | ((val & 0xF800) >> 11);
+    return (uint16_t)(((bgr & 0x00FF) << 8) | ((bgr & 0xFF00) >> 8));
+}
+
+static void camera_preview_task(void *pvParameters) {
+    ESP_LOGI(TAG, "Camera live preview task started");
+
+    display_ui_start_camera_preview();
+
+    size_t dec_sz = 320 * 240 * sizeof(uint16_t);
+    size_t crop_sz = 240 * 240 * sizeof(uint16_t);
+    uint16_t *dec_buf = (uint16_t *)heap_caps_malloc(dec_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint16_t *crop_buf = (uint16_t *)heap_caps_malloc(crop_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if (dec_buf == NULL || crop_buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for camera preview");
+        if (dec_buf) free(dec_buf);
+        if (crop_buf) free(crop_buf);
+        display_ui_stop_camera_preview();
+        s_camera_preview_active = false;
+        s_preview_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // 1. 첫 프레임 촬영 및 서버 전송 (잔여 프레임 비우고 최신 프레임 획득)
+    camera_fb_t *first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
+    if (first_fb) {
+        camera_io_return_fb(first_fb);
+    }
+    first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
+
+    if (first_fb && first_fb->format == PIXFORMAT_JPEG && first_fb->len > 0) {
+        ESP_LOGI(TAG, "First frame captured: %u bytes, sending to Jetson server...", (unsigned int)first_fb->len);
+        char meta[96];
+        snprintf(meta, sizeof(meta), "{\"type\":\"image_start\",\"size\":%u}", (unsigned int)first_fb->len);
+        wifi_ws_send_text(meta);
+        wifi_ws_send_bin(first_fb->buf, first_fb->len);
+
+        esp_jpeg_image_cfg_t jpeg_cfg = {};
+        jpeg_cfg.indata = first_fb->buf;
+        jpeg_cfg.indata_size = (uint32_t)first_fb->len;
+        jpeg_cfg.outbuf = (uint8_t *)dec_buf;
+        jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
+        jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
+        jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
+        jpeg_cfg.flags.swap_color_bytes = 0;
+
+        esp_jpeg_image_output_t out_info = {};
+        if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+            for (int y = 0; y < 240; y++) {
+                const uint16_t *src_line = dec_buf + (y * 320) + 40;
+                uint16_t *dst_line = crop_buf + (y * 240);
+                for (int x = 0; x < 240; x++) {
+                    dst_line[x] = convert_rgb565_to_spi_bgr565(src_line[x]);
+                }
+            }
+            display_ui_draw_preview_frame(crop_buf);
+        }
+        camera_io_return_fb(first_fb);
+    } else {
+        ESP_LOGW(TAG, "Failed to capture first frame for server");
+        if (first_fb) camera_io_return_fb(first_fb);
+        wifi_ws_send_text("{\"type\":\"image_failed\"}");
+    }
+
+    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행
+    while (s_camera_preview_active) {
+        camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(100));
+        if (fb != NULL) {
+            if (fb->format == PIXFORMAT_JPEG && fb->len > 0) {
+                esp_jpeg_image_cfg_t jpeg_cfg = {};
+                jpeg_cfg.indata = fb->buf;
+                jpeg_cfg.indata_size = (uint32_t)fb->len;
+                jpeg_cfg.outbuf = (uint8_t *)dec_buf;
+                jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
+                jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
+                jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
+                jpeg_cfg.flags.swap_color_bytes = 0;
+
+                esp_jpeg_image_output_t out_info = {};
+                if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+                    for (int y = 0; y < 240; y++) {
+                        const uint16_t *src_line = dec_buf + (y * 320) + 40;
+                        uint16_t *dst_line = crop_buf + (y * 240);
+                        for (int x = 0; x < 240; x++) {
+                            dst_line[x] = convert_rgb565_to_spi_bgr565(src_line[x]);
+                        }
+                    }
+                    display_ui_draw_preview_frame(crop_buf);
+                }
+            }
+            camera_io_return_fb(fb);
+        }
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+
+    ESP_LOGI(TAG, "Exiting camera preview loop, restoring LVGL UI");
+    free(dec_buf);
+    free(crop_buf);
+    display_ui_stop_camera_preview();
+
+    switch (s_chat_state) {
+        case CHAT_STATE_SPEAKING:
+            display_ui_set_emotion(UI_EMOTION_SPEAKING, UI_EMOTION_SPEAKING, "SPEAKING...");
+            break;
+        case CHAT_STATE_THINKING:
+            display_ui_set_emotion(UI_EMOTION_SLEEPY, UI_EMOTION_SLEEPY, "THINKING...");
+            break;
+        case CHAT_STATE_LISTENING:
+            display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, "LISTENING...");
+            break;
+        case CHAT_STATE_IDLE:
+        default:
+            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, "SAY 'ALEXA' OR TOUCH");
+            break;
+    }
+
+    s_preview_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+void chat_state_start_camera_preview(void) {
+    if (s_camera_preview_active && s_preview_task_handle != NULL) {
+        return;
+    }
+    s_camera_preview_active = true;
+    xTaskCreatePinnedToCoreWithCaps(camera_preview_task, "cam_prev", 4096, NULL, 4,
+                                    &s_preview_task_handle, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+void chat_state_stop_camera_preview(void) {
+    if (s_camera_preview_active) {
+        ESP_LOGI(TAG, "Requesting camera preview to stop");
+        s_camera_preview_active = false;
+    }
+}
 
 void chat_state_init(void) {
     if (s_state_mutex == NULL) {
@@ -124,6 +245,7 @@ void chat_state_set(chat_state_t new_state) {
 
 void chat_state_barge_in(void) {
     ESP_LOGW(TAG, ">>> BARGE-IN TRIGGERED! Flushing audio & switching to LISTENING...");
+    chat_state_stop_camera_preview();
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_last_barge_in_ms = now_ms;
     s_close_session_after_speaking = false; // 끼어들기 시 새 대화로 이어짐
@@ -162,6 +284,9 @@ void chat_state_handle_touch(void) {
         // 대화 중(LISTENING, THINKING, SPEAKING) 화면 터치 시:
         // [사용자 요구사항 1] 모든 대화를 즉각 중단하고 대기 상태인 Alexa 호출 화면(IDLE)으로 전환!
         ESP_LOGI(TAG, "Touch in active state (%d) -> ABORTING ALL CONVERSATION & RETURNING TO IDLE!", (int)s_chat_state);
+
+        // 0. 진행 중인 카메라 프리뷰 즉시 중단
+        chat_state_stop_camera_preview();
 
         // 1. 마이크 스트리밍 차단
         audio_pipeline_enable_mic_streaming(false);
@@ -237,6 +362,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
 
             if (cJSON_IsString(type)) {
                 if (strcmp(type->valuestring, "interrupt") == 0) {
+                    chat_state_stop_camera_preview();
                     audio_pipeline_clear_audio();
                     if (s_chat_state == CHAT_STATE_SPEAKING || s_chat_state == CHAT_STATE_THINKING) {
                         if (s_session_active) {
@@ -286,8 +412,8 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     }
                     handled = true;
                 } else if (strcmp(type->valuestring, "capture") == 0) {
-                    ESP_LOGI(TAG, "Server requested camera capture -> Spawning capture task");
-                    xTaskCreatePinnedToCoreWithCaps(capture_and_send_task, "cam_cap", 4096, NULL, 4, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    ESP_LOGI(TAG, "Server requested camera capture -> Starting camera live preview");
+                    chat_state_start_camera_preview();
                     handled = true;
                 }
             }
@@ -312,6 +438,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                 audio_pipeline_set_server_done(true);
             }
         } else if (strcmp(text, "CLEAR_AUDIO") == 0) {
+            chat_state_stop_camera_preview();
             audio_pipeline_clear_audio();
             if (s_chat_state == CHAT_STATE_SPEAKING || s_chat_state == CHAT_STATE_THINKING) {
                 if (s_session_active) {
@@ -346,6 +473,7 @@ void chat_state_activity_occurred(void) {
 void chat_state_handle_speaker_finished(void) {
     ESP_LOGI(TAG, "Speaker playback finished. s_close_session=%d, s_session_active=%d, cur_state=%d",
              (int)s_close_session_after_speaking, (int)s_session_active, (int)s_chat_state);
+    chat_state_stop_camera_preview();
     if (s_close_session_after_speaking) {
         ESP_LOGI(TAG, "Session close requested. Ending conversation session -> IDLE");
         s_close_session_after_speaking = false;

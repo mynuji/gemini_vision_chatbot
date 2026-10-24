@@ -178,3 +178,27 @@ esp_err_t camera_io_capture_jpeg(uint8_t **out_jpeg, size_t *out_len,
     xSemaphoreGive(s_cam_mutex);
     return ret;
 }
+
+camera_fb_t *camera_io_get_fb(uint32_t timeout_ticks) {
+    if (!s_ready || s_cam_mutex == NULL) {
+        return NULL;
+    }
+    if (xSemaphoreTake(s_cam_mutex, (TickType_t)timeout_ticks) != pdTRUE) {
+        return NULL;
+    }
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        xSemaphoreGive(s_cam_mutex);
+        return NULL;
+    }
+    return fb;
+}
+
+void camera_io_return_fb(camera_fb_t *fb) {
+    if (fb) {
+        esp_camera_fb_return(fb);
+    }
+    if (s_cam_mutex) {
+        xSemaphoreGive(s_cam_mutex);
+    }
+}

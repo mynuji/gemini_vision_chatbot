@@ -3,7 +3,6 @@ idf_component_register(SRCS "camera_io.cpp" "chat_state.cpp"
                             "wifi_ws.cpp"
                             "touch_input.cpp"
                             "audio_io.cpp"
-                            "camera_io.cpp"
                             "display_ui.cpp"
                             "main.cpp"
                             "eye_idle_100.c"
@@ -13,4 +12,4 @@ idf_component_register(SRCS "camera_io.cpp" "chat_state.cpp"
                             "eye_speaking_100.c"
                             "eye_sleepy_100.c"
                     INCLUDE_DIRS "."
-                    REQUIRES esp_timer driver esp_wifi nvs_flash esp_websocket_client esp_lcd esp32-camera esp_lcd_gc9a01 esp_lvgl_port lvgl json esp-sr)
+                    REQUIRES esp_timer driver esp_wifi nvs_flash esp_websocket_client esp_lcd esp32-camera esp_lcd_gc9a01 esp_lvgl_port lvgl json esp-sr esp_jpeg)

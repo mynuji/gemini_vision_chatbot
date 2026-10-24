@@ -70,6 +70,16 @@ void chat_state_activity_occurred(void);
  */
 void chat_state_tick(uint32_t now_ms);
 
+/**
+ * @brief 카메라 실시간 프리뷰 시작 (촬영 상황 발생 시 호출)
+ */
+void chat_state_start_camera_preview(void);
+
+/**
+ * @brief 카메라 실시간 프리뷰 중단 (답변 완료 또는 인터럽트 시 호출)
+ */
+void chat_state_stop_camera_preview(void);
+
 #ifdef __cplusplus
 }
 #endif

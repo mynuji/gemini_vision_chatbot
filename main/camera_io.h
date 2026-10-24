@@ -36,8 +36,25 @@ bool camera_io_is_ready(void);
  * @param[out] out_width  이미지 가로 해상도 (NULL 허용)
  * @param[out] out_height 이미지 세로 해상도 (NULL 허용)
  */
+#include "esp_camera.h"
+
 esp_err_t camera_io_capture_jpeg(uint8_t **out_jpeg, size_t *out_len,
                                  uint16_t *out_width, uint16_t *out_height);
+
+/**
+ * @brief 카메라 프레임 버퍼 직접 획득 (락 획득 포함)
+ *
+ * 사용 후 반드시 camera_io_return_fb()를 호출해야 합니다.
+ *
+ * @param timeout_ticks 뮤텍스 대기 시간 (FreeRTOS ticks)
+ * @return camera_fb_t* 성공 시 프레임 버퍼 포인터, 실패 시 NULL
+ */
+camera_fb_t *camera_io_get_fb(uint32_t timeout_ticks);
+
+/**
+ * @brief 카메라 프레임 버퍼 반환 (뮤텍스 해제 포함)
+ */
+void camera_io_return_fb(camera_fb_t *fb);
 
 #ifdef __cplusplus
 }
