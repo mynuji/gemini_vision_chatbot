@@ -198,6 +198,14 @@ void chat_state_stop_camera_preview(void) {
         ESP_LOGI(TAG, "Requesting camera preview to stop");
         s_camera_preview_active = false;
     }
+    // 프리뷰 태스크가 실행 중이라면 최대 250ms 동안 루프 탈출 대기 (자기 자신인 경우 제외)
+    if (s_preview_task_handle != NULL && xTaskGetCurrentTaskHandle() != s_preview_task_handle) {
+        int wait_cnt = 0;
+        while (s_preview_task_handle != NULL && wait_cnt < 25) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            wait_cnt++;
+        }
+    }
     // 프리뷰 활성 여부와 상관없이 LCD를 눈 모양으로 즉시 복원
     display_ui_stop_camera_preview();
 }

@@ -202,12 +202,17 @@ void display_ui_show_message(const char *msg) {
 
 void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
                             const char *status_text) {
-  if (s_camera_preview_mode) return;
+  // 표정 전환 요청이 오면 프리뷰 모드를 해제하여 캐릭터 표정이 항상 나타나도록 보장
+  s_camera_preview_mode = false;
   s_is_animating = false; // 진행 중이던 눈 깜빡임 즉각 취소 및 강제 표정 전환
 
-  if (lvgl_port_lock(150)) {
+  if (lvgl_port_lock(1000)) {
     if (s_center_label)
       lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
+
+    // 카메라 프리뷰 이미지가 화면 최상위를 가리지 않도록 강제 숨김 처리
+    if (s_cam_img)
+      lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
 
     if (s_left_eye) {
       lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
@@ -226,6 +231,10 @@ void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
       lv_label_set_text(s_status_label, status_text);
       lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -26);
     }
+
+    if (lv_scr_act()) {
+      lv_obj_invalidate(lv_scr_act());
+    }
     lvgl_port_unlock();
   }
 }
@@ -233,7 +242,7 @@ void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
 void display_ui_set_status(const char *status_text) {
   if (status_text == NULL || s_camera_preview_mode)
     return;
-  if (lvgl_port_lock(150)) {
+  if (lvgl_port_lock(500)) {
     if (s_status_label) {
       lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
       lv_label_set_text(s_status_label, status_text);
@@ -355,7 +364,6 @@ void display_ui_start_camera_preview(void) {
 }
 
 void display_ui_stop_camera_preview(void) {
-  if (!s_camera_preview_mode) return;
   ESP_LOGI(TAG, "Exiting camera live preview mode (restoring LVGL UI)");
   s_camera_preview_mode = false;
 
@@ -364,7 +372,7 @@ void display_ui_stop_camera_preview(void) {
     esp_lcd_panel_mirror(s_panel_handle, true, false);
   }
 
-  if (lvgl_port_lock(150)) {
+  if (lvgl_port_lock(1000)) {
     if (s_cam_img) lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
     if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
@@ -381,7 +389,8 @@ uint16_t *display_ui_get_preview_buffer(void) {
 }
 
 void display_ui_refresh_camera_preview(void) {
-  if (lvgl_port_lock(100)) {
+  if (!s_camera_preview_mode) return;
+  if (lvgl_port_lock(50)) {
     if (s_cam_img && !lv_obj_has_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN)) {
       lv_obj_invalidate(s_cam_img);
     }
