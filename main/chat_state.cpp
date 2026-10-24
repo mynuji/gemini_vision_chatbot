@@ -37,8 +37,17 @@ static void camera_preview_task(void *pvParameters) {
     display_ui_start_camera_preview();
 
     uint16_t *crop_buf = display_ui_get_preview_buffer();
-    if (crop_buf == NULL) {
-        ESP_LOGE(TAG, "Failed to get crop_buf for preview!");
+    size_t dec_sz = 320 * 240 * sizeof(uint16_t);
+    size_t work_sz = 65536;
+
+    uint16_t *dec_buf = (uint16_t *)heap_caps_malloc(dec_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    void *work_buf = heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if (dec_buf == NULL || work_buf == NULL || crop_buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for camera preview: dec=%p, work=%p, crop=%p",
+                 dec_buf, work_buf, crop_buf);
+        if (dec_buf) free(dec_buf);
+        if (work_buf) free(work_buf);
         display_ui_stop_camera_preview();
         s_camera_preview_active = false;
         s_preview_task_handle = NULL;
@@ -46,78 +55,100 @@ static void camera_preview_task(void *pvParameters) {
         return;
     }
 
-    // 1. 첫 프레임 촬영 -> 90도 회전 적용 후 즉시 LCD 표시 및 서버로 단 1번 JPEG 압축 전송
+    // 1. 첫 프레임 촬영 -> 서버로 원본 고화질 JPEG 전송 (서버에서 시계방향 90도 자동 회전)
     camera_fb_t *first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
-    if (first_fb != NULL) {
-        if (first_fb->format == PIXFORMAT_RGB565 && first_fb->width == 240 && first_fb->height == 240) {
-            const uint16_t *src = (const uint16_t *)first_fb->buf;
+    if (first_fb != NULL && first_fb->format == PIXFORMAT_JPEG && first_fb->len > 0) {
+        ESP_LOGI(TAG, "First frame captured (%u bytes). Sending to Jetson server...", (unsigned int)first_fb->len);
+        char meta[96];
+        snprintf(meta, sizeof(meta), "{\"type\":\"image_start\",\"size\":%u}", (unsigned int)first_fb->len);
+        wifi_ws_send_text(meta);
+        wifi_ws_send_bin(first_fb->buf, first_fb->len);
 
-            // 바이트 스왑 없이 원본 RGB565 그대로 시계방향 90도 회전 (색상 왜곡 완전 해소!)
+        // 첫 프레임 디코딩 및 LCD 표시 (swap_color_bytes=1로 정상 색상 보장)
+        esp_jpeg_image_cfg_t jpeg_cfg = {};
+        jpeg_cfg.indata = first_fb->buf;
+        jpeg_cfg.indata_size = (uint32_t)first_fb->len;
+        jpeg_cfg.outbuf = (uint8_t *)dec_buf;
+        jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
+        jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
+        jpeg_cfg.out_scale = (first_fb->width > 320) ? JPEG_IMAGE_SCALE_1_2 : JPEG_IMAGE_SCALE_0;
+        jpeg_cfg.flags.swap_color_bytes = 1; // 완벽한 정상 색상 복원!
+        jpeg_cfg.advanced.working_buffer = work_buf;
+        jpeg_cfg.advanced.working_buffer_size = work_sz;
+
+        esp_jpeg_image_output_t out_info = {};
+        if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+            // [시계방향 90도 정방향 회전]
             for (int y = 0; y < 240; y++) {
-                int src_x = 239 - y;
+                int src_x = 279 - y;
                 uint16_t *dst_row = crop_buf + (y * 240);
                 for (int x = 0; x < 240; x++) {
                     int src_y = x;
-                    dst_row[x] = src[src_y * 240 + src_x];
+                    dst_row[x] = dec_buf[src_y * 320 + src_x];
                 }
             }
             display_ui_draw_preview_frame(crop_buf);
-
-            // 젯슨 서버로 시계방향 90도 회전된 정상 각도의 JPEG 전송 (crop_buf 직결 인코딩)
-            uint8_t *jpg_buf = NULL;
-            size_t jpg_len = 0;
-            if (fmt2jpg((uint8_t *)crop_buf, 240 * 240 * 2, 240, 240, PIXFORMAT_RGB565, 80, &jpg_buf, &jpg_len)) {
-                ESP_LOGI(TAG, "First frame rotated 90 deg CW & encoded to JPEG (%u bytes). Sending to server...", (unsigned int)jpg_len);
-                char meta[96];
-                snprintf(meta, sizeof(meta), "{\"type\":\"image_start\",\"size\":%u}", (unsigned int)jpg_len);
-                wifi_ws_send_text(meta);
-                wifi_ws_send_bin(jpg_buf, jpg_len);
-                free(jpg_buf);
-            } else {
-                ESP_LOGE(TAG, "Failed to encode first frame to JPEG");
-                wifi_ws_send_text("{\"type\":\"image_failed\"}");
-            }
         }
         camera_io_return_fb(first_fb);
     } else {
         ESP_LOGW(TAG, "Failed to capture first frame for server");
+        if (first_fb) camera_io_return_fb(first_fb);
         wifi_ws_send_text("{\"type\":\"image_failed\"}");
     }
 
-    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (디코딩 0초, 30+ FPS 버벅임 없는 스트리밍)
+    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (QVGA 11ms 디코딩 + fb_count=1 지연 0초)
     uint32_t frame_count = 0;
     while (s_camera_preview_active) {
         camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(100));
         if (fb != NULL) {
-            if (s_camera_preview_active && fb->format == PIXFORMAT_RGB565 && fb->width == 240 && fb->height == 240) {
-                const uint16_t *src = (const uint16_t *)fb->buf;
-                // [16x16 블록 타일링 시계방향 90도 회전] 바이트 스왑 없이 원본 데이터 직결로 0.8ms 완료!
-                for (int by = 0; by < 240; by += 16) {
-                    for (int bx = 0; bx < 240; bx += 16) {
-                        for (int y = by; y < by + 16; y++) {
-                            int src_x = 239 - y;
-                            uint16_t *dst_row = crop_buf + (y * 240);
-                            for (int x = bx; x < bx + 16; x++) {
-                                int src_y = x;
-                                dst_row[x] = src[src_y * 240 + src_x];
+            if (s_camera_preview_active && fb->format == PIXFORMAT_JPEG && fb->len > 0) {
+                esp_jpeg_image_cfg_t jpeg_cfg = {};
+                jpeg_cfg.indata = fb->buf;
+                jpeg_cfg.indata_size = (uint32_t)fb->len;
+                jpeg_cfg.outbuf = (uint8_t *)dec_buf;
+                jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
+                jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
+                jpeg_cfg.out_scale = (fb->width > 320) ? JPEG_IMAGE_SCALE_1_2 : JPEG_IMAGE_SCALE_0;
+                jpeg_cfg.flags.swap_color_bytes = 1; // 완벽한 정상 색상 복원!
+                jpeg_cfg.advanced.working_buffer = work_buf;
+                jpeg_cfg.advanced.working_buffer_size = work_sz;
+
+                esp_jpeg_image_output_t out_info = {};
+                if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+                    if (!s_camera_preview_active) {
+                        camera_io_return_fb(fb);
+                        break;
+                    }
+                    // [16x16 블록 타일링 시계방향 90도 회전] 캐시 최적화
+                    for (int by = 0; by < 240; by += 16) {
+                        for (int bx = 0; bx < 240; bx += 16) {
+                            for (int y = by; y < by + 16; y++) {
+                                int src_x = 279 - y;
+                                uint16_t *dst_row = crop_buf + (y * 240);
+                                for (int x = bx; x < bx + 16; x++) {
+                                    int src_y = x;
+                                    dst_row[x] = dec_buf[src_y * 320 + src_x];
+                                }
                             }
                         }
                     }
-                }
-                if (s_camera_preview_active) {
-                    display_ui_draw_preview_frame(crop_buf);
-                    frame_count++;
-                    if (frame_count % 30 == 0) {
-                        ESP_LOGI(TAG, "Camera live preview: %u frames rendered (smooth stream)", (unsigned int)frame_count);
+                    if (s_camera_preview_active) {
+                        display_ui_draw_preview_frame(crop_buf);
+                        frame_count++;
+                        if (frame_count % 30 == 0) {
+                            ESP_LOGI(TAG, "Camera live preview: %u frames rendered", (unsigned int)frame_count);
+                        }
                     }
                 }
             }
             camera_io_return_fb(fb);
         }
-        vTaskDelay(1); // 1 tick 최소 지연으로 다음 센서 프레임 즉각 수신
+        vTaskDelay(1);
     }
 
     ESP_LOGI(TAG, "Exiting camera preview loop (total %u frames rendered), restoring LVGL UI", (unsigned int)frame_count);
+    free(dec_buf);
+    free(work_buf);
     display_ui_stop_camera_preview();
 
     switch (s_chat_state) {
