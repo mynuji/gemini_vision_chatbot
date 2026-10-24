@@ -111,6 +111,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "==================================================");
     ESP_LOGI(TAG, "   AI Chatbot - Step 3 (Voice Streaming & Barge-in) ");
+    ESP_LOGI(TAG, "   Build Time: %s %s", __DATE__, __TIME__);
     ESP_LOGI(TAG, "   Target Env: %s (%s)", CONFIG_ENV_NAME, CONFIG_WS_SERVER_URI);
     ESP_LOGI(TAG, "==================================================");
 
