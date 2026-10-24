@@ -69,24 +69,24 @@ esp_err_t display_ui_init(void) {
   gpio_set_direction((gpio_num_t)LCD_BL, GPIO_MODE_OUTPUT);
   gpio_set_level((gpio_num_t)LCD_BL, 1);
 
-  // 2. SPI 버스 초기화
+  // 2. SPI 버스 초기화 (240x240 전체 프레임 단일 DMA 전송 지원)
   spi_bus_config_t buscfg = {};
   buscfg.mosi_io_num = LCD_MOSI;
   buscfg.sclk_io_num = LCD_CLK;
-  buscfg.max_transfer_sz = 240 * 40 * 2;
+  buscfg.max_transfer_sz = 240 * 240 * sizeof(uint16_t);
   esp_err_t ret = spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "SPI bus initialize failed: %s", esp_err_to_name(ret));
     return ret;
   }
 
-  // 3. LCD 패널 IO 생성 (20MHz 표준 SPI 클럭)
+  // 3. LCD 패널 IO 생성 (40MHz 초고속 SPI 클럭: 240x240 전송 23ms 완료)
   esp_lcd_panel_io_handle_t io_handle;
   esp_lcd_panel_io_spi_config_t io_config = {};
   io_config.cs_gpio_num = LCD_CS;
   io_config.dc_gpio_num = LCD_DC;
   io_config.spi_mode = 0;
-  io_config.pclk_hz = 20 * 1000 * 1000;
+  io_config.pclk_hz = 40 * 1000 * 1000;
   io_config.trans_queue_depth = 10;
   io_config.lcd_cmd_bits = 8;
   io_config.lcd_param_bits = 8;
@@ -152,8 +152,8 @@ esp_err_t display_ui_init(void) {
   lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -5);
   lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
 
-  // 카메라 실시간 프리뷰용 이미지 오브젝트 및 PSRAM 버퍼 준비
-  s_crop_buf = (uint16_t *)heap_caps_malloc(240 * 240 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  // 카메라 실시간 프리뷰용 64바이트 정렬 PSRAM 버퍼 준비 (SPI DMA 직결 최적화)
+  s_crop_buf = (uint16_t *)heap_caps_aligned_alloc(64, 240 * 240 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (s_crop_buf) {
     memset(s_crop_buf, 0, 240 * 240 * sizeof(uint16_t));
     s_cam_img_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
@@ -329,32 +329,27 @@ esp_lcd_panel_handle_t display_ui_get_panel_handle(void) {
 }
 
 void display_ui_start_camera_preview(void) {
-  ESP_LOGI(TAG, "Entering camera live preview mode (LVGL widget switch)");
+  ESP_LOGI(TAG, "Entering camera live preview mode (direct hardware SPI pipeline)");
   display_ui_pause_auto_blink(true);
-
-  lvgl_port_lock(-1);
-  if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
-  if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
-  if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
-  if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
-  if (s_cam_img) {
-    lv_obj_clear_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_invalidate(s_cam_img);
-  }
-  lvgl_port_unlock();
 
   // 전방 카메라 정방향(사물/글자) 출력을 위해 좌우 미러링 일시 해제
   if (s_panel_handle) {
     esp_lcd_panel_mirror(s_panel_handle, false, false);
   }
+
+  // LVGL 타이머 일시 정지 (카메라 프리뷰 동안 불필요한 LVGL 연산 및 SPI 버스 경합 완전 차단)
+  lvgl_port_stop();
 }
 
 void display_ui_stop_camera_preview(void) {
-  ESP_LOGI(TAG, "Exiting camera live preview mode (LVGL widget restore)");
+  ESP_LOGI(TAG, "Exiting camera live preview mode (restoring LVGL UI)");
   if (s_panel_handle) {
     // 캐릭터 눈 UI를 위한 좌우 미러링 복원
     esp_lcd_panel_mirror(s_panel_handle, true, false);
   }
+
+  // LVGL 타이머 재개
+  lvgl_port_resume();
 
   if (lvgl_port_lock(150)) {
     if (s_cam_img) lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
@@ -373,14 +368,13 @@ uint16_t *display_ui_get_preview_buffer(void) {
 }
 
 void display_ui_refresh_camera_preview(void) {
-  lvgl_port_lock(-1);
-  if (s_cam_img) {
-    lv_obj_invalidate(s_cam_img);
-  }
-  lvgl_port_unlock();
+  // 하드웨어 직결 파이프라인으로 전환되어 LVGL 무효화 불필요
 }
 
 void display_ui_draw_preview_frame(const uint16_t *rgb565_buf) {
-  // s_crop_buf는 이미 s_cam_img_dsc에 바인딩되어 있으므로 화면 무효화 트리거
-  display_ui_refresh_camera_preview();
+  // [아두이노 방식 직접 전송] LVGL의 6분할 슬라이싱 및 태스크 스케줄링 대기를 완전히 건너뛰고,
+  // 40MHz SPI DMA를 통해 LCD 패널로 240x240 전체 프레임을 23ms 만에 직접 전송 (지연 0초!)
+  if (s_panel_handle && rgb565_buf) {
+    esp_lcd_panel_draw_bitmap(s_panel_handle, 0, 0, 240, 240, rgb565_buf);
+  }
 }
