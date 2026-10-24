@@ -7,6 +7,7 @@
 #include "wifi_ws.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_lvgl_port.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
@@ -145,7 +146,13 @@ static void show_view(subview_t view) {
 // ----------------------------------------------------------------------------
 // [1] 메인 메뉴 (스크롤 목록)
 // ----------------------------------------------------------------------------
+static uint32_t s_last_menu_click_time = 0;
+
 static void on_menu_btn_click(lv_event_t *e) {
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (now - s_last_menu_click_time < 350) return; // 350ms 디바운스
+    s_last_menu_click_time = now;
+
     int id = (int)(intptr_t)lv_event_get_user_data(e);
     audio_io_play_tone(1000.0f, 30);
 
@@ -198,7 +205,11 @@ static void create_main_menu(lv_obj_t *parent) {
     lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
     lv_obj_set_style_radius(list, 10, 0);
     lv_obj_set_style_pad_all(list, 2, 0);
-    lv_obj_set_scroll_dir(list, LV_DIR_VER); // 오직 수직 스크롤만 허용 (좌우 흔들림에 의한 스크롤 오인식 차단)
+    lv_obj_set_style_pad_top(list, 10, 0);
+    lv_obj_set_style_pad_bottom(list, 10, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER); // 오직 수직 스크롤만 허용
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM); // 관성 스크롤 제거 (손 떼면 즉시 정지)
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);  // 바운스 제거
 
     const char *items[] = {
         "1. Volume Control",
@@ -216,9 +227,11 @@ static void create_main_menu(lv_obj_t *parent) {
         lv_obj_set_size(btn, lv_pct(100), 38);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
         lv_obj_set_style_text_color(btn, lv_color_white(), 0);
-        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE); // 버튼 자체의 스크롤 방지
-        lv_obj_add_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-        // LV_EVENT_CLICKED 단일 등록으로 확실한 클릭 처리
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);       // 버튼 자체 스크롤 차단
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);  // 클릭 시 자동 스크롤 오작동 원천 차단!
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_GESTURE_BUBBLE);
+        // SHORT_CLICKED 및 CLICKED 둘 다 지원 (디바운스가 있어서 한 번만 확실하게 실행됨)
+        lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)(i + 1));
         lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
     }
 }
@@ -537,6 +550,8 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_set_style_radius(list, 10, 0);
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     if (s_scanned_count == 0) {
         lv_obj_t *empty_btn = lv_list_add_btn(list, NULL, "(No APs Found)");
@@ -551,6 +566,8 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
             lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
             lv_obj_set_style_text_color(btn, lv_color_white(), 0);
             lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+            lv_obj_add_event_cb(btn, on_ap_select_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);
             lv_obj_add_event_cb(btn, on_ap_select_click, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         }
     }
@@ -561,6 +578,8 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(manual_btn, lv_color_hex(0x005588), 0);
     lv_obj_set_style_text_color(manual_btn, lv_color_hex(0x00D1FF), 0);
     lv_obj_clear_flag(manual_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(manual_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    lv_obj_add_event_cb(manual_btn, on_ap_select_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)-1);
     lv_obj_add_event_cb(manual_btn, on_ap_select_click, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
 
     // 하단 제어 버튼: [RESCAN] 및 [BACK]
