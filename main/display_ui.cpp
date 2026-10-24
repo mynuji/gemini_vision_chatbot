@@ -4,6 +4,7 @@
 #include "ui_settings.h"
 
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_lcd_gc9a01.h"
 #include "esp_lcd_panel_io.h"
@@ -65,12 +66,35 @@ static const void *get_image_for_emotion(ui_emotion_t emotion) {
   }
 }
 
+void display_ui_set_brightness(uint8_t percent) {
+  if (percent > 100) percent = 100;
+  if (percent < 5) percent = 5; // 최소 시인성 유지
+  uint32_t duty = ((uint32_t)percent * 255) / 100;
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
 esp_err_t display_ui_init(void) {
   ESP_LOGI(TAG, "Initializing GC9A01 LCD & LVGL...");
 
-  // 1. 백라이트 켜기
-  gpio_set_direction((gpio_num_t)LCD_BL, GPIO_MODE_OUTPUT);
-  gpio_set_level((gpio_num_t)LCD_BL, 1);
+  // 1. 백라이트 PWM(LEDC) 초기화 (5kHz, 8비트 해상도)
+  ledc_timer_config_t timer_conf = {};
+  timer_conf.speed_mode = LEDC_LOW_SPEED_MODE;
+  timer_conf.duty_resolution = LEDC_TIMER_8_BIT;
+  timer_conf.timer_num = LEDC_TIMER_0;
+  timer_conf.freq_hz = 5000;
+  timer_conf.clk_cfg = LEDC_AUTO_CLK;
+  ledc_timer_config(&timer_conf);
+
+  ledc_channel_config_t ch_conf = {};
+  ch_conf.gpio_num = LCD_BL;
+  ch_conf.speed_mode = LEDC_LOW_SPEED_MODE;
+  ch_conf.channel = LEDC_CHANNEL_0;
+  ch_conf.intr_type = LEDC_INTR_DISABLE;
+  ch_conf.timer_sel = LEDC_TIMER_0;
+  ch_conf.duty = 255; // 기본 100% 밝기
+  ch_conf.hpoint = 0;
+  ledc_channel_config(&ch_conf);
 
   // 2. SPI 버스 초기화 (240x240 전체 프레임 단일 DMA 전송 지원)
   spi_bus_config_t buscfg = {};

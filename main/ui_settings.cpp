@@ -31,6 +31,7 @@ typedef enum {
 } subview_t;
 
 static subview_t s_current_view = SUBVIEW_MAIN;
+static subview_t s_return_view = SUBVIEW_MAIN;
 
 // 임시 편집 버퍼
 static app_settings_t s_edit_cfg;
@@ -179,11 +180,12 @@ static void create_main_menu(lv_obj_t *parent) {
 
     // 스크롤 가능한 리스트 생성 (원형 화면 안쪽에 여유 있게 배치)
     lv_obj_t *list = lv_list_create(parent);
-    lv_obj_set_size(list, 200, 160);
-    lv_obj_align(list, LV_ALIGN_CENTER, 0, 15);
+    lv_obj_set_size(list, 206, 170);
+    lv_obj_align(list, LV_ALIGN_CENTER, 0, 16);
     lv_obj_set_style_bg_color(list, lv_color_hex(0x222222), 0);
     lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
     lv_obj_set_style_radius(list, 10, 0);
+    lv_obj_set_style_pad_all(list, 2, 0);
 
     const char *items[] = {
         "1. Volume Control",
@@ -197,9 +199,11 @@ static void create_main_menu(lv_obj_t *parent) {
 
     for (int i = 0; i < 7; i++) {
         lv_obj_t *btn = lv_list_add_btn(list, NULL, items[i]);
+        lv_obj_set_size(btn, lv_pct(100), 38);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
         lv_obj_set_style_text_color(btn, lv_color_white(), 0);
         lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
+        lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)(i + 1));
     }
 }
 
@@ -258,9 +262,14 @@ static void create_volume_view(lv_obj_t *parent) {
 }
 
 // ----------------------------------------------------------------------------
-// [3] Wi-Fi 및 가로 스크롤 텍스트 입력기
+// ----------------------------------------------------------------------------
+// [3] 초경량 가로 스크롤 텍스트 입력기 (메모리 절약 & 크래시 방지)
 // ----------------------------------------------------------------------------
 static const char *s_char_palette = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-!@#$%&*";
+static int s_scroll_offset = 0;
+#define KEY_SLOT_COUNT 6
+static lv_obj_t *s_char_btns[KEY_SLOT_COUNT] = {NULL};
+static lv_obj_t *s_char_lbls[KEY_SLOT_COUNT] = {NULL};
 
 static void update_text_display(void) {
     if (s_text_display_label) {
@@ -268,14 +277,62 @@ static void update_text_display(void) {
     }
 }
 
+static void update_char_buttons(void) {
+    size_t pal_len = strlen(s_char_palette);
+    for (int i = 0; i < KEY_SLOT_COUNT; i++) {
+        int idx = s_scroll_offset + i;
+        if (idx < pal_len && s_char_btns[i] && s_char_lbls[i]) {
+            char cstr[2] = { s_char_palette[idx], '\0' };
+            lv_label_set_text(s_char_lbls[i], cstr);
+            lv_obj_clear_flag(s_char_btns[i], LV_OBJ_FLAG_HIDDEN);
+        } else if (s_char_btns[i]) {
+            lv_obj_add_flag(s_char_btns[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+static void on_scroll_left_click(lv_event_t *e) {
+    if (s_scroll_offset >= KEY_SLOT_COUNT) {
+        s_scroll_offset -= KEY_SLOT_COUNT;
+    } else {
+        s_scroll_offset = 0;
+    }
+    update_char_buttons();
+    audio_io_play_tone(1100.0f, 20);
+}
+
+static void on_scroll_right_click(lv_event_t *e) {
+    size_t pal_len = strlen(s_char_palette);
+    if (s_scroll_offset + KEY_SLOT_COUNT < pal_len) {
+        s_scroll_offset += KEY_SLOT_COUNT;
+    }
+    update_char_buttons();
+    audio_io_play_tone(1100.0f, 20);
+}
+
+static void on_mode_tab_click(lv_event_t *e) {
+    int mode = (int)(intptr_t)lv_event_get_user_data(e);
+    if (mode == 0) s_scroll_offset = 0;       // A-Z
+    else if (mode == 1) s_scroll_offset = 26; // a-z
+    else if (mode == 2) s_scroll_offset = 52; // 0-9
+    else if (mode == 3) s_scroll_offset = 62; // 특수문자
+    update_char_buttons();
+    audio_io_play_tone(1300.0f, 20);
+}
+
 static void on_char_btn_click(lv_event_t *e) {
-    char ch = (char)(intptr_t)lv_event_get_user_data(e);
-    size_t len = strlen(s_input_target_buf);
-    if (len < s_input_max_len - 1) {
-        s_input_target_buf[len] = ch;
-        s_input_target_buf[len + 1] = '\0';
-        update_text_display();
-        audio_io_play_tone(1200.0f, 20);
+    int slot = (int)(intptr_t)lv_event_get_user_data(e);
+    int idx = s_scroll_offset + slot;
+    size_t pal_len = strlen(s_char_palette);
+    if (idx < pal_len) {
+        char ch = s_char_palette[idx];
+        size_t len = strlen(s_input_target_buf);
+        if (len < s_input_max_len - 1) {
+            s_input_target_buf[len] = ch;
+            s_input_target_buf[len + 1] = '\0';
+            update_text_display();
+            audio_io_play_tone(1200.0f, 20);
+        }
     }
 }
 
@@ -303,26 +360,28 @@ static void on_text_input_done(lv_event_t *e) {
         strncpy(s_input_target_ptr, s_input_target_buf, s_input_max_len);
     }
     audio_io_play_tone(1500.0f, 60);
-    show_view(SUBVIEW_WIFI);
+    show_view(s_return_view); // 직전 진입 화면으로 복귀!
 }
 
-static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *target_ptr, size_t max_len) {
+static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *target_ptr, size_t max_len, subview_t return_view) {
+    s_return_view = return_view;
     s_input_target_ptr = target_ptr;
     s_input_max_len = max_len;
     strncpy(s_input_target_buf, target_ptr ? target_ptr : "", sizeof(s_input_target_buf) - 1);
+    s_scroll_offset = 0;
 
     lv_obj_clean(parent);
 
-    // 상단 타이틀
+    // 1. 상단 타이틀
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, title_str);
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
-    // 입력된 텍스트 표시 상자
+    // 2. 입력된 텍스트 표시 상자
     lv_obj_t *box = lv_obj_create(parent);
-    lv_obj_set_size(box, 190, 32);
-    lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_size(box, 196, 30);
+    lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 26);
     lv_obj_set_style_bg_color(box, lv_color_hex(0x111111), 0);
     lv_obj_set_style_border_color(box, lv_color_hex(0x00D1FF), 0);
     lv_obj_set_style_pad_all(box, 2, 0);
@@ -332,44 +391,67 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
     lv_obj_set_style_text_color(s_text_display_label, lv_color_white(), 0);
     lv_obj_align(s_text_display_label, LV_ALIGN_LEFT_MID, 4, 0);
 
-    // [핵심] 가로 스크롤 텍스트 바 (수평 스크롤 컨테이너)
-    lv_obj_t *scroll_row = lv_obj_create(parent);
-    lv_obj_set_size(scroll_row, 210, 48);
-    lv_obj_align(scroll_row, LV_ALIGN_CENTER, 0, 10);
-    lv_obj_set_style_bg_color(scroll_row, lv_color_hex(0x222222), 0);
-    lv_obj_set_style_border_width(scroll_row, 0, 0);
-    lv_obj_set_flex_flow(scroll_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(scroll_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_scroll_dir(scroll_row, LV_DIR_HOR);
-    lv_obj_set_style_pad_all(scroll_row, 4, 0);
-    lv_obj_set_style_pad_column(scroll_row, 4, 0);
-
-    // 문자 버튼들 생성 (좌우로 스와이프하여 스크롤)
-    size_t pal_len = strlen(s_char_palette);
-    for (size_t i = 0; i < pal_len; i++) {
-        lv_obj_t *cbtn = lv_btn_create(scroll_row);
-        lv_obj_set_size(cbtn, 32, 34);
-        lv_obj_set_style_bg_color(cbtn, lv_color_hex(0x333333), 0);
-        lv_obj_t *clbl = lv_label_create(cbtn);
-        char cstr[2] = { s_char_palette[i], '\0' };
-        lv_label_set_text(clbl, cstr);
-        lv_obj_center(clbl);
-        lv_obj_add_event_cb(cbtn, on_char_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)s_char_palette[i]);
+    // 3. 문자 그룹 빠른 점프 탭 [ABC] [abc] [123] [#@!]
+    const char *tab_names[] = {"ABC", "abc", "123", "#@!"};
+    for (int t = 0; t < 4; t++) {
+        lv_obj_t *tb = lv_btn_create(parent);
+        lv_obj_set_size(tb, 44, 24);
+        lv_obj_align(tb, LV_ALIGN_TOP_LEFT, 24 + t * 48, 60);
+        lv_obj_set_style_bg_color(tb, lv_color_hex(0x282828), 0);
+        lv_obj_set_style_pad_all(tb, 0, 0);
+        lv_obj_t *tl = lv_label_create(tb);
+        lv_label_set_text(tl, tab_names[t]);
+        lv_obj_center(tl);
+        lv_obj_add_event_cb(tb, on_mode_tab_click, LV_EVENT_CLICKED, (void *)(intptr_t)t);
     }
 
-    // 하단 제어 바: [BS] [Space] [OK]
+    // 4. 가로 스크롤 문자 바 [ < ] [글자 6개] [ > ]
+    lv_obj_t *left_btn = lv_btn_create(parent);
+    lv_obj_set_size(left_btn, 28, 34);
+    lv_obj_align(left_btn, LV_ALIGN_LEFT_MID, 12, 5);
+    lv_obj_set_style_bg_color(left_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_pad_all(left_btn, 0, 0);
+    lv_obj_t *llbl = lv_label_create(left_btn);
+    lv_label_set_text(llbl, "<");
+    lv_obj_center(llbl);
+    lv_obj_add_event_cb(left_btn, on_scroll_left_click, LV_EVENT_CLICKED, NULL);
+
+    for (int i = 0; i < KEY_SLOT_COUNT; i++) {
+        s_char_btns[i] = lv_btn_create(parent);
+        lv_obj_set_size(s_char_btns[i], 24, 34);
+        lv_obj_align(s_char_btns[i], LV_ALIGN_LEFT_MID, 44 + i * 26, 5);
+        lv_obj_set_style_bg_color(s_char_btns[i], lv_color_hex(0x383838), 0);
+        lv_obj_set_style_pad_all(s_char_btns[i], 0, 0);
+        s_char_lbls[i] = lv_label_create(s_char_btns[i]);
+        lv_obj_center(s_char_lbls[i]);
+        lv_obj_add_event_cb(s_char_btns[i], on_char_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+
+    lv_obj_t *right_btn = lv_btn_create(parent);
+    lv_obj_set_size(right_btn, 28, 34);
+    lv_obj_align(right_btn, LV_ALIGN_RIGHT_MID, -12, 5);
+    lv_obj_set_style_bg_color(right_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_pad_all(right_btn, 0, 0);
+    lv_obj_t *rlbl = lv_label_create(right_btn);
+    lv_label_set_text(rlbl, ">");
+    lv_obj_center(rlbl);
+    lv_obj_add_event_cb(right_btn, on_scroll_right_click, LV_EVENT_CLICKED, NULL);
+
+    update_char_buttons();
+
+    // 5. 하단 제어 바: [BS] [Space] [OK]
     lv_obj_t *bs_btn = lv_btn_create(parent);
-    lv_obj_set_size(bs_btn, 44, 30);
-    lv_obj_align(bs_btn, LV_ALIGN_BOTTOM_LEFT, 20, -18);
-    lv_obj_set_style_bg_color(bs_btn, lv_color_hex(0x882222), 0);
+    lv_obj_set_size(bs_btn, 48, 30);
+    lv_obj_align(bs_btn, LV_ALIGN_BOTTOM_LEFT, 24, -20);
+    lv_obj_set_style_bg_color(bs_btn, lv_color_hex(0x992222), 0);
     lv_obj_t *bs_lbl = lv_label_create(bs_btn);
     lv_label_set_text(bs_lbl, "BS");
     lv_obj_center(bs_lbl);
     lv_obj_add_event_cb(bs_btn, on_bs_btn_click, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *sp_btn = lv_btn_create(parent);
-    lv_obj_set_size(sp_btn, 44, 30);
-    lv_obj_align(sp_btn, LV_ALIGN_BOTTOM_MID, 0, -18);
+    lv_obj_set_size(sp_btn, 48, 30);
+    lv_obj_align(sp_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
     lv_obj_set_style_bg_color(sp_btn, lv_color_hex(0x444444), 0);
     lv_obj_t *sp_lbl = lv_label_create(sp_btn);
     lv_label_set_text(sp_lbl, "SPC");
@@ -377,8 +459,8 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
     lv_obj_add_event_cb(sp_btn, on_space_btn_click, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *ok_btn = lv_btn_create(parent);
-    lv_obj_set_size(ok_btn, 44, 30);
-    lv_obj_align(ok_btn, LV_ALIGN_BOTTOM_RIGHT, -20, -18);
+    lv_obj_set_size(ok_btn, 48, 30);
+    lv_obj_align(ok_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -20);
     lv_obj_set_style_bg_color(ok_btn, lv_color_hex(0x008844), 0);
     lv_obj_t *ok_lbl = lv_label_create(ok_btn);
     lv_label_set_text(ok_lbl, "OK");
@@ -387,11 +469,11 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
 }
 
 static void on_edit_ssid_click(lv_event_t *e) {
-    open_scroll_keyboard(s_settings_container, "EDIT SSID", s_edit_cfg.wifi_ssid, sizeof(s_edit_cfg.wifi_ssid));
+    open_scroll_keyboard(s_settings_container, "EDIT SSID", s_edit_cfg.wifi_ssid, sizeof(s_edit_cfg.wifi_ssid), SUBVIEW_WIFI);
 }
 
 static void on_edit_pw_click(lv_event_t *e) {
-    open_scroll_keyboard(s_settings_container, "EDIT PASSWORD", s_edit_cfg.wifi_pass, sizeof(s_edit_cfg.wifi_pass));
+    open_scroll_keyboard(s_settings_container, "EDIT PASSWORD", s_edit_cfg.wifi_pass, sizeof(s_edit_cfg.wifi_pass), SUBVIEW_WIFI);
 }
 
 static void on_wifi_save_click(lv_event_t *e) {
@@ -454,7 +536,7 @@ static void create_wifi_view(lv_obj_t *parent) {
 // [4] 서버 주소 & PORT 설정 서브화면
 // ----------------------------------------------------------------------------
 static void on_edit_ip_click(lv_event_t *e) {
-    open_scroll_keyboard(s_settings_container, "EDIT SERVER IP", s_edit_cfg.server_ip, sizeof(s_edit_cfg.server_ip));
+    open_scroll_keyboard(s_settings_container, "EDIT SERVER IP", s_edit_cfg.server_ip, sizeof(s_edit_cfg.server_ip), SUBVIEW_SERVER);
 }
 
 static void on_server_save_click(lv_event_t *e) {
@@ -523,8 +605,8 @@ static void on_bright_slider_changed(lv_event_t *e) {
     snprintf(buf, sizeof(buf), "BRIGHTNESS: %d%%", val);
     lv_label_set_text(s_bright_label, buf);
 
-    // 하드웨어 백라이트 반영
-    gpio_set_level((gpio_num_t)LCD_BL, (val > 10) ? 1 : 0);
+    // 하드웨어 백라이트 실시간 PWM 반영!
+    display_ui_set_brightness((uint8_t)val);
 }
 
 static void create_brightness_view(lv_obj_t *parent) {

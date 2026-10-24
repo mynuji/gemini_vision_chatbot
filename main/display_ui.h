@@ -72,10 +72,12 @@ uint16_t *display_ui_get_preview_buffer(void);
  */
 void display_ui_refresh_camera_preview(void);
 
-/**
- * @brief LVGL을 건너뛰고 내부 SRAM DMA 버퍼를 통해 LCD 패널에 고속 다이렉트 전송
- */
 void display_ui_draw_preview_frame(const uint16_t *rgb565_buf);
+
+/**
+ * @brief LCD 백라이트 밝기 조절 (10 ~ 100%)
+ */
+void display_ui_set_brightness(uint8_t percent);
 
 #ifdef __cplusplus
 }

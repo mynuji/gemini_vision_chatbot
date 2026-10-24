@@ -133,6 +133,7 @@ extern "C" void app_main(void) {
 
     // [1] 디스플레이 및 LVGL 초기화
     ESP_ERROR_CHECK(display_ui_init());
+    display_ui_set_brightness(cfg->brightness);
     display_ui_show_message("HW CHECK: LCD OK");
     vTaskDelay(pdMS_TO_TICKS(400));
 

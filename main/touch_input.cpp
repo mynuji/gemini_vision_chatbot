@@ -165,7 +165,7 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
             // Seeed 공식 CHSC6X 프로토콜: data[0] == 0x01 (Touch Down)
             // data[2] = X좌표 (0~239), data[4] = Y좌표 (0~239)
             if (data[0] == 0x01 || pin_active) {
-                x = 239 - (int16_t)data[2]; // LCD 가로 반전(mirror_x) 보정
+                x = (int16_t)data[2]; // 정방향 (오른쪽으로 밀면 증가)
                 y = (int16_t)data[4];
                 pressed = true;
             }
