@@ -89,6 +89,14 @@ static void spk_play_task(void *pvParameters) {
                 }
                 // I2S 스피커 앰프(MAX98357A) Mute 해제 및 워밍업 (첫 음절 잘림 방지)
                 audio_io_spk_write_silence(20);
+            } else if (s_server_done && cur_buffered == 0) {
+                // 오디오 수신 없이 서버 처리가 끝난 경우(무음/인식 실패 등) 즉시 스피커 종료 핸들러 호출
+                s_server_done = false;
+                s_is_speaker_playing = false;
+                prebuffering = true;
+                chat_state_handle_speaker_finished();
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
             } else {
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;

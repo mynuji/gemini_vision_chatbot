@@ -656,12 +656,13 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
 
         # 끼어들기 세션이 이미 저장되어 있지 않은 정상 완료 시에만 DONE 전송
         if interrupted_holder is None or interrupted_holder.get("session") is None:
-            print(f"[서버] AI 답변 전송 완료 (close_session={close_session_after}) -> DONE 전송")
+            print(f"[서버] AI 답변 전송 완료 (close_session={close_session_after}) -> DONE 및 preview_stop 전송")
             await websocket.send(json.dumps({
                 "type": "status",
                 "message": "DONE",
                 "close_session": close_session_after
             }))
+            await websocket.send(json.dumps({"type": "preview_stop"}))
         else:
             print(f"[서버] AI 답변 전송 완료 시점에 이미 끼어들기 감지됨 -> DONE 전송 생략 및 이어말하기 세션 유지")
 
@@ -1230,6 +1231,8 @@ async def handler(websocket, path=None):
                                         print("\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 (이미 AI 응답 처리 중이므로 무시)")
                                     elif time.perf_counter() - t_last_whisper < 2.0:
                                         print("\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 (방금 음성 인식으로 이미 처리 완료됨)")
+                                        if not is_ai_busy:
+                                            await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                     elif audio_buffer or pre_speech_buffer:
                                         combined_chunks = list(pre_speech_buffer) + list(audio_buffer)
                                         full_audio = np.concatenate(combined_chunks) if combined_chunks else np.array([], dtype=np.float32)

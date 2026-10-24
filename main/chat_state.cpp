@@ -110,23 +110,12 @@ static void camera_preview_task(void *pvParameters) {
         wifi_ws_send_text("{\"type\":\"image_failed\"}");
     }
 
-    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (다이렉트 초고속 스트리밍)
+    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행
     uint32_t frame_count = 0;
     while (s_camera_preview_active) {
-        // [수 초 큐 지연 완전 제거] 드라이버 큐에 밀려있던 과거 프레임을 즉시 비우고 실시간 최신 프레임 획득
-        camera_fb_t *fb = NULL;
-        while (1) {
-            camera_fb_t *next_fb = camera_io_get_fb(0);
-            if (!next_fb) break;
-            if (fb) camera_io_return_fb(fb);
-            fb = next_fb;
-        }
-        if (!fb) {
-            fb = camera_io_get_fb(pdMS_TO_TICKS(40));
-        }
-
+        camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(50));
         if (fb != NULL) {
-            if (fb->format == PIXFORMAT_JPEG && fb->len > 0) {
+            if (s_camera_preview_active && fb->format == PIXFORMAT_JPEG && fb->len > 0) {
                 esp_jpeg_image_cfg_t jpeg_cfg = {};
                 jpeg_cfg.indata = fb->buf;
                 jpeg_cfg.indata_size = (uint32_t)fb->len;
@@ -140,6 +129,10 @@ static void camera_preview_task(void *pvParameters) {
 
                 esp_jpeg_image_output_t out_info = {};
                 if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+                    if (!s_camera_preview_active) {
+                        camera_io_return_fb(fb);
+                        break;
+                    }
                     // [16x16 블록 타일링 시계방향 90도 회전] 캐시 최적화
                     for (int by = 0; by < 240; by += 16) {
                         for (int bx = 0; bx < 240; bx += 16) {
@@ -153,10 +146,12 @@ static void camera_preview_task(void *pvParameters) {
                             }
                         }
                     }
-                    display_ui_draw_preview_frame(crop_buf);
-                    frame_count++;
-                    if (frame_count % 30 == 0) {
-                        ESP_LOGI(TAG, "Camera preview streaming active: %u frames rendered", (unsigned int)frame_count);
+                    if (s_camera_preview_active) {
+                        display_ui_draw_preview_frame(crop_buf);
+                        frame_count++;
+                        if (frame_count % 30 == 0) {
+                            ESP_LOGI(TAG, "Camera preview streaming active: %u frames rendered", (unsigned int)frame_count);
+                        }
                     }
                 }
             }
@@ -210,6 +205,8 @@ void chat_state_stop_camera_preview(void) {
         ESP_LOGI(TAG, "Requesting camera preview to stop");
         s_camera_preview_active = false;
     }
+    // 프리뷰 활성 여부와 상관없이 LCD를 눈 모양으로 즉시 복원
+    display_ui_stop_camera_preview();
 }
 
 void chat_state_init(void) {
@@ -420,6 +417,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     handled = true;
                 } else if (strcmp(type->valuestring, "status") == 0 && cJSON_IsString(message)) {
                     if (strcmp(message->valuestring, "DONE") == 0 || strcmp(message->valuestring, "END") == 0) {
+                        chat_state_stop_camera_preview();
                         cJSON *close_item = cJSON_GetObjectItem(root, "close_session");
                         if (cJSON_IsBool(close_item) && cJSON_IsTrue(close_item)) {
                             ESP_LOGI(TAG, "Server requested session close (close_session: true)");
@@ -463,6 +461,10 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     ESP_LOGW(TAG, "==========================================================");
                     chat_state_start_camera_preview();
                     handled = true;
+                } else if (strcmp(type->valuestring, "preview_stop") == 0) {
+                    ESP_LOGI(TAG, "Received preview_stop command from server");
+                    chat_state_stop_camera_preview();
+                    handled = true;
                 }
             }
             cJSON_Delete(root);
@@ -472,6 +474,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
     // 2. 일반 문자열 처리
     if (!handled) {
         if (strcmp(text, "DONE") == 0 || strcmp(text, "END") == 0) {
+            chat_state_stop_camera_preview();
             if (audio_pipeline_is_spk_buffer_empty() && !audio_pipeline_is_speaker_playing()) {
                 if (s_close_session_after_speaking) {
                     ESP_LOGI(TAG, "Touch manual speech_end completed with no audio. Ending session -> IDLE");

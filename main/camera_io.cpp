@@ -63,11 +63,11 @@ esp_err_t camera_io_init(void) {
     config.pixel_format = PIXFORMAT_JPEG;
     config.frame_size   = CAMERA_FRAME_SIZE;
     config.jpeg_quality = CAMERA_JPEG_QUALITY;
-    // fb_count=2 + GRAB_LATEST:
-    // 백그라운드 DMA 더블 버퍼링으로 센서 캡처 대기 시간을 0으로 줄여 실시간 프리뷰 FPS 극대화
-    config.fb_count     = 2;
+    // fb_count=1 + WHEN_EMPTY:
+    // 버퍼를 단 1개만 운용하여 드라이버 내부 큐에 과거 프레임이 쌓이는 지연(Lag)을 물리적으로 원천 차단
+    config.fb_count     = 1;
     config.fb_location  = CAMERA_FB_IN_PSRAM;
-    config.grab_mode    = CAMERA_GRAB_LATEST;
+    config.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
 
     int64_t t0 = esp_timer_get_time();
     esp_err_t err = esp_camera_init(&config);
