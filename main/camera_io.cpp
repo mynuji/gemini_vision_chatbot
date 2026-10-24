@@ -57,13 +57,13 @@ esp_err_t camera_io_init(void) {
     config.ledc_timer   = LEDC_TIMER_1;
     config.ledc_channel = LEDC_CHANNEL_1;
 
-    // 정상 색상(하드웨어 ISP AWB/AEC 적용) 및 과거 프레임 큐 적체 0초 방지 (fb_count=1)
+    // 정상 색상(하드웨어 ISP AWB/AEC 적용) 및 더블 버퍼링으로 센서 캡처 대기 0초 달성
     config.pixel_format = PIXFORMAT_JPEG;
     config.frame_size   = CAMERA_FRAME_SIZE;
     config.jpeg_quality = CAMERA_JPEG_QUALITY;
-    config.fb_count     = 1;
+    config.fb_count     = 2;
     config.fb_location  = CAMERA_FB_IN_PSRAM;
-    config.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
+    config.grab_mode    = CAMERA_GRAB_LATEST;
 
     int64_t t0 = esp_timer_get_time();
     esp_err_t err = esp_camera_init(&config);
