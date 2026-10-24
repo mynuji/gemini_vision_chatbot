@@ -57,10 +57,12 @@ esp_err_t wifi_ws_send_text(const char *text);
  */
 void wifi_ws_set_state_callback(wifi_ws_state_cb_t cb);
 
-/**
- * @brief WebSocket 데이터 수신 콜백 등록
- */
 void wifi_ws_set_rx_callback(wifi_ws_rx_cb_t cb);
+
+/**
+ * @brief 할당받은 IP 주소 문자열 반환 (예: "192.168.0.56")
+ */
+const char* wifi_ws_get_ip_str(void);
 
 #ifdef __cplusplus
 }

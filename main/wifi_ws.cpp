@@ -21,6 +21,7 @@ static wifi_ws_state_cb_t s_state_cb = NULL;
 static wifi_ws_rx_cb_t s_rx_cb = NULL;
 
 static char s_ws_uri[128] = {0};
+static char s_ip_str[24] = "0.0.0.0";
 
 static void notify_state(wifi_ws_state_t state, const char *info) {
     if (s_state_cb != NULL) {
@@ -109,8 +110,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Got IP: " IPSTR ", GW: " IPSTR ", Mask: " IPSTR ", FreeHeap: %uKB",
-                 IP2STR(&event->ip_info.ip),
+        esp_ip4addr_ntoa(&event->ip_info.ip, s_ip_str, sizeof(s_ip_str));
+        ESP_LOGI(TAG, "Got IP: %s, GW: " IPSTR ", Mask: " IPSTR ", FreeHeap: %uKB",
+                 s_ip_str,
                  IP2STR(&event->ip_info.gw),
                  IP2STR(&event->ip_info.netmask),
                  (unsigned int)(esp_get_free_internal_heap_size() / 1024));
@@ -259,4 +261,8 @@ void wifi_ws_set_state_callback(wifi_ws_state_cb_t cb) {
 
 void wifi_ws_set_rx_callback(wifi_ws_rx_cb_t cb) {
     s_rx_cb = cb;
+}
+
+const char* wifi_ws_get_ip_str(void) {
+    return s_ip_str;
 }

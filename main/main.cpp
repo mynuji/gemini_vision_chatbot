@@ -1,4 +1,6 @@
 #include "app_config.h"
+#include "settings_manager.h"
+#include "ui_settings.h"
 #include "bsp_board.h"
 #include "display_ui.h"
 #include "audio_io.h"
@@ -81,6 +83,12 @@ static void chat_monitor_loop_task(void *pvParameters) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         bool has_event = touch_input_has_event();
 
+        // 0. 설정 메뉴가 열려 있을 때는 메인 대화 터치 동작 중단
+        if (ui_settings_is_active()) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
         // 1. 터치 감지 처리: 인터럽트 에지 이벤트 기반 1회 즉시 감지 (디바운스 600ms)
         if (has_event && (now - last_touch_handled_time > 600)) {
             ESP_LOGI(TAG, "User Touch Event Handled! Forwarding to chat_state_handle_touch()");
@@ -119,13 +127,18 @@ extern "C" void app_main(void) {
              (unsigned int)(esp_get_free_internal_heap_size() / 1024),
              (unsigned int)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 
+    // [0] NVS 영구 설정 로드
+    ESP_ERROR_CHECK(settings_manager_init());
+    const app_settings_t *cfg = settings_manager_get();
+
     // [1] 디스플레이 및 LVGL 초기화
     ESP_ERROR_CHECK(display_ui_init());
     display_ui_show_message("HW CHECK: LCD OK");
     vTaskDelay(pdMS_TO_TICKS(400));
 
-    // [2] 터치 센서 초기화
+    // [2] 터치 센서 초기화 및 상단 10회 터치 콜백 등록
     ESP_ERROR_CHECK(touch_input_init());
+    touch_input_set_settings_trigger_cb(ui_settings_open);
 
     // [3] 오디오 I/O (PDM RX 마이크 + I2S TX 스피커) 초기화
     display_ui_show_message("AUDIO IO CHECK...");
@@ -174,10 +187,13 @@ extern "C" void app_main(void) {
     // [8] 대화 상태 모니터 및 터치 루프 태스크 시작 (PSRAM 스택)
     xTaskCreatePinnedToCoreWithCaps(chat_monitor_loop_task, "chat_monitor", 4096, NULL, 3, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
-    // [9] Wi-Fi 및 WebSocket 접속 시작
-    ESP_LOGI(TAG, "Starting Wi-Fi & WebSocket connection...");
+    // [9] Wi-Fi 및 WebSocket 접속 시작 (NVS 동적 설정 사용)
+    ESP_LOGI(TAG, "Starting Wi-Fi & WebSocket connection to %s:%u...", cfg->server_ip, (unsigned int)cfg->server_port);
     display_ui_set_status("CONNECTING WIFI...");
-    ESP_ERROR_CHECK(wifi_ws_start(CONFIG_WIFI_SSID, CONFIG_WIFI_PASS, CONFIG_WS_SERVER_URI));
+
+    char ws_uri[128];
+    snprintf(ws_uri, sizeof(ws_uri), "ws://%s:%u", cfg->server_ip, (unsigned int)cfg->server_port);
+    ESP_ERROR_CHECK(wifi_ws_start(cfg->wifi_ssid, cfg->wifi_pass, ws_uri));
 
     ESP_LOGI(TAG, "Step 3 Initialization complete. Ready for voice interaction!");
 }

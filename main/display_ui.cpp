@@ -1,5 +1,7 @@
 #include "display_ui.h"
 #include "bsp_board.h"
+#include "touch_input.h"
+#include "ui_settings.h"
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -126,6 +128,10 @@ esp_err_t display_ui_init(void) {
 
   // LVGL 디스플레이 등록 후 패널 미러링을 명시적으로 적용
   esp_lcd_panel_mirror(s_panel_handle, true, false);
+
+  // 5-1. LVGL 터치 입력 드라이버 등록 및 설정 모듈 초기화
+  touch_input_register_lvgl_indev();
+  ui_settings_init();
 
   // 6. 기본 화면 구성
   lvgl_port_lock(-1);

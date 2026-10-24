@@ -1,5 +1,6 @@
 #include "audio_pipeline.h"
 #include "app_config.h"
+#include "settings_manager.h"
 #include "chat_state.h"
 #include "audio_io.h"
 #include "wifi_ws.h"
@@ -132,10 +133,13 @@ static void spk_play_task(void *pvParameters) {
             s_spk_buffered_bytes = (s_spk_buffered_bytes >= item_size) ? (s_spk_buffered_bytes - item_size) : 0;
 
             size_t valid_samples = item_size / sizeof(int16_t);
+            float vol_scale = (float)settings_manager_get()->volume / 100.0f;
+            if (vol_scale < 0.1f) vol_scale = 0.1f;
+            if (vol_scale > 1.0f) vol_scale = 1.0f;
 
             // 볼륨 스케일을 먼저 적용하여 AEC 에코 레퍼런스와 실제 스피커 출력의 음량을 1:1로 일치시킴
             for (size_t i = 0; i < valid_samples; i++) {
-                int32_t s = (int32_t)(play_buf[i] * DEFAULT_VOLUME_SCALE);
+                int32_t s = (int32_t)(play_buf[i] * vol_scale);
                 if (s > 32767) s = 32767;
                 if (s < -32768) s = -32768;
                 play_buf[i] = (int16_t)s;

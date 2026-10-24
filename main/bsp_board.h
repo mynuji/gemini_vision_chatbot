@@ -15,8 +15,11 @@
 #define LCD_RST      -1
 #define LCD_BL       43
 
-// [2] 정전식 터치 센서
+// [2] 정전식 터치 센서 (XIAO D4=SDA, D5=SCL, D7=INT)
+#define TOUCH_SDA     5
+#define TOUCH_SCL     6
 #define TOUCH_INT    44
+#define TOUCH_RST    -1
 
 // [3] 오디오 - PDM 마이크 (XIAO Sense 내장)
 #define I2S_MIC_CLK  42
