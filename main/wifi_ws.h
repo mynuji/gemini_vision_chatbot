@@ -64,6 +64,20 @@ void wifi_ws_set_rx_callback(wifi_ws_rx_cb_t cb);
  */
 const char* wifi_ws_get_ip_str(void);
 
+typedef struct {
+    char ssid[33];
+    int8_t rssi;
+    uint8_t authmode;
+} wifi_ap_info_t;
+
+/**
+ * @brief 주변 2.4GHz Wi-Fi AP들을 검색하여 반환
+ * @param ap_list 결과를 저장할 배열 포인터
+ * @param max_aps 최대 저장 개수
+ * @return 실제로 검색된 AP 개수
+ */
+int wifi_ws_scan_aps(wifi_ap_info_t *ap_list, int max_aps);
+
 #ifdef __cplusplus
 }
 #endif

@@ -266,3 +266,61 @@ void wifi_ws_set_rx_callback(wifi_ws_rx_cb_t cb) {
 const char* wifi_ws_get_ip_str(void) {
     return s_ip_str;
 }
+
+int wifi_ws_scan_aps(wifi_ap_info_t *out_list, int max_aps) {
+    if (!out_list || max_aps <= 0) return 0;
+
+    ESP_LOGI(TAG, "Starting Wi-Fi AP scan for up to %d networks...", max_aps);
+    wifi_scan_config_t scan_cfg = {};
+    scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+    scan_cfg.scan_time.active.min = 100;
+    scan_cfg.scan_time.active.max = 250;
+
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_scan_start failed: %s", esp_err_to_name(err));
+        return 0;
+    }
+
+    uint16_t ap_num = 0;
+    esp_wifi_scan_get_ap_num(&ap_num);
+    if (ap_num == 0) {
+        ESP_LOGW(TAG, "No Wi-Fi APs found in scan.");
+        return 0;
+    }
+
+    wifi_ap_record_t *records = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * ap_num);
+    if (!records) {
+        ESP_LOGE(TAG, "Failed to allocate memory for AP scan records");
+        return 0;
+    }
+
+    esp_wifi_scan_get_ap_records(&ap_num, records);
+
+    int count = 0;
+    for (int i = 0; i < ap_num && count < max_aps; i++) {
+        const char *ssid = (const char *)records[i].ssid;
+        if (strlen(ssid) == 0) continue;
+
+        // 중복 SSID 방지 (신호가 가장 강한 첫 번째 것만 유지)
+        bool duplicate = false;
+        for (int j = 0; j < count; j++) {
+            if (strcmp(out_list[j].ssid, ssid) == 0) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+
+        strncpy(out_list[count].ssid, ssid, sizeof(out_list[count].ssid) - 1);
+        out_list[count].ssid[sizeof(out_list[count].ssid) - 1] = '\0';
+        out_list[count].rssi = records[i].rssi;
+        out_list[count].authmode = records[i].authmode;
+        count++;
+    }
+
+    free(records);
+    ESP_LOGI(TAG, "Scan finished: returned %d unique APs.", count);
+    return count;
+}
+

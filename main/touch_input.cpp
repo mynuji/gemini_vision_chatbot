@@ -1,4 +1,5 @@
 #include "touch_input.h"
+#include "ui_settings.h"
 #include "bsp_board.h"
 #include "audio_io.h"
 
@@ -197,8 +198,8 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
     if (y < 0) y = 0;
     if (y > 239) y = 239;
 
-    // 상단 10회 연속 터치 감지 (터치가 새로 눌렸을 때判定: false -> true)
-    if (pressed && !s_is_pressed) {
+    // 상단 10회 연속 터치 감지 (터치가 새로 눌렸을 때, 설정 화면이 닫혀있을 때만 동작)
+    if (pressed && !s_is_pressed && !ui_settings_is_active()) {
         // 상단 영역 판정: Y <= 100 (화면 상단 절반 가까이)
         // 또는 3초 이내에 연속해서 탭하는 중인 경우 설정 메뉴 진입으로 간주!
         bool is_rapid_tapping = (now - s_last_top_tap_time < 3000) && (s_top_tap_count > 0);
@@ -235,6 +236,16 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
         }
     }
 
+    // 손가락 미세 떨림(지터)으로 인한 스크롤 오인식 방지 (데드밴드 필터)
+    if (pressed && s_is_pressed) {
+        int16_t dx = x - s_last_x;
+        int16_t dy = y - s_last_y;
+        if (dx * dx + dy * dy < 16) { // 4픽셀 이내의 미세 움직임은 무시하여 클릭 안정성 극대화
+            x = s_last_x;
+            y = s_last_y;
+        }
+    }
+
     s_is_pressed = pressed;
     s_last_x = x;
     s_last_y = y;
@@ -261,8 +272,9 @@ esp_err_t touch_input_register_lvgl_indev(void) {
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = lvgl_touch_read_cb;
+    indev_drv.scroll_limit = 25; // 탭할 때의 미세 움직임으로 인한 스크롤 오인식 방지 (기본 10 -> 25)
     lv_indev_drv_register(&indev_drv);
-    ESP_LOGI(TAG, "LVGL pointer input driver registered successfully!");
+    ESP_LOGI(TAG, "LVGL pointer input driver registered successfully (scroll_limit=25)!");
     return ESP_OK;
 }
 

@@ -26,6 +26,7 @@ typedef enum {
     SUBVIEW_MAIN = 0,
     SUBVIEW_VOLUME,
     SUBVIEW_WIFI,
+    SUBVIEW_WIFI_SCAN,
     SUBVIEW_SERVER,
     SUBVIEW_BRIGHTNESS,
     SUBVIEW_MIC_GAIN,
@@ -47,6 +48,7 @@ static void show_view(subview_t view);
 static void create_main_menu(lv_obj_t *parent);
 static void create_volume_view(lv_obj_t *parent);
 static void create_wifi_view(lv_obj_t *parent);
+static void create_wifi_scan_view(lv_obj_t *parent);
 static void create_server_view(lv_obj_t *parent);
 static void create_brightness_view(lv_obj_t *parent);
 static void create_mic_gain_view(lv_obj_t *parent);
@@ -122,6 +124,9 @@ static void show_view(subview_t view) {
         case SUBVIEW_WIFI:
             create_wifi_view(s_settings_container);
             break;
+        case SUBVIEW_WIFI_SCAN:
+            create_wifi_scan_view(s_settings_container);
+            break;
         case SUBVIEW_SERVER:
             create_server_view(s_settings_container);
             break;
@@ -193,6 +198,7 @@ static void create_main_menu(lv_obj_t *parent) {
     lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
     lv_obj_set_style_radius(list, 10, 0);
     lv_obj_set_style_pad_all(list, 2, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER); // 오직 수직 스크롤만 허용 (좌우 흔들림에 의한 스크롤 오인식 차단)
 
     const char *items[] = {
         "1. Volume Control",
@@ -210,8 +216,10 @@ static void create_main_menu(lv_obj_t *parent) {
         lv_obj_set_size(btn, lv_pct(100), 38);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
         lv_obj_set_style_text_color(btn, lv_color_white(), 0);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE); // 버튼 자체의 스크롤 방지
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+        // LV_EVENT_CLICKED 단일 등록으로 확실한 클릭 처리
         lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
-        lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)(i + 1));
     }
 }
 
@@ -477,7 +485,8 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
 }
 
 static void on_edit_ssid_click(lv_event_t *e) {
-    open_scroll_keyboard(s_settings_container, "EDIT SSID", s_edit_cfg.wifi_ssid, sizeof(s_edit_cfg.wifi_ssid), SUBVIEW_WIFI);
+    audio_io_play_tone(1000.0f, 30);
+    show_view(SUBVIEW_WIFI_SCAN);
 }
 
 static void on_edit_pw_click(lv_event_t *e) {
@@ -488,6 +497,90 @@ static void on_wifi_save_click(lv_event_t *e) {
     settings_manager_save(&s_edit_cfg);
     audio_io_play_tone(1400.0f, 60);
     show_view(SUBVIEW_MAIN);
+}
+
+// ----------------------------------------------------------------------------
+// [3-1] Wi-Fi AP 스캔 및 선택 화면
+// ----------------------------------------------------------------------------
+static wifi_ap_info_t s_scanned_aps[10];
+static int s_scanned_count = 0;
+
+static void on_ap_select_click(lv_event_t *e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx >= 0 && idx < s_scanned_count) {
+        strncpy(s_edit_cfg.wifi_ssid, s_scanned_aps[idx].ssid, sizeof(s_edit_cfg.wifi_ssid) - 1);
+        s_edit_cfg.wifi_ssid[sizeof(s_edit_cfg.wifi_ssid) - 1] = '\0';
+        audio_io_play_tone(1400.0f, 60);
+        show_view(SUBVIEW_WIFI);
+    } else if (idx == -1) {
+        // 직접 수동 키보드 입력
+        audio_io_play_tone(1000.0f, 30);
+        open_scroll_keyboard(s_settings_container, "EDIT SSID", s_edit_cfg.wifi_ssid, sizeof(s_edit_cfg.wifi_ssid), SUBVIEW_WIFI);
+    }
+}
+
+static void create_wifi_scan_view(lv_obj_t *parent) {
+    lv_obj_t *title = lv_label_create(parent);
+    lv_label_set_text(title, "SELECT WI-FI AP");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    // 주변 AP 스캔 실행
+    s_scanned_count = wifi_ws_scan_aps(s_scanned_aps, 10);
+
+    // 스크롤 리스트 생성
+    lv_obj_t *list = lv_list_create(parent);
+    lv_obj_set_size(list, 206, 140);
+    lv_obj_align(list, LV_ALIGN_CENTER, 0, 8);
+    lv_obj_set_style_bg_color(list, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(list, 10, 0);
+    lv_obj_set_style_pad_all(list, 2, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+
+    if (s_scanned_count == 0) {
+        lv_obj_t *empty_btn = lv_list_add_btn(list, NULL, "(No APs Found)");
+        lv_obj_set_size(empty_btn, lv_pct(100), 36);
+        lv_obj_set_style_bg_color(empty_btn, lv_color_hex(0x333333), 0);
+    } else {
+        for (int i = 0; i < s_scanned_count; i++) {
+            char item_txt[64];
+            snprintf(item_txt, sizeof(item_txt), "%s (%ddBm)", s_scanned_aps[i].ssid, s_scanned_aps[i].rssi);
+            lv_obj_t *btn = lv_list_add_btn(list, NULL, item_txt);
+            lv_obj_set_size(btn, lv_pct(100), 36);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
+            lv_obj_set_style_text_color(btn, lv_color_white(), 0);
+            lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(btn, on_ap_select_click, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        }
+    }
+
+    // 직접 입력 버튼
+    lv_obj_t *manual_btn = lv_list_add_btn(list, NULL, "[+ Direct Input]");
+    lv_obj_set_size(manual_btn, lv_pct(100), 36);
+    lv_obj_set_style_bg_color(manual_btn, lv_color_hex(0x005588), 0);
+    lv_obj_set_style_text_color(manual_btn, lv_color_hex(0x00D1FF), 0);
+    lv_obj_clear_flag(manual_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(manual_btn, on_ap_select_click, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
+
+    // 하단 제어 버튼: [RESCAN] 및 [BACK]
+    lv_obj_t *rescan_btn = lv_btn_create(parent);
+    lv_obj_set_size(rescan_btn, 80, 30);
+    lv_obj_align(rescan_btn, LV_ALIGN_BOTTOM_LEFT, 24, -18);
+    lv_obj_set_style_bg_color(rescan_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_t *rlbl = lv_label_create(rescan_btn);
+    lv_label_set_text(rlbl, "RESCAN");
+    lv_obj_center(rlbl);
+    lv_obj_add_event_cb(rescan_btn, (lv_event_cb_t)[](lv_event_t *e){ show_view(SUBVIEW_WIFI_SCAN); }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 80, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -18);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){ show_view(SUBVIEW_WIFI); }, LV_EVENT_CLICKED, NULL);
 }
 
 static void create_wifi_view(lv_obj_t *parent) {
