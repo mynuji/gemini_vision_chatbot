@@ -41,13 +41,18 @@ static void camera_preview_task(void *pvParameters) {
 
     size_t dec_sz = 320 * 240 * sizeof(uint16_t);
     size_t crop_sz = 240 * 240 * sizeof(uint16_t);
+    size_t work_sz = 65536;
+
     uint16_t *dec_buf = (uint16_t *)heap_caps_malloc(dec_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     uint16_t *crop_buf = (uint16_t *)heap_caps_malloc(crop_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    void *work_buf = heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
-    if (dec_buf == NULL || crop_buf == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for camera preview");
+    if (dec_buf == NULL || crop_buf == NULL || work_buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for camera preview (dec=%p, crop=%p, work=%p)",
+                 dec_buf, crop_buf, work_buf);
         if (dec_buf) free(dec_buf);
         if (crop_buf) free(crop_buf);
+        if (work_buf) free(work_buf);
         display_ui_stop_camera_preview();
         s_camera_preview_active = false;
         s_preview_task_handle = NULL;
@@ -77,9 +82,12 @@ static void camera_preview_task(void *pvParameters) {
         jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
         jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
         jpeg_cfg.flags.swap_color_bytes = 0;
+        jpeg_cfg.advanced.working_buffer = work_buf;
+        jpeg_cfg.advanced.working_buffer_size = work_sz;
 
         esp_jpeg_image_output_t out_info = {};
-        if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+        esp_err_t dec_ret = esp_jpeg_decode(&jpeg_cfg, &out_info);
+        if (dec_ret == ESP_OK) {
             for (int y = 0; y < 240; y++) {
                 const uint16_t *src_line = dec_buf + (y * 320) + 40;
                 uint16_t *dst_line = crop_buf + (y * 240);
@@ -88,6 +96,8 @@ static void camera_preview_task(void *pvParameters) {
                 }
             }
             display_ui_draw_preview_frame(crop_buf);
+        } else {
+            ESP_LOGE(TAG, "First frame esp_jpeg_decode failed: 0x%x", dec_ret);
         }
         camera_io_return_fb(first_fb);
     } else {
@@ -109,6 +119,8 @@ static void camera_preview_task(void *pvParameters) {
                 jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
                 jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
                 jpeg_cfg.flags.swap_color_bytes = 0;
+                jpeg_cfg.advanced.working_buffer = work_buf;
+                jpeg_cfg.advanced.working_buffer_size = work_sz;
 
                 esp_jpeg_image_output_t out_info = {};
                 if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
@@ -124,12 +136,13 @@ static void camera_preview_task(void *pvParameters) {
             }
             camera_io_return_fb(fb);
         }
-        vTaskDelay(pdMS_TO_TICKS(25));
+        vTaskDelay(pdMS_TO_TICKS(30));
     }
 
     ESP_LOGI(TAG, "Exiting camera preview loop, restoring LVGL UI");
     free(dec_buf);
     free(crop_buf);
+    free(work_buf);
     display_ui_stop_camera_preview();
 
     switch (s_chat_state) {
@@ -157,8 +170,13 @@ void chat_state_start_camera_preview(void) {
         return;
     }
     s_camera_preview_active = true;
-    xTaskCreatePinnedToCoreWithCaps(camera_preview_task, "cam_prev", 4096, NULL, 4,
+    BaseType_t res = xTaskCreatePinnedToCoreWithCaps(camera_preview_task, "cam_prev", 8192, NULL, 3,
                                     &s_preview_task_handle, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (res != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create camera preview task! res=%d", (int)res);
+        s_camera_preview_active = false;
+        s_preview_task_handle = NULL;
+    }
 }
 
 void chat_state_stop_camera_preview(void) {

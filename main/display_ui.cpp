@@ -305,7 +305,13 @@ esp_lcd_panel_handle_t display_ui_get_panel_handle(void) {
 void display_ui_start_camera_preview(void) {
   ESP_LOGI(TAG, "Entering camera live preview mode (pausing LVGL)");
   display_ui_pause_auto_blink(true);
+
   lvgl_port_lock(-1);
+  // LVGL 화면 위젯들을 숨겨서 화면 간섭 및 잔상 방지
+  if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+  if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+  if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+  if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
   lvgl_port_stop();
   lvgl_port_unlock();
 
@@ -323,7 +329,11 @@ void display_ui_stop_camera_preview(void) {
   }
   lvgl_port_resume();
   display_ui_pause_auto_blink(false);
+
   lvgl_port_lock(-1);
+  if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+  if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+  if (s_status_label) lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
   if (lv_scr_act()) {
     lv_obj_invalidate(lv_scr_act());
   }
@@ -331,7 +341,17 @@ void display_ui_stop_camera_preview(void) {
 }
 
 void display_ui_draw_preview_frame(const void *rgb565_buf) {
-  if (s_panel_handle && rgb565_buf) {
-    esp_lcd_panel_draw_bitmap(s_panel_handle, 0, 0, 240, 240, rgb565_buf);
+  if (s_panel_handle == NULL || rgb565_buf == NULL) {
+    return;
+  }
+  const uint16_t *pixels = (const uint16_t *)rgb565_buf;
+  const int lines_per_chunk = 40; // 240 * 40 * 2 = 19,200 bytes (max_transfer_sz 내 완벽 분할)
+  for (int y = 0; y < 240; y += lines_per_chunk) {
+    const uint16_t *chunk_ptr = pixels + (y * 240);
+    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, 240, y + lines_per_chunk, chunk_ptr);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "draw_bitmap chunk at y=%d failed: 0x%x", y, err);
+      break;
+    }
   }
 }
