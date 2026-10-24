@@ -6,6 +6,7 @@
 #include "wifi_ws.h"
 #include "chat_state.h"
 #include "audio_pipeline.h"
+#include "camera_io.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -150,6 +151,24 @@ extern "C" void app_main(void) {
     // [7] 실시간 오디오 파이프라인 (PSRAM RingBuffers, FreeRTOS Tasks, esp-sr AFE) 초기화
     display_ui_set_status("INITIALIZING AFE...");
     ESP_ERROR_CHECK(audio_pipeline_init());
+
+    // [7-1] OV2640 카메라 초기화 (비전 질문용) - 실패해도 음성 챗봇은 계속 동작
+    display_ui_set_status("INITIALIZING CAMERA...");
+    esp_err_t cam_err = camera_io_init();
+    if (cam_err == ESP_OK) {
+        // 부팅 시 테스트 촬영 1장으로 센서/프레임 버퍼 동작 확인
+        uint8_t *jpeg = NULL;
+        size_t jpeg_len = 0;
+        uint16_t w = 0, h = 0;
+        if (camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h) == ESP_OK) {
+            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
+            free(jpeg);
+        } else {
+            ESP_LOGW(TAG, "Camera self-test capture failed");
+        }
+    } else {
+        ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
+    }
 
     // [8] 대화 상태 모니터 및 터치 루프 태스크 시작 (PSRAM 스택)
     xTaskCreatePinnedToCoreWithCaps(chat_monitor_loop_task, "chat_monitor", 4096, NULL, 3, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

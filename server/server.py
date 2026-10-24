@@ -11,16 +11,56 @@ import os
 import wave
 from collections import deque
 import edge_tts
-from openai import AsyncOpenAI
+from google import genai
+from google.genai import types as genai_types
+
+# ==========================================
+# 0. 환경 변수(.env) 로딩
+# ==========================================
+def load_env_file(path):
+    """server/.env 파일의 KEY=VALUE 항목을 환경 변수로 로드 (이미 설정된 값은 유지)"""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+load_env_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 # ==========================================
 # 1. 전역 설정 및 모델 초기화
 # ==========================================
 print("[시스템] Silero VAD 모델 로딩 중...")
-vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False)
+vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False, trust_repo=True)
 vad_model.eval()
 
-llm_client = AsyncOpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-no-key")
+# ------------------------------------------
+# Google Gemini (클라우드 LLM / 비전) 설정
+# ------------------------------------------
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+if not GEMINI_API_KEY:
+    raise SystemExit("[오류] GEMINI_API_KEY가 설정되지 않았습니다. server/.env 파일 또는 환경 변수에 설정해 주세요.")
+
+# gemini-1.5 / 2.5 계열은 신규 사용자에게 종료(404)되어 기본값을 최신 Flash로 지정 (환경 변수로 변경 가능)
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip()
+# 주 모델이 과부하(503)/할당량 초과(429)/미지원(404)일 때 순서대로 시도할 대체 모델
+GEMINI_FALLBACK_MODELS = [m.strip() for m in os.environ.get(
+    "GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.8-flash"
+).split(",") if m.strip() and m.strip() != GEMINI_MODEL]
+# 음성 대화 응답 지연 최소화를 위한 사고(thinking) 수준: minimal | low | medium | high
+GEMINI_THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "minimal").strip()
+GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "1024"))
+
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+print(f"[시스템] Gemini LLM 준비 완료: {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
+
 VOICE = "ko-KR-SunHiNeural"
 
 SAMPLE_RATE = 16000
@@ -149,6 +189,127 @@ async def run_whisper_cpp(audio_np):
     asr_ms = (time.perf_counter() - t_start) * 1000
     return result_text, asr_ms
 
+# ==========================================
+# 2-1. Google Gemini 실시간 스트리밍 연동
+# ==========================================
+def build_gemini_contents(messages, image_bytes=None, image_mime="image/jpeg"):
+    """
+    OpenAI 형식 대화 이력([{role, content}])을 Gemini 형식(system_instruction + contents)으로 변환.
+    image_bytes가 주어지면 마지막 사용자 발화에 이미지(JPEG)를 함께 첨부합니다.
+    """
+    system_texts = []
+    contents = []
+    for msg in messages:
+        role = msg.get("role")
+        text = (msg.get("content") or "").strip()
+        if not text:
+            continue
+        if role == "system":
+            if text not in system_texts:
+                system_texts.append(text)
+            continue
+        g_role = "model" if role == "assistant" else "user"
+        # Gemini는 user로 시작하는 대화를 권장하므로 앞부분의 model 발화는 생략
+        if not contents and g_role == "model":
+            continue
+        # 같은 역할이 연속되면 하나의 턴으로 병합 (끼어들기 등으로 user가 연속될 수 있음)
+        if contents and contents[-1].role == g_role:
+            contents[-1].parts.append(genai_types.Part(text=text))
+        else:
+            contents.append(genai_types.Content(role=g_role, parts=[genai_types.Part(text=text)]))
+
+    if image_bytes:
+        image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type=image_mime)
+        if contents and contents[-1].role == "user":
+            contents[-1].parts.insert(0, image_part)
+        else:
+            contents.append(genai_types.Content(role="user", parts=[image_part]))
+
+    system_instruction = "\n".join(system_texts) if system_texts else None
+    return system_instruction, contents
+
+# 지정한 사고 수준을 거부(400)한 모델 목록: 이후 호출부터는 사고 설정 없이 바로 요청
+_models_without_thinking_config = set()
+
+def build_gemini_config(model, system_instruction):
+    """모델 세대에 맞는 생성 설정 (음성 대화용 저지연 사고 설정 포함)"""
+    thinking_config = None
+    if model in _models_without_thinking_config:
+        thinking_config = None
+    elif model.startswith("gemini-2.5"):
+        thinking_config = genai_types.ThinkingConfig(thinking_budget=0)
+    elif not model.startswith("gemini-1.") and GEMINI_THINKING_LEVEL:
+        try:
+            thinking_config = genai_types.ThinkingConfig(thinking_level=GEMINI_THINKING_LEVEL)
+        except Exception:
+            thinking_config = None  # 구버전 SDK 호환
+
+    return genai_types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+        temperature=0.3,
+        top_p=0.85,
+        thinking_config=thinking_config,
+    )
+
+def extract_gemini_chunk_text(chunk):
+    """스트리밍 청크에서 사고(thought) 파트를 제외한 순수 답변 텍스트만 추출"""
+    try:
+        candidates = chunk.candidates or []
+        if not candidates or not candidates[0].content or not candidates[0].content.parts:
+            return ""
+        return "".join(
+            p.text for p in candidates[0].content.parts
+            if getattr(p, "text", None) and not getattr(p, "thought", False)
+        )
+    except Exception:
+        return ""
+
+async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
+    """
+    Gemini 스트리밍 응답 텍스트 조각을 순서대로 yield하는 비동기 제너레이터.
+    첫 토큰을 받기 전에 실패(503 과부하, 429 할당량, 404 모델 종료 등)하면 대체 모델로 자동 재시도합니다.
+    """
+    system_instruction, contents = build_gemini_contents(messages, image_bytes, image_mime)
+    last_error = None
+
+    for model in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS:
+        yielded = False
+        for attempt in range(2):
+            try:
+                stream = await gemini_client.aio.models.generate_content_stream(
+                    model=model,
+                    contents=contents,
+                    config=build_gemini_config(model, system_instruction),
+                )
+                async for chunk in stream:
+                    text = extract_gemini_chunk_text(chunk)
+                    if text:
+                        yielded = True
+                        yield text
+                if yielded:
+                    return
+                last_error = RuntimeError(f"{model}: 빈 응답 수신")
+                print(f"\n[Gemini] {model} 빈 응답 -> 대체 모델 시도")
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if yielded:
+                    # 이미 일부 답변이 음성으로 나간 뒤라면 다른 모델로 처음부터 다시 말하지 않음
+                    raise
+                last_error = e
+                err_text = str(e).lower()
+                # 모델이 사고 설정을 지원하지 않으면 같은 모델에서 사고 설정 없이 즉시 재시도
+                if attempt == 0 and "thinking" in err_text and model not in _models_without_thinking_config:
+                    print(f"\n[Gemini] {model} 사고 설정 미지원 -> 기본 설정으로 재시도")
+                    _models_without_thinking_config.add(model)
+                    continue
+                print(f"\n[Gemini] {model} 호출 실패 -> 대체 모델 시도: {e}")
+                break
+
+    raise last_error or RuntimeError("사용 가능한 Gemini 모델이 없습니다.")
+
 def is_meaningful_speech(text):
     """TV 소음, 비언어 잡음, 괄호 환각, 무의미한 단발성 소리(기침, 헛기침 등)를 필터링하여 유효한 사용자의 발화인지 판정"""
     if not text:
@@ -264,7 +425,7 @@ def calculate_remaining_sentences(sentences_info, played_bytes):
         
     return remaining
 
-async def process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms=0.0, close_session_after=False, interrupted_holder=None):
+async def process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms=0.0, close_session_after=False, interrupted_holder=None, image_bytes=None):
     full_answer = ""
     sentences_info = []  # [{"text": str, "pcm": bytes, "status": "pending"|"sending"|"done"}]
     sentence_buffer = ""
@@ -279,7 +440,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
             "t_playback_start": None
         }
     try:
-        print(f"\n[LLM 질의] {user_text}")
+        img_info = f" (+이미지 {len(image_bytes) // 1024}KB)" if image_bytes else ""
+        print(f"\n[LLM 질의] {user_text}{img_info}")
         # AI 답변 생성 시작: ESP32 상태를 THINKING으로 즉시 전환하고 마이크 스트리밍을 중단시킴
         await websocket.send(json.dumps({"type": "status", "message": "THINKING..."}))
         
@@ -290,10 +452,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
         t_first_token = None
         t_first_sentence = None
 
-        response = await llm_client.chat.completions.create(
-            model="exaone", messages=recent_messages, stream=True,
-            max_tokens=400, temperature=0.3, top_p=0.85
-        )
+        # Google Gemini 실시간 스트리밍 (이미지는 이번 질문에만 첨부되며 대화 이력에는 저장하지 않음)
+        response = stream_gemini(recent_messages, image_bytes=image_bytes)
 
         is_first_chunk = True
         pcm_queue = asyncio.Queue()
@@ -365,14 +525,14 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
                     if len(candidate.strip()) >= 2:
                         return candidate, buf[i+1:]
 
-            # 2. 첫 문장(is_first==True): 첫 응답 지연을 0.5초 이내로 단축하기 위해
-            #    쉼표(", ")나 자연스러운 연결 어미("요 ", "죠 ", "다 ", "고 ")에서 4자 이상이면 신속 분리!
+            # 2. 첫 문장(is_first==True): 첫 응답 음성 도착(TTFA)을 1초대로 단축하기 위해
+            #    쉼표(", ")나 자연스러운 연결 어미("요 ", "죠 ", "다 ", "고 ")에서 최소 3자 이상이면 신속 분리!
             if is_first:
                 first_delimiters = [", ", "요 ", "죠 ", "다 ", "고 ", "는데 ", "어서 "]
-                if len(stripped) >= 4:
+                if len(stripped) >= 3:
                     for d in first_delimiters:
                         pos = buf.find(d)
-                        if pos != -1 and (pos + len(d)) >= 4:
+                        if pos != -1 and (pos + len(d)) >= 3:
                             return buf[:pos + len(d)], buf[pos + len(d):]
 
             # 3. 이후 문장(is_first==False): 중간 및 뒷부분 문장이 파편화되거나 단어 중간이 잘리는 것을 방지!
@@ -388,9 +548,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
             return None, buf
 
         print("[AI 답변] ", end="", flush=True)
-        async for chunk in response:
-            if chunk.choices[0].delta.content:
-                text = chunk.choices[0].delta.content
+        async for text in response:
+            if text:
                 print(text, end="", flush=True)
 
                 if t_first_token is None:
@@ -750,6 +909,8 @@ async def handler(websocket, path=None):
                 f"너의 이름은 '친구'야. 오늘 날짜는 {today_str}이야. "
                 "너는 음성으로 대화하는 친절하고 똑똑한 한국어 AI 비서야. "
                 "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 사람과 말하듯 자연스러운 구어체 문장으로만 대답해. "
+                "답변은 소리 내어 읽기 좋게 보통 두세 문장 이내로 간결하게 해. "
+                "사진이 함께 주어지면 그것은 네 카메라로 지금 앞을 찍은 장면이니, 보이는 것을 바탕으로 자연스럽게 설명해. "
                 "사용자가 이전에 한 말을 반드시 기억하고 문맥에 맞게 대답해."
             )
         }

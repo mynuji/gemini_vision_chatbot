@@ -1,0 +1,7 @@
+# Jetson에서는 torch를 NVIDIA 제공 휠로 먼저 설치한 뒤 나머지를 설치하세요.
+websockets
+numpy
+torch
+edge-tts
+google-genai>=1.50
+packaging

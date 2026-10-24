@@ -1,0 +1,44 @@
+#pragma once
+
+#include "esp_err.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+// ============================================================================
+// OV2640 카메라 (XIAO ESP32-S3 Sense 확장 보드) 드라이버 래퍼
+// - JPEG 출력, 프레임 버퍼는 PSRAM에 1장만 두어 오디오/LCD 파이프라인과의 경합 최소화
+// ============================================================================
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief OV2640 카메라 초기화 (JPEG / VGA 기본)
+ * @return ESP_OK 성공, 실패 시 esp_camera_init()의 에러 코드
+ */
+esp_err_t camera_io_init(void);
+
+/**
+ * @brief 카메라 초기화 완료 여부
+ */
+bool camera_io_is_ready(void);
+
+/**
+ * @brief 현재 장면을 JPEG로 촬영하여 PSRAM 버퍼로 복사해 반환
+ *
+ * 프레임 버퍼에 남아 있던 오래된 프레임은 버리고 새로 촬영합니다.
+ * 반환된 버퍼는 호출자가 반드시 free()로 해제해야 합니다.
+ *
+ * @param[out] out_jpeg  JPEG 데이터 버퍼 (PSRAM)
+ * @param[out] out_len   JPEG 데이터 길이 (bytes)
+ * @param[out] out_width  이미지 가로 해상도 (NULL 허용)
+ * @param[out] out_height 이미지 세로 해상도 (NULL 허용)
+ */
+esp_err_t camera_io_capture_jpeg(uint8_t **out_jpeg, size_t *out_len,
+                                 uint16_t *out_width, uint16_t *out_height);
+
+#ifdef __cplusplus
+}
+#endif

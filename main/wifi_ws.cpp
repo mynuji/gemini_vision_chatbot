@@ -128,8 +128,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             ws_cfg.uri = s_ws_uri;
             ws_cfg.reconnect_timeout_ms = 2000;
             ws_cfg.network_timeout_ms = 8000;
-            ws_cfg.task_stack = 6144;
-            ws_cfg.buffer_size = 4096;
+            ws_cfg.task_stack = 3584;   // 6144 -> 3584 (내부 SRAM 절약)
+            ws_cfg.buffer_size = 2048;  // 4096 -> 2048 (제어 JSON 및 오디오 수신에 충분)
 
             ESP_LOGI(TAG, "Starting WebSocket client with URI: %s (Heap before init: %uKB)",
                      s_ws_uri, (unsigned int)(esp_get_free_internal_heap_size() / 1024));

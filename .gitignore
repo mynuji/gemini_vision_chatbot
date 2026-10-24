@@ -1,3 +1,7 @@
+# Secrets
+.env
+server/.env
+
 # ESP-IDF
 build/
 managed_components/
@@ -12,3 +16,5 @@ sdkconfig.old
 .idea/
 .cache/
 .DS_Store
+scratch_build.log
+__pycache__/
