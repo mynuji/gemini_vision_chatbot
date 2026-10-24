@@ -3,5 +3,3 @@ websockets
 numpy
 torch
 edge-tts
-google-genai>=1.50
-packaging

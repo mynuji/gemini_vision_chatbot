@@ -11,8 +11,10 @@ import os
 import wave
 from collections import deque
 import edge_tts
-from google import genai
-from google.genai import types as genai_types
+import base64
+import urllib.request
+import urllib.error
+import threading
 
 # ==========================================
 # 0. 환경 변수(.env) 로딩
@@ -58,8 +60,7 @@ GEMINI_FALLBACK_MODELS = [m.strip() for m in os.environ.get(
 GEMINI_THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "minimal").strip()
 GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "1024"))
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-print(f"[시스템] Gemini LLM 준비 완료: {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
+print(f"[시스템] Gemini LLM 준비 완료 (REST SSE 스트리밍): {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
 
 VOICE = "ko-KR-SunHiNeural"
 
@@ -190,12 +191,11 @@ async def run_whisper_cpp(audio_np):
     return result_text, asr_ms
 
 # ==========================================
-# 2-1. Google Gemini 실시간 스트리밍 연동
+# 2-1. Google Gemini 실시간 스트리밍 연동 (REST SSE)
 # ==========================================
-def build_gemini_contents(messages, image_bytes=None, image_mime="image/jpeg"):
+def build_gemini_payload(messages, image_bytes=None, image_mime="image/jpeg", with_thinking=True, model="gemini-3.5-flash"):
     """
-    OpenAI 형식 대화 이력([{role, content}])을 Gemini 형식(system_instruction + contents)으로 변환.
-    image_bytes가 주어지면 마지막 사용자 발화에 이미지(JPEG)를 함께 첨부합니다.
+    OpenAI 형식 대화 이력([{role, content}]) 및 이미지 데이터를 Gemini REST API 페이로드로 변환
     """
     system_texts = []
     contents = []
@@ -209,100 +209,111 @@ def build_gemini_contents(messages, image_bytes=None, image_mime="image/jpeg"):
                 system_texts.append(text)
             continue
         g_role = "model" if role == "assistant" else "user"
-        # Gemini는 user로 시작하는 대화를 권장하므로 앞부분의 model 발화는 생략
         if not contents and g_role == "model":
             continue
-        # 같은 역할이 연속되면 하나의 턴으로 병합 (끼어들기 등으로 user가 연속될 수 있음)
-        if contents and contents[-1].role == g_role:
-            contents[-1].parts.append(genai_types.Part(text=text))
+        if contents and contents[-1]["role"] == g_role:
+            contents[-1]["parts"].append({"text": text})
         else:
-            contents.append(genai_types.Content(role=g_role, parts=[genai_types.Part(text=text)]))
+            contents.append({"role": g_role, "parts": [{"text": text}]})
 
     if image_bytes:
-        image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type=image_mime)
-        if contents and contents[-1].role == "user":
-            contents[-1].parts.insert(0, image_part)
+        b64_img = base64.b64encode(image_bytes).decode("ascii")
+        img_part = {"inline_data": {"mime_type": image_mime, "data": b64_img}}
+        if contents and contents[-1]["role"] == "user":
+            contents[-1]["parts"].insert(0, img_part)
         else:
-            contents.append(genai_types.Content(role="user", parts=[image_part]))
+            contents.append({"role": "user", "parts": [img_part]})
 
-    system_instruction = "\n".join(system_texts) if system_texts else None
-    return system_instruction, contents
+    generation_config = {
+        "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
+        "temperature": 0.3,
+        "topP": 0.85,
+    }
+    if with_thinking and not model.startswith("gemini-1.") and GEMINI_THINKING_LEVEL:
+        generation_config["thinkingConfig"] = {"thinkingLevel": GEMINI_THINKING_LEVEL}
 
-# 지정한 사고 수준을 거부(400)한 모델 목록: 이후 호출부터는 사고 설정 없이 바로 요청
+    payload = {
+        "contents": contents,
+        "generationConfig": generation_config
+    }
+    if system_texts:
+        payload["system_instruction"] = {"parts": [{"text": "\n".join(system_texts)}]}
+
+    return payload
+
 _models_without_thinking_config = set()
-
-def build_gemini_config(model, system_instruction):
-    """모델 세대에 맞는 생성 설정 (음성 대화용 저지연 사고 설정 포함)"""
-    thinking_config = None
-    if model in _models_without_thinking_config:
-        thinking_config = None
-    elif model.startswith("gemini-2.5"):
-        thinking_config = genai_types.ThinkingConfig(thinking_budget=0)
-    elif not model.startswith("gemini-1.") and GEMINI_THINKING_LEVEL:
-        try:
-            thinking_config = genai_types.ThinkingConfig(thinking_level=GEMINI_THINKING_LEVEL)
-        except Exception:
-            thinking_config = None  # 구버전 SDK 호환
-
-    return genai_types.GenerateContentConfig(
-        system_instruction=system_instruction,
-        max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
-        temperature=0.3,
-        top_p=0.85,
-        thinking_config=thinking_config,
-    )
-
-def extract_gemini_chunk_text(chunk):
-    """스트리밍 청크에서 사고(thought) 파트를 제외한 순수 답변 텍스트만 추출"""
-    try:
-        candidates = chunk.candidates or []
-        if not candidates or not candidates[0].content or not candidates[0].content.parts:
-            return ""
-        return "".join(
-            p.text for p in candidates[0].content.parts
-            if getattr(p, "text", None) and not getattr(p, "thought", False)
-        )
-    except Exception:
-        return ""
 
 async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
     """
-    Gemini 스트리밍 응답 텍스트 조각을 순서대로 yield하는 비동기 제너레이터.
+    Gemini REST API SSE 스트리밍 응답 텍스트 조각을 순서대로 yield하는 비동기 제너레이터.
+    별도의 google-genai SDK 없이 표준 라이브러리(urllib/threading/asyncio)로 동작하여 Python 3.8+ 모든 환경에서 지원됩니다.
     첫 토큰을 받기 전에 실패(503 과부하, 429 할당량, 404 모델 종료 등)하면 대체 모델로 자동 재시도합니다.
     """
-    system_instruction, contents = build_gemini_contents(messages, image_bytes, image_mime)
     last_error = None
 
     for model in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS:
         yielded = False
         for attempt in range(2):
+            with_thinking = (model not in _models_without_thinking_config)
+            payload = build_gemini_payload(messages, image_bytes, image_mime, with_thinking=with_thinking, model=model)
+            payload_bytes = json.dumps(payload).encode("utf-8")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={GEMINI_API_KEY}"
+            req = urllib.request.Request(url, data=payload_bytes, headers={"Content-Type": "application/json"})
+
+            queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+            stop_event = threading.Event()
+
+            def reader_thread():
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        for line in resp:
+                            if stop_event.is_set():
+                                break
+                            line_str = line.decode("utf-8").strip()
+                            if line_str.startswith("data: "):
+                                try:
+                                    data = json.loads(line_str[6:])
+                                    for cand in data.get("candidates", []):
+                                        for part in cand.get("content", {}).get("parts", []):
+                                            if "text" in part and not part.get("thought", False):
+                                                loop.call_soon_threadsafe(queue.put_nowait, part["text"])
+                                except Exception:
+                                    pass
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                except Exception as e:
+                    loop.call_soon_threadsafe(queue.put_nowait, e)
+
+            thread = threading.Thread(target=reader_thread, daemon=True)
+            thread.start()
+
             try:
-                stream = await gemini_client.aio.models.generate_content_stream(
-                    model=model,
-                    contents=contents,
-                    config=build_gemini_config(model, system_instruction),
-                )
-                async for chunk in stream:
-                    text = extract_gemini_chunk_text(chunk)
-                    if text:
-                        yielded = True
-                        yield text
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    yielded = True
+                    yield item
                 if yielded:
                     return
                 last_error = RuntimeError(f"{model}: 빈 응답 수신")
                 print(f"\n[Gemini] {model} 빈 응답 -> 대체 모델 시도")
                 break
             except asyncio.CancelledError:
+                stop_event.set()
                 raise
             except Exception as e:
+                stop_event.set()
                 if yielded:
                     # 이미 일부 답변이 음성으로 나간 뒤라면 다른 모델로 처음부터 다시 말하지 않음
                     raise
                 last_error = e
                 err_text = str(e).lower()
-                # 모델이 사고 설정을 지원하지 않으면 같은 모델에서 사고 설정 없이 즉시 재시도
-                if attempt == 0 and "thinking" in err_text and model not in _models_without_thinking_config:
-                    print(f"\n[Gemini] {model} 사고 설정 미지원 -> 기본 설정으로 재시도")
+                # 모델이 사고 설정을 지원하지 않으면 사고 설정 없이 즉시 재시도
+                if attempt == 0 and ("thinking" in err_text or "400" in err_text) and model not in _models_without_thinking_config:
+                    print(f"\n[Gemini] {model} 사고 설정 미지원 또는 400 -> 기본 설정으로 재시도")
                     _models_without_thinking_config.add(model)
                     continue
                 print(f"\n[Gemini] {model} 호출 실패 -> 대체 모델 시도: {e}")
