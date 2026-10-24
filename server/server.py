@@ -257,6 +257,7 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
             with_thinking = (model not in _models_without_thinking_config)
             payload = build_gemini_payload(messages, image_bytes, image_mime, with_thinking=with_thinking, model=model)
             payload_bytes = json.dumps(payload).encode("utf-8")
+            print(f"\n[Gemini 호출] Gemini 스트리밍 API 호출 시작 (모델: {model}, 사진 첨부: {'예 (' + str(len(image_bytes)) + ' bytes)' if image_bytes else '아니오'}, 대화 턴 수: {len(messages)})")
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={GEMINI_API_KEY}"
             req = urllib.request.Request(url, data=payload_bytes, headers={"Content-Type": "application/json"})
 

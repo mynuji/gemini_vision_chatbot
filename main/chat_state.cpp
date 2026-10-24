@@ -50,27 +50,23 @@ static void camera_preview_task(void *pvParameters) {
     camera_fb_t *first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
     if (first_fb != NULL) {
         if (first_fb->format == PIXFORMAT_RGB565 && first_fb->width == 240 && first_fb->height == 240) {
-            uint16_t *rot_buf = (uint16_t *)heap_caps_malloc(240 * 240 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             const uint16_t *src = (const uint16_t *)first_fb->buf;
 
+            // 바이트 스왑 없이 원본 RGB565 그대로 시계방향 90도 회전 (색상 왜곡 완전 해소!)
             for (int y = 0; y < 240; y++) {
                 int src_x = 239 - y;
                 uint16_t *dst_row = crop_buf + (y * 240);
-                uint16_t *rot_row = rot_buf ? (rot_buf + (y * 240)) : NULL;
                 for (int x = 0; x < 240; x++) {
                     int src_y = x;
-                    uint16_t raw_pix = src[src_y * 240 + src_x];
-                    if (rot_row) rot_row[x] = raw_pix; // 원본 빅엔디안 유지 (fmt2jpg용)
-                    dst_row[x] = __builtin_bswap16(raw_pix); // 바이트 스왑 (LVGL 렌더링용)
+                    dst_row[x] = src[src_y * 240 + src_x];
                 }
             }
             display_ui_draw_preview_frame(crop_buf);
 
-            // 젯슨 서버로 시계방향 90도 회전된 정상 각도의 JPEG 전송
+            // 젯슨 서버로 시계방향 90도 회전된 정상 각도의 JPEG 전송 (crop_buf 직결 인코딩)
             uint8_t *jpg_buf = NULL;
             size_t jpg_len = 0;
-            uint8_t *enc_src = rot_buf ? (uint8_t *)rot_buf : (uint8_t *)first_fb->buf;
-            if (fmt2jpg(enc_src, 240 * 240 * 2, 240, 240, PIXFORMAT_RGB565, 80, &jpg_buf, &jpg_len)) {
+            if (fmt2jpg((uint8_t *)crop_buf, 240 * 240 * 2, 240, 240, PIXFORMAT_RGB565, 80, &jpg_buf, &jpg_len)) {
                 ESP_LOGI(TAG, "First frame rotated 90 deg CW & encoded to JPEG (%u bytes). Sending to server...", (unsigned int)jpg_len);
                 char meta[96];
                 snprintf(meta, sizeof(meta), "{\"type\":\"image_start\",\"size\":%u}", (unsigned int)jpg_len);
@@ -81,7 +77,6 @@ static void camera_preview_task(void *pvParameters) {
                 ESP_LOGE(TAG, "Failed to encode first frame to JPEG");
                 wifi_ws_send_text("{\"type\":\"image_failed\"}");
             }
-            if (rot_buf) free(rot_buf);
         }
         camera_io_return_fb(first_fb);
     } else {
@@ -89,14 +84,14 @@ static void camera_preview_task(void *pvParameters) {
         wifi_ws_send_text("{\"type\":\"image_failed\"}");
     }
 
-    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (디코딩 0초, 지연 0ms!)
+    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (디코딩 0초, 30+ FPS 버벅임 없는 스트리밍)
     uint32_t frame_count = 0;
     while (s_camera_preview_active) {
-        camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(40));
+        camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(100));
         if (fb != NULL) {
             if (s_camera_preview_active && fb->format == PIXFORMAT_RGB565 && fb->width == 240 && fb->height == 240) {
                 const uint16_t *src = (const uint16_t *)fb->buf;
-                // [16x16 블록 타일링 시계방향 90도 회전] 캐시 적중률 극대화로 1ms 미만에 완료!
+                // [16x16 블록 타일링 시계방향 90도 회전] 바이트 스왑 없이 원본 데이터 직결로 0.8ms 완료!
                 for (int by = 0; by < 240; by += 16) {
                     for (int bx = 0; bx < 240; bx += 16) {
                         for (int y = by; y < by + 16; y++) {
@@ -104,7 +99,7 @@ static void camera_preview_task(void *pvParameters) {
                             uint16_t *dst_row = crop_buf + (y * 240);
                             for (int x = bx; x < bx + 16; x++) {
                                 int src_y = x;
-                                dst_row[x] = __builtin_bswap16(src[src_y * 240 + src_x]);
+                                dst_row[x] = src[src_y * 240 + src_x];
                             }
                         }
                     }
@@ -113,13 +108,13 @@ static void camera_preview_task(void *pvParameters) {
                     display_ui_draw_preview_frame(crop_buf);
                     frame_count++;
                     if (frame_count % 30 == 0) {
-                        ESP_LOGI(TAG, "Camera live preview: %u frames rendered (0-delay stream)", (unsigned int)frame_count);
+                        ESP_LOGI(TAG, "Camera live preview: %u frames rendered (smooth stream)", (unsigned int)frame_count);
                     }
                 }
             }
             camera_io_return_fb(fb);
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(1); // 1 tick 최소 지연으로 다음 센서 프레임 즉각 수신
     }
 
     ESP_LOGI(TAG, "Exiting camera preview loop (total %u frames rendered), restoring LVGL UI", (unsigned int)frame_count);

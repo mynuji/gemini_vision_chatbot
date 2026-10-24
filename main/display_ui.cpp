@@ -73,20 +73,20 @@ esp_err_t display_ui_init(void) {
   spi_bus_config_t buscfg = {};
   buscfg.mosi_io_num = LCD_MOSI;
   buscfg.sclk_io_num = LCD_CLK;
-  buscfg.max_transfer_sz = 240 * 40 * 2;
+  buscfg.max_transfer_sz = 240 * 60 * 2;
   esp_err_t ret = spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "SPI bus initialize failed: %s", esp_err_to_name(ret));
     return ret;
   }
 
-  // 3. LCD 패널 IO 생성
+  // 3. LCD 패널 IO 생성 (40MHz 초고속 SPI 전송)
   esp_lcd_panel_io_handle_t io_handle;
   esp_lcd_panel_io_spi_config_t io_config = {};
   io_config.cs_gpio_num = LCD_CS;
   io_config.dc_gpio_num = LCD_DC;
   io_config.spi_mode = 0;
-  io_config.pclk_hz = 20 * 1000 * 1000;
+  io_config.pclk_hz = 40 * 1000 * 1000;
   io_config.trans_queue_depth = 10;
   io_config.lcd_cmd_bits = 8;
   io_config.lcd_param_bits = 8;
@@ -112,7 +112,7 @@ esp_err_t display_ui_init(void) {
   lvgl_port_display_cfg_t disp_cfg = {};
   disp_cfg.io_handle = io_handle;
   disp_cfg.panel_handle = s_panel_handle;
-  disp_cfg.buffer_size = 240 * 40;
+  disp_cfg.buffer_size = 240 * 60;
   disp_cfg.double_buffer = true;
   disp_cfg.hres = 240;
   disp_cfg.vres = 240;
