@@ -388,12 +388,20 @@ void chat_state_handle_speech_end(void) {
 void chat_state_handle_server_text(const char *text, size_t len) {
     if (!text || len == 0) return;
 
-    ESP_LOGI(TAG, "Server text received: %s", text);
+    // 안전한 null-terminated 버퍼 생성 (웹소켓 수신 버퍼는 \0 미보장)
+    char safe_buf[512];
+    if (len >= sizeof(safe_buf)) {
+        len = sizeof(safe_buf) - 1;
+    }
+    memcpy(safe_buf, text, len);
+    safe_buf[len] = '\0';
+
+    ESP_LOGI(TAG, "Server text received (%d bytes): %s", (int)len, safe_buf);
     bool handled = false;
 
     // 1. JSON 제어 메시지 파싱
-    if (text[0] == '{') {
-        cJSON *root = cJSON_Parse(text);
+    if (safe_buf[0] == '{') {
+        cJSON *root = cJSON_Parse(safe_buf);
         if (root != NULL) {
             cJSON *type = cJSON_GetObjectItem(root, "type");
             cJSON *message = cJSON_GetObjectItem(root, "message");
@@ -463,12 +471,14 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                 }
             }
             cJSON_Delete(root);
+        } else {
+            ESP_LOGE(TAG, "cJSON_Parse failed for: %s", safe_buf);
         }
     }
 
     // 2. 일반 문자열 처리
     if (!handled) {
-        if (strcmp(text, "DONE") == 0 || strcmp(text, "END") == 0) {
+        if (strcmp(safe_buf, "DONE") == 0 || strcmp(safe_buf, "END") == 0) {
             chat_state_stop_camera_preview();
             if (audio_pipeline_is_spk_buffer_empty() && !audio_pipeline_is_speaker_playing()) {
                 if (s_close_session_after_speaking) {
@@ -483,7 +493,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
             } else {
                 audio_pipeline_set_server_done(true);
             }
-        } else if (strcmp(text, "CLEAR_AUDIO") == 0) {
+        } else if (strcmp(safe_buf, "CLEAR_AUDIO") == 0) {
             chat_state_stop_camera_preview();
             audio_pipeline_clear_audio();
             if (s_chat_state == CHAT_STATE_SPEAKING || s_chat_state == CHAT_STATE_THINKING) {
@@ -493,8 +503,8 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     chat_state_set(CHAT_STATE_IDLE);
                 }
             }
-        } else if (strncmp(text, "STATUS:", 7) == 0) {
-            const char *st = text + 7;
+        } else if (strncmp(safe_buf, "STATUS:", 7) == 0) {
+            const char *st = safe_buf + 7;
             if (strcmp(st, "THINKING...") == 0 || strcmp(st, "THINKING") == 0) {
                 audio_pipeline_set_discard_tts(false);
                 if (s_chat_state != CHAT_STATE_THINKING) {

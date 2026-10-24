@@ -332,6 +332,14 @@ void display_ui_start_camera_preview(void) {
   ESP_LOGI(TAG, "Entering camera live preview mode (direct hardware SPI pipeline)");
   display_ui_pause_auto_blink(true);
 
+  if (lvgl_port_lock(150)) {
+    if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+    if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+    if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
+    lvgl_port_unlock();
+  }
+
   // 전방 카메라 정방향(사물/글자) 출력을 위해 좌우 미러링 일시 해제
   if (s_panel_handle) {
     esp_lcd_panel_mirror(s_panel_handle, false, false);
