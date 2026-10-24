@@ -160,6 +160,18 @@ esp_err_t display_ui_init(void) {
   lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -5);
   lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
 
+  // 상단 히든 설정 메뉴 터치 위치 안내용 작은 빨간 점 (지름 8px 원형)
+  lv_obj_t *s_settings_hint_dot = lv_obj_create(s_screen);
+  lv_obj_set_size(s_settings_hint_dot, 8, 8);
+  lv_obj_set_style_radius(s_settings_hint_dot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(s_settings_hint_dot, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_set_style_bg_opa(s_settings_hint_dot, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(s_settings_hint_dot, 0, 0);
+  lv_obj_set_style_pad_all(s_settings_hint_dot, 0, 0);
+  lv_obj_clear_flag(s_settings_hint_dot, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(s_settings_hint_dot, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_align(s_settings_hint_dot, LV_ALIGN_TOP_MID, 0, 10);
+
   // 카메라 실시간 프리뷰용 64바이트 정렬 PSRAM 버퍼 준비 (SPI DMA 직결 최적화)
   s_crop_buf = (uint16_t *)heap_caps_aligned_alloc(64, 240 * 240 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (s_crop_buf) {

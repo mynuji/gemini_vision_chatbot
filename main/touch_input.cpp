@@ -27,7 +27,7 @@ static uint8_t s_detected_addr = 0;
 static bool s_i2c_initialized = false;
 
 static volatile uint32_t s_last_touch_isr_time = 0;
-static volatile bool s_touch_event_flag = false;
+static volatile bool s_chat_touch_event_flag = false;
 
 static int16_t s_last_x = 120;
 static int16_t s_last_y = 120;
@@ -40,9 +40,7 @@ static touch_settings_trigger_cb_t s_settings_cb = NULL;
 
 static void IRAM_ATTR touch_isr_handler(void *arg) {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    // 디바운스 200ms
-    if (now - s_last_touch_isr_time > 200) {
-        s_touch_event_flag = true;
+    if (now - s_last_touch_isr_time > 100) {
         s_last_touch_isr_time = now;
     }
 }
@@ -196,10 +194,11 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
 
     // 상단 10회 연속 터치 감지 (터치가 새로 눌렸을 때判定: false -> true)
     if (pressed && !s_is_pressed) {
-        // 상단 영역 판정: Y <= 70 이거나, I2C 칩이 없는 경우 전체 터치를 10회 탭으로 인정
-        bool is_top_area = (s_chip_type != TOUCH_CHIP_NONE) ? (y <= 70) : true;
+        // 상단 영역 판정: Y <= 70 (빨간 점 주변)
+        bool is_top_area = (s_chip_type != TOUCH_CHIP_NONE) ? (y <= 70) : false;
 
         if (is_top_area) {
+            // 상단 탭: 설정 메뉴 카운트만 증가시키고, 일반 대화 터치 플래그는 세팅하지 않음!
             if (now - s_last_top_tap_time < 1500) {
                 s_top_tap_count++;
             } else {
@@ -207,23 +206,25 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
             }
             s_last_top_tap_time = now;
 
-            ESP_LOGI(TAG, "Top area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
+            ESP_LOGI(TAG, "Top red-dot area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
 
-            // 탭 할 때마다 가벼운 피드백 클릭 톤
-            audio_io_play_tone(1200.0f + s_top_tap_count * 80.0f, 30);
+            // 가벼운 피드백 클릭 틱 소리 (2400Hz, 15ms)
+            audio_io_play_tone(2400.0f, 15);
 
             if (s_top_tap_count >= 10) {
                 s_top_tap_count = 0;
                 ESP_LOGW(TAG, ">>> 10 TOP TAPS DETECTED! TRIGGERING SETTINGS MENU <<<");
-                // 성공 진입 비프음 (경쾌한 3화음)
-                audio_io_play_tone(1500.0f, 80);
+                // 성공 진입 비프음
+                audio_io_play_tone(1500.0f, 100);
                 if (s_settings_cb) {
                     s_settings_cb();
                 }
             }
         } else {
-            // 다른 영역 누르면 카운트 리셋
+            // 화면 중앙/하단 터치 (Y > 70): 일반 대화용 터치(수동 호출 / 대화 중단) 플래그 발생!
             s_top_tap_count = 0;
+            s_chat_touch_event_flag = true;
+            ESP_LOGI(TAG, "Chat touch area tapped (x=%d, y=%d) -> Chat event flagged", x, y);
         }
     }
 
@@ -259,8 +260,8 @@ esp_err_t touch_input_register_lvgl_indev(void) {
 }
 
 bool touch_input_has_event(void) {
-    if (s_touch_event_flag) {
-        s_touch_event_flag = false;
+    if (s_chat_touch_event_flag) {
+        s_chat_touch_event_flag = false;
         return true;
     }
     return false;
