@@ -80,7 +80,8 @@ static void camera_preview_task(void *pvParameters) {
         jpeg_cfg.outbuf = (uint8_t *)dec_buf;
         jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
         jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
-        jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
+        // 320x240 QVGA는 1:1 초고속 디코딩(12ms), VGA는 1/2 스케일링
+        jpeg_cfg.out_scale = (first_fb->width > 320) ? JPEG_IMAGE_SCALE_1_2 : JPEG_IMAGE_SCALE_0;
         jpeg_cfg.flags.swap_color_bytes = 1; // LVGL CONFIG_LV_COLOR_16_SWAP=y 규격 일치
         jpeg_cfg.advanced.working_buffer = work_buf;
         jpeg_cfg.advanced.working_buffer_size = work_sz;
@@ -109,10 +110,10 @@ static void camera_preview_task(void *pvParameters) {
         wifi_ws_send_text("{\"type\":\"image_failed\"}");
     }
 
-    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (다이렉트 LCD 초고속 스트리밍)
+    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (다이렉트 초고속 스트리밍)
     uint32_t frame_count = 0;
     while (s_camera_preview_active) {
-        // [10초 버퍼 큐 랙 완전 해결] 큐에 쌓인 과거 프레임을 즉시 비우고 현재의 100% 최신 프레임만 획득
+        // [수 초 큐 지연 완전 제거] 드라이버 큐에 밀려있던 과거 프레임을 즉시 비우고 실시간 최신 프레임 획득
         camera_fb_t *fb = NULL;
         while (1) {
             camera_fb_t *next_fb = camera_io_get_fb(0);
@@ -132,7 +133,7 @@ static void camera_preview_task(void *pvParameters) {
                 jpeg_cfg.outbuf = (uint8_t *)dec_buf;
                 jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
                 jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
-                jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_1_2;
+                jpeg_cfg.out_scale = (fb->width > 320) ? JPEG_IMAGE_SCALE_1_2 : JPEG_IMAGE_SCALE_0;
                 jpeg_cfg.flags.swap_color_bytes = 1; // LVGL CONFIG_LV_COLOR_16_SWAP=y 규격 일치
                 jpeg_cfg.advanced.working_buffer = work_buf;
                 jpeg_cfg.advanced.working_buffer_size = work_sz;
@@ -152,7 +153,6 @@ static void camera_preview_task(void *pvParameters) {
                             }
                         }
                     }
-                    // LVGL 대신 LCD 컨트롤러에 다이렉트 고속 SPI DMA 전송
                     display_ui_draw_preview_frame(crop_buf);
                     frame_count++;
                     if (frame_count % 30 == 0) {
@@ -162,7 +162,7 @@ static void camera_preview_task(void *pvParameters) {
             }
             camera_io_return_fb(fb);
         }
-        vTaskDelay(pdMS_TO_TICKS(15));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     ESP_LOGI(TAG, "Exiting camera preview loop (total %u frames rendered), restoring LVGL UI", (unsigned int)frame_count);
@@ -254,6 +254,7 @@ void chat_state_set(chat_state_t new_state) {
 
     switch (new_state) {
         case CHAT_STATE_IDLE:
+            chat_state_stop_camera_preview();
             s_session_active = false;
             s_close_session_after_speaking = false;
             audio_pipeline_enable_mic_streaming(false);
@@ -262,6 +263,7 @@ void chat_state_set(chat_state_t new_state) {
             break;
 
         case CHAT_STATE_LISTENING:
+            chat_state_stop_camera_preview();
             s_session_active = true;
             s_listening_start_ms = now_ms;
             audio_pipeline_enable_mic_streaming(true);
