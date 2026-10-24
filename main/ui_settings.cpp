@@ -181,26 +181,27 @@ static void on_menu_btn_click(lv_event_t *e) {
 }
 
 static void create_main_menu(lv_obj_t *parent) {
-    // 타이틀 라벨
+    // [이전 화면 복귀 버튼] 원형 LCD 상단 좌측 안전 영역에 배치 (중심 기준 x = -54, y = 14)
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 34, 26);
+    lv_obj_align(back_btn, LV_ALIGN_TOP_MID, -54, 12);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x3A3A3A), 0);
+    lv_obj_set_style_radius(back_btn, 13, 0); // 둥근 캡슐형
+    lv_obj_t *back_lbl = lv_label_create(back_btn);
+    lv_label_set_text(back_lbl, "<");
+    lv_obj_center(back_lbl);
+    lv_obj_add_event_cb(back_btn, on_menu_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)0);
+
+    // [타이틀 라벨] 원형 LCD 상단 중앙 우측에 배치 (중심 기준 x = 16, y = 16)
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, "SETTINGS");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
-
-    // 닫기 버튼 [X]
-    lv_obj_t *close_btn = lv_btn_create(parent);
-    lv_obj_set_size(close_btn, 36, 26);
-    lv_obj_align(close_btn, LV_ALIGN_TOP_RIGHT, -18, 6);
-    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x444444), 0);
-    lv_obj_t *close_lbl = lv_label_create(close_btn);
-    lv_label_set_text(close_lbl, "X");
-    lv_obj_center(close_lbl);
-    lv_obj_add_event_cb(close_btn, on_menu_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 16, 16);
 
     // 스크롤 가능한 리스트 생성 (원형 화면 안쪽에 여유 있게 배치)
     lv_obj_t *list = lv_list_create(parent);
-    lv_obj_set_size(list, 206, 170);
-    lv_obj_align(list, LV_ALIGN_CENTER, 0, 16);
+    lv_obj_set_size(list, 206, 168);
+    lv_obj_align(list, LV_ALIGN_CENTER, 0, 18);
     lv_obj_set_style_bg_color(list, lv_color_hex(0x222222), 0);
     lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
     lv_obj_set_style_radius(list, 10, 0);
@@ -208,8 +209,9 @@ static void create_main_menu(lv_obj_t *parent) {
     lv_obj_set_style_pad_top(list, 10, 0);
     lv_obj_set_style_pad_bottom(list, 10, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER); // 오직 수직 스크롤만 허용
-    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM); // 관성 스크롤 제거 (손 떼면 즉시 정지)
-    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);  // 바운스 제거
+    // 잔여 관성 스크롤(Momentum)과 탄성(Elastic) 기능 활성화 (사용자 선호 반영)
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     const char *items[] = {
         "1. Volume Control",
@@ -228,7 +230,7 @@ static void create_main_menu(lv_obj_t *parent) {
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
         lv_obj_set_style_text_color(btn, lv_color_white(), 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);       // 버튼 자체 스크롤 차단
-        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);  // 클릭 시 자동 스크롤 오작동 원천 차단!
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);  // 클릭 시 자동 스크롤 오작동 방지
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_GESTURE_BUBBLE);
         // SHORT_CLICKED 및 CLICKED 둘 다 지원 (디바운스가 있어서 한 번만 확실하게 실행됨)
         lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)(i + 1));
@@ -550,8 +552,8 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_set_style_radius(list, 10, 0);
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     if (s_scanned_count == 0) {
         lv_obj_t *empty_btn = lv_list_add_btn(list, NULL, "(No APs Found)");
