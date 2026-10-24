@@ -278,11 +278,14 @@ static void audio_fetch_task(void *pvParameters) {
 
             bool is_playing = s_is_speaker_playing || (s_spk_buffered_bytes > 0);
             // 끼어들기(Barge-in) 감지:
-            // 1) 스피커 재생 중 (is_playing == true, SPEAKING):
-            //    AEC 에코 제거 후 실제 사용자 음성(peak > 800) 감지 시 2프레임(약 64ms)만으로 즉각 반응
-            // 2) AI 생각 중 (is_playing == false, THINKING):
-            //    스피커가 무음이므로 peak > 350, 2프레임 확인으로 신속하게 끼어들기 판정
-            bool voice_candidate = (res->vad_state == VAD_SPEECH && (is_playing ? (peak > 800) : (peak > 350)));
+            // 스피커가 출력 중일 때는 보드 상의 스피커 소리가 마이크로 직접 유입(Acoustic Feedback)되므로
+            // 단순 VAD/피크 에너지로 판정하면 자기 소리를 듣고 스스로 중단하는 무한 루프가 발생합니다.
+            // 1) 스피커 재생 중(is_playing == true, SPEAKING):
+            //    단순 마이크 에너지에 의한 자가 인터럽트는 원천 차단합니다.
+            //    (스피커 재생 중에는 신경망 모델 기반 호출어 'Alexa' 또는 물리적 '화면 터치'로 즉시 안전하게 중단됩니다.)
+            // 2) AI 생각 중(cur_state == CHAT_STATE_THINKING && !is_playing):
+            //    스피커가 무음 상태이므로 사용자 음성(peak > 450) 감지 시 2프레임 확인으로 신속하게 끼어들기 동작
+            bool voice_candidate = (cur_state == CHAT_STATE_THINKING && !is_playing && res->vad_state == VAD_SPEECH && peak > 450);
             int required_confirm_frames = 2;
 
             if (voice_candidate) {

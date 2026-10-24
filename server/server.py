@@ -938,9 +938,16 @@ async def handler(websocket, path=None):
     ]
 
     pending_image_future = None
+    t_last_user_request = 0.0
 
     async def handle_user_turn(user_text, asr_ms=0.0, close_session_after=False):
-        nonlocal pending_image_future
+        nonlocal pending_image_future, t_last_user_request
+        now = time.perf_counter()
+        if now - t_last_user_request < 1.2:
+            print(f"[서버 보호] 직전 요청과 간격이 너무 짧음({now - t_last_user_request:.2f}s < 1.2s) -> 중복 요청 무시")
+            return
+        t_last_user_request = now
+
         interrupted_holder["session"] = None
         interrupted_holder["last_completed_session"] = None
         interrupted_holder["active_ai_response"] = None
@@ -997,16 +1004,16 @@ async def handler(websocket, path=None):
                         vad_prob = vad_model(audio_tensor, SAMPLE_RATE).item()
                         
                         is_ai_busy = ai_task and not ai_task.done()
-                        current_threshold = 0.50 if is_ai_busy else VAD_THRESHOLD
+                        current_threshold = 0.65 if is_ai_busy else VAD_THRESHOLD
                         
                         if vad_prob > current_threshold:
                             silence_time = 0.0
                             barge_in_counter += 1
                             
                             # AI 답변 출력 중 끼어들기 감지:
-                            # 2프레임 연속 시 즉시 취소하여 자연스러운 말 끼어들기 보장
+                            # 잔여 스피커 음향 오작동 방지: 4프레임 연속 및 발화 종료 1.0초 이후에만 끼어들기 인정
                             time_since_speech_end = time.perf_counter() - t_speech_end
-                            if is_ai_busy and barge_in_counter >= 2 and time_since_speech_end > 0.5:
+                            if is_ai_busy and barge_in_counter >= 4 and time_since_speech_end > 1.0:
                                 print("\n[음성 끼어들기] AI 답변 일시 중단 (세션 보관)")
                                 ai_task.cancel()
                                 try:
