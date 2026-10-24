@@ -7,23 +7,20 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "img_converters.h"
 #include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "CAMERA_IO";
 
-// 실시간 영상 프리뷰 FPS 극대화 및 지연 시간(Lag) 0초 달성:
-// QVGA(320x240) -> 디코딩 연산량이 VGA 대비 1/4로 줄어들어 25~30 FPS 실시간 렌더링 가능
-#define CAMERA_FRAME_SIZE    FRAMESIZE_QVGA
-#define CAMERA_JPEG_QUALITY  12        // 0~63 (낮을수록 고화질)
+// 240x240 원형 LCD 다이렉트 1:1 매핑 & 실시간 지연 0초 (Lag-free):
+// 하드웨어 센서에서 직접 RGB565로 캡처하여 매 프레임 무거운 소프트웨어 JPEG 디코딩을 완전히 제거!
+#define CAMERA_FRAME_SIZE    FRAMESIZE_240X240
+#define CAMERA_JPEG_QUALITY  12        // 0~63
 #define CAMERA_XCLK_FREQ_HZ  20000000
 
 static bool s_ready = false;
 static SemaphoreHandle_t s_cam_mutex = NULL;
-
-// PSRAM 동적 힙 파편화 방지용 재사용 버퍼 (필요 시 자동 확장)
-static uint8_t *s_shared_jpeg_buf = NULL;
-static size_t   s_shared_jpeg_capacity = 0;
 
 esp_err_t camera_io_init(void) {
     if (s_ready) {
@@ -60,12 +57,11 @@ esp_err_t camera_io_init(void) {
     config.ledc_timer   = LEDC_TIMER_1;
     config.ledc_channel = LEDC_CHANNEL_1;
 
-    config.pixel_format = PIXFORMAT_JPEG;
+    // 아두이노 검증 설정: PIXFORMAT_RGB565 + 240x240 + WHEN_EMPTY + fb_count=2
+    config.pixel_format = PIXFORMAT_RGB565;
     config.frame_size   = CAMERA_FRAME_SIZE;
     config.jpeg_quality = CAMERA_JPEG_QUALITY;
-    // fb_count=1 + WHEN_EMPTY:
-    // 버퍼를 단 1개만 운용하여 드라이버 내부 큐에 과거 프레임이 쌓이는 지연(Lag)을 물리적으로 원천 차단
-    config.fb_count     = 1;
+    config.fb_count     = 2;
     config.fb_location  = CAMERA_FB_IN_PSRAM;
     config.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
 
@@ -84,9 +80,12 @@ esp_err_t camera_io_init(void) {
     }
 
     ESP_LOGI(TAG, "Camera sensor detected (PID: 0x%02x, %s)", s->id.PID,
-             s->id.PID == OV2640_PID ? "OV2640" : "UNKNOWN");
+             s->id.PID == OV2640_PID ? "OV2640" : (s->id.PID == OV5640_PID ? "OV5640" : "UNKNOWN"));
 
-    if (s->id.PID == OV2640_PID) {
+    if (s->id.PID == OV5640_PID) {
+        // OV5640 발열 최적화 (0x302C bit[7:6]: 11=4x -> 00=1x)
+        s->set_reg(s, 0x302C, 0xC0, 0x00);
+    } else if (s->id.PID == OV2640_PID) {
         // 실내 조명 기준 기본 튜닝
         s->set_brightness(s, 1);
         s->set_saturation(s, 0);
@@ -98,17 +97,9 @@ esp_err_t camera_io_init(void) {
         s->set_hmirror(s, 0);
     }
 
-    // 초기 재사용 캡처 버퍼 64KB 미리 확보 (PSRAM 파편화 방지)
-    s_shared_jpeg_capacity = 64 * 1024;
-    s_shared_jpeg_buf = (uint8_t *)heap_caps_malloc(s_shared_jpeg_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (s_shared_jpeg_buf == NULL) {
-        ESP_LOGW(TAG, "Could not pre-allocate 64KB PSRAM capture buffer; dynamic alloc will be used");
-        s_shared_jpeg_capacity = 0;
-    }
-
     s_ready = true;
-    ESP_LOGI(TAG, "Camera driver ready (VGA JPEG q=%d). Free PSRAM: %u KB, InitTime: %lld ms",
-             CAMERA_JPEG_QUALITY, (unsigned int)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+    ESP_LOGI(TAG, "Camera driver ready (240x240 RGB565). Free PSRAM: %u KB, InitTime: %lld ms",
+             (unsigned int)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
              (long long)((esp_timer_get_time() - t0) / 1000));
     return ESP_OK;
 }
@@ -137,36 +128,28 @@ esp_err_t camera_io_capture_jpeg(uint8_t **out_jpeg, size_t *out_len,
     esp_err_t ret = ESP_OK;
     int64_t t0 = esp_timer_get_time();
 
-    // 1. 센서 버퍼가 차있으면 반환하여 즉시 최신 프레임 캡처 시작
     camera_fb_t *fb = esp_camera_fb_get();
-    if (fb) {
-        esp_camera_fb_return(fb);
-    }
-    // 2. 실시간 최신 프레임 촬영
-    fb = esp_camera_fb_get();
-
     if (fb == NULL) {
         ESP_LOGE(TAG, "Camera frame capture failed");
         ret = ESP_FAIL;
-    } else if (fb->format != PIXFORMAT_JPEG || fb->len == 0) {
+    } else if (fb->format != PIXFORMAT_RGB565 || fb->len == 0) {
         ESP_LOGE(TAG, "Invalid frame: format=%d, len=%u", fb->format, (unsigned int)fb->len);
         ret = ESP_ERR_INVALID_RESPONSE;
     } else {
-        // 호출자에게 독립적인 버퍼 반환 (PSRAM)
-        uint8_t *copy_buf = (uint8_t *)heap_caps_malloc(fb->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (copy_buf == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate %u bytes in PSRAM for frame", (unsigned int)fb->len);
-            ret = ESP_ERR_NO_MEM;
-        } else {
-            memcpy(copy_buf, fb->buf, fb->len);
-            *out_jpeg = copy_buf;
-            *out_len = fb->len;
+        // RGB565 -> JPEG 압축 (단 한 번 수행)
+        uint8_t *jpg_buf = NULL;
+        size_t jpg_len = 0;
+        if (fmt2jpg(fb->buf, fb->len, fb->width, fb->height, PIXFORMAT_RGB565, 80, &jpg_buf, &jpg_len)) {
+            *out_jpeg = jpg_buf;
+            *out_len = jpg_len;
             if (out_width)  *out_width  = (uint16_t)fb->width;
             if (out_height) *out_height = (uint16_t)fb->height;
-
-            ESP_LOGI(TAG, "JPEG captured: %ux%u (%u bytes) in %lld ms",
-                     (unsigned int)fb->width, (unsigned int)fb->height, (unsigned int)fb->len,
+            ESP_LOGI(TAG, "JPEG encoded from RGB565: %ux%u (%u bytes) in %lld ms",
+                     (unsigned int)fb->width, (unsigned int)fb->height, (unsigned int)jpg_len,
                      (long long)((esp_timer_get_time() - t0) / 1000));
+        } else {
+            ESP_LOGE(TAG, "fmt2jpg failed");
+            ret = ESP_FAIL;
         }
     }
 
