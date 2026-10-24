@@ -56,6 +56,12 @@ camera_fb_t *camera_io_get_fb(uint32_t timeout_ticks);
  */
 void camera_io_return_fb(camera_fb_t *fb);
 
+/**
+ * @brief LLM 사진 촬영용 고해상도(VGA 640x480) 및 실시간 LCD 프리뷰용(QVGA 320x240) 동적 전환
+ * @param high_res true: VGA 고화질(LLM 분석용), false: QVGA 고속(LCD 프리뷰용)
+ */
+void camera_io_set_high_res(bool high_res);
+
 #ifdef __cplusplus
 }
 #endif

@@ -348,9 +348,9 @@ void display_ui_start_camera_preview(void) {
     lvgl_port_unlock();
   }
 
-  // 전방 카메라 정방향(사물/글자) 출력을 위해 좌우 미러링 일시 해제
+  // 사용자의 요청에 따라 카메라 영상을 거울처럼 좌우 반전하여 표시
   if (s_panel_handle) {
-    esp_lcd_panel_mirror(s_panel_handle, false, false);
+    esp_lcd_panel_mirror(s_panel_handle, true, false);
   }
 }
 

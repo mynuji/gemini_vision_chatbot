@@ -55,16 +55,18 @@ static void camera_preview_task(void *pvParameters) {
         return;
     }
 
-    // 1. 첫 프레임 촬영 -> 서버로 원본 고화질 JPEG 전송 (서버에서 시계방향 90도 자동 회전)
+    // 1. LLM 전송용 고화질(VGA 640x480, quality=8) 사진 촬영
+    camera_io_set_high_res(true);
     camera_fb_t *first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
     if (first_fb != NULL && first_fb->format == PIXFORMAT_JPEG && first_fb->len > 0) {
-        ESP_LOGI(TAG, "First frame captured (%u bytes). Sending to Jetson server...", (unsigned int)first_fb->len);
+        ESP_LOGI(TAG, "High-res first frame captured (%u bytes, %dx%d). Sending to Jetson server...",
+                 (unsigned int)first_fb->len, first_fb->width, first_fb->height);
         char meta[96];
         snprintf(meta, sizeof(meta), "{\"type\":\"image_start\",\"size\":%u}", (unsigned int)first_fb->len);
         wifi_ws_send_text(meta);
         wifi_ws_send_bin(first_fb->buf, first_fb->len);
 
-        // 첫 프레임 디코딩 및 LCD 표시 (swap_color_bytes=1로 정상 색상 보장)
+        // 첫 프레임 디코딩 및 LCD 표시 (first_fb가 640x480이면 1/2 다운스케일하여 320x240으로 디코딩)
         esp_jpeg_image_cfg_t jpeg_cfg = {};
         jpeg_cfg.indata = first_fb->buf;
         jpeg_cfg.indata_size = (uint32_t)first_fb->len;
@@ -96,8 +98,8 @@ static void camera_preview_task(void *pvParameters) {
         wifi_ws_send_text("{\"type\":\"image_failed\"}");
     }
 
-    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (QVGA 11ms 디코딩 + fb_count=1 지연 0초)
-    // 2. AI 답변이 끝날 때까지 실시간 카메라 프리뷰 루프 실행 (fb_count=1 지연 0초 + LCD 직접 DMA 전송)
+    // 2. LCD 실시간 프리뷰를 위해 초고속 30fps QVGA(320x240, 11ms 디코딩) 모드로 복귀
+    camera_io_set_high_res(false);
     uint32_t frame_count = 0;
     while (s_camera_preview_active) {
         camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(100));
@@ -153,6 +155,7 @@ static void camera_preview_task(void *pvParameters) {
     free(dec_buf);
     free(work_buf);
     display_ui_stop_camera_preview();
+    camera_io_set_high_res(false);
 
     switch (s_chat_state) {
         case CHAT_STATE_SPEAKING:
