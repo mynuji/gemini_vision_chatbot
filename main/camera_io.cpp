@@ -64,12 +64,11 @@ esp_err_t camera_io_init(void) {
     config.pixel_format = PIXFORMAT_JPEG;
     config.frame_size   = CAMERA_FRAME_SIZE;
     config.jpeg_quality = CAMERA_JPEG_QUALITY;
-    // fb_count=1 + WHEN_EMPTY:
-    // 센서 DMA가 프레임 1장을 채우면 다음 촬영 요청 시까지 캡처가 대기하여
-    // 평상시 I2S 마이크/스피커, LCD DMA 및 Wi-Fi의 PSRAM 버스 대역폭을 독점하지 않음
-    config.fb_count     = 1;
+    // fb_count=2 + GRAB_LATEST:
+    // 백그라운드 DMA 더블 버퍼링으로 센서 캡처 대기 시간을 0으로 줄여 실시간 프리뷰 FPS 극대화
+    config.fb_count     = 2;
     config.fb_location  = CAMERA_FB_IN_PSRAM;
-    config.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
+    config.grab_mode    = CAMERA_GRAB_LATEST;
 
     int64_t t0 = esp_timer_get_time();
     esp_err_t err = esp_camera_init(&config);
