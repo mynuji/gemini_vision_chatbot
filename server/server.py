@@ -1278,27 +1278,16 @@ async def handler(websocket, path=None):
                                                         print("[서버] 인식된 텍스트가 없어 대기 상태(DONE)를 클라이언트로 전송합니다.")
                                                         await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                             else:
+                                                print("[서버] 유효한 음성 신호가 감지되지 않아 직전 답변 확인.")
                                                 if interrupted_holder.get("session") is not None:
                                                     saved_session = interrupted_holder["session"]
                                                     interrupted_holder["session"] = None
-                                                    print(f"[서버] 의미 있는 발화 없음 ('{user_text}'). 직전 AI 답변 이어서 재생!")
+                                                    print("[서버] 무음/미약 신호 -> 직전 AI 답변 이어서 재생!")
                                                     ai_task = asyncio.create_task(
                                                         resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
                                                     )
                                                 else:
-                                                    print("[서버] 인식된 텍스트가 없어 대기 상태(DONE)를 클라이언트로 전송합니다.")
                                                     await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
-                                        else:
-                                            print("[서버] 유효한 음성 신호가 감지되지 않아 직전 답변 확인.")
-                                            if interrupted_holder.get("session") is not None:
-                                                saved_session = interrupted_holder["session"]
-                                                interrupted_holder["session"] = None
-                                                print("[서버] 무음/미약 신호 -> 직전 AI 답변 이어서 재생!")
-                                                ai_task = asyncio.create_task(
-                                                    resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
-                                                )
-                                            else:
-                                                await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                     else:
                                         print("[제어 명령] 음성 발화 완료 요청되었으나 오디오 버퍼가 비어있음")
                                         if interrupted_holder.get("session") is not None:
