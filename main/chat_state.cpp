@@ -289,10 +289,15 @@ void chat_state_set(chat_state_t new_state) {
 }
 
 void chat_state_barge_in(void) {
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (now_ms - s_last_barge_in_ms < 1200) {
+        ESP_LOGW(TAG, "Barge-in ignored: Debounce guard %ums (< 1200ms)", (unsigned int)(now_ms - s_last_barge_in_ms));
+        return;
+    }
+    s_last_barge_in_ms = now_ms;
+
     ESP_LOGW(TAG, ">>> BARGE-IN TRIGGERED! Flushing audio & switching to LISTENING...");
     chat_state_stop_camera_preview();
-    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-    s_last_barge_in_ms = now_ms;
     s_close_session_after_speaking = false; // 끼어들기 시 새 대화로 이어짐
 
     // 1. 현재까지 스피커로 실제 재생된 바이트 수 획득

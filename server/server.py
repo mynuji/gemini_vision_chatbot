@@ -321,7 +321,7 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
     raise last_error or RuntimeError("사용 가능한 Gemini 모델이 없습니다.")
 
 VISION_KEYWORDS = (
-    "앞에", "보이는", "보여", "이거", "이게", "사진", "카메라", "찍어",
+    "앞에", "보이는", "보여", "보이니", "보이나요", "보여요", "이거", "이게", "사진", "카메라", "찍어",
     "봐봐", "봐줘", "물건", "뭐야", "무엇", "글자", "읽어줘", "어떤",
     "풍경", "모습", "색깔", "색상", "표정", "누구", "사람", "인식", "시각",
     "촬영", "화면", "영상", "비춰", "비춰줘", "보여줘", "봐", "찍어줘",
@@ -1224,6 +1224,9 @@ async def handler(websocket, path=None):
                                     audio_buffer = []
                                     pre_speech_buffer.clear()
                                     rx_accum = np.array([], dtype=np.float32)
+
+                                    # 클라이언트가 확실하게 청취(LISTENING) 모드로 동기화되도록 통보
+                                    await websocket.send(json.dumps({"type": "status", "message": "LISTENING..."}))
 
                                 # [B] 음성 발화 완료 신호 (클라이언트 VAD 감지)
                                 elif msg_type == "speech_end":
