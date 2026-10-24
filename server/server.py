@@ -1241,25 +1241,42 @@ async def handler(websocket, path=None):
                                         if not is_ai_busy:
                                             await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                     elif audio_buffer or pre_speech_buffer:
-                                        combined_chunks = list(pre_speech_buffer) + list(audio_buffer)
-                                        full_audio = np.concatenate(combined_chunks) if combined_chunks else np.array([], dtype=np.float32)
-                                        audio_buffer = []
-                                        pre_speech_buffer.clear()
-                                        is_speaking = False
-                                        silence_time = 0.0
+                                        # 사용자가 아직 말을 이어가고 있고 오디오가 0.8초(12800 샘플) 미만인 경우,
+                                        # 클라이언트의 성급한 조기 speech_end에 의해 문장이 중간에 잘려 인식 실패하는 것을 방지!
+                                        combined_len = sum(len(c) for c in pre_speech_buffer) + sum(len(c) for c in audio_buffer)
+                                        if is_speaking and combined_len < 12800:
+                                            print(f"\n[제어 명령] ⏱️ 클라이언트 speech_end 수신했으나 서버 VAD 발화 진행 중 ({combined_len/SAMPLE_RATE:.2f}s < 0.8s) -> 발화 완료 대기 유지")
+                                        else:
+                                            combined_chunks = list(pre_speech_buffer) + list(audio_buffer)
+                                            full_audio = np.concatenate(combined_chunks) if combined_chunks else np.array([], dtype=np.float32)
+                                            audio_buffer = []
+                                            pre_speech_buffer.clear()
+                                            is_speaking = False
+                                            silence_time = 0.0
 
-                                        peak_val = np.max(np.abs(full_audio)) if len(full_audio) > 0 else 0.0
-                                        # 최소 0.25초(4000 샘플) 이상이고 최소 음량(0.008) 이상일 때 실제 발화로 처리
-                                        if len(full_audio) >= 4000 and peak_val >= 0.008:
-                                            print("\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) -> whisper.cpp 실행")
-                                            user_text, asr_ms = await run_whisper_cpp(full_audio)
-                                            t_last_whisper = time.perf_counter()
-                                            print(f"[음성 인식 완료] {user_text or '(인식 실패 또는 무음)'} ({asr_ms:.0f}ms)")
-                                            
-                                            if is_meaningful_speech(user_text):
-                                                ai_task = asyncio.create_task(
-                                                    handle_user_turn(user_text, asr_ms)
-                                                )
+                                            peak_val = np.max(np.abs(full_audio)) if len(full_audio) > 0 else 0.0
+                                            # 최소 0.5초(8000 샘플) 이상이고 최소 음량(0.008) 이상일 때 실제 발화로 처리
+                                            if len(full_audio) >= 8000 and peak_val >= 0.008:
+                                                print("\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) -> whisper.cpp 실행")
+                                                user_text, asr_ms = await run_whisper_cpp(full_audio)
+                                                t_last_whisper = time.perf_counter()
+                                                print(f"[음성 인식 완료] {user_text or '(인식 실패 또는 무음)'} ({asr_ms:.0f}ms)")
+                                                
+                                                if is_meaningful_speech(user_text):
+                                                    ai_task = asyncio.create_task(
+                                                        handle_user_turn(user_text, asr_ms)
+                                                    )
+                                                else:
+                                                    if interrupted_holder.get("session") is not None:
+                                                        saved_session = interrupted_holder["session"]
+                                                        interrupted_holder["session"] = None
+                                                        print(f"[서버] 의미 있는 발화 없음 ('{user_text}'). 직전 AI 답변 이어서 재생!")
+                                                        ai_task = asyncio.create_task(
+                                                            resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
+                                                        )
+                                                    else:
+                                                        print("[서버] 인식된 텍스트가 없어 대기 상태(DONE)를 클라이언트로 전송합니다.")
+                                                        await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                             else:
                                                 if interrupted_holder.get("session") is not None:
                                                     saved_session = interrupted_holder["session"]

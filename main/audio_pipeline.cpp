@@ -360,8 +360,8 @@ static void audio_fetch_task(void *pvParameters) {
                 xRingbufferSend(s_tx_ringbuf, res->data, res->data_size, 0); // 논블로킹
             }
 
-            // 비프음 및 단발성 주변 소음 방지: 400ms 안정화 후 4프레임(약 128ms) 연속 음성 신호 시 실제 발화로 판정
-            if (now_ms - s_mic_stream_start_ms > 400) {
+            // 비프음 및 단발성 주변 소음 방지: 500ms 안정화 후 3프레임(약 96ms) 연속 음성 신호 시 실제 발화로 판정
+            if (now_ms - s_mic_stream_start_ms > 500) {
                 if (res->vad_state == VAD_SPEECH) {
                     s_vad_speech_frames++;
                     if (s_vad_speech_frames >= 3) {
@@ -375,8 +375,8 @@ static void audio_fetch_task(void *pvParameters) {
             }
 
             if (s_has_user_spoken) {
-                // 발화 종료: 침묵 800ms 이상 지속 시 신속하게 speech_end 전달 (AI 답변 지연 대폭 단축)
-                bool silence_timeout = (now_ms - s_mic_stream_start_ms > 1200) && (now_ms - s_last_speech_ms > 800);
+                // 발화 종료: 침묵 1000ms 이상 지속 시 speech_end 전달 (단어 간 자연스러운 호흡/쉼표 보호)
+                bool silence_timeout = (now_ms - s_mic_stream_start_ms > 1500) && (now_ms - s_last_speech_ms > 1000);
                 bool max_timeout = (now_ms - s_mic_stream_start_ms > 12000);
 
                 if (silence_timeout || max_timeout) {
