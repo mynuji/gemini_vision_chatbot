@@ -162,7 +162,7 @@ static void camera_preview_task(void *pvParameters) {
             }
             camera_io_return_fb(fb);
         }
-        vTaskDelay(1);
+        vTaskDelay(pdMS_TO_TICKS(15));
     }
 
     ESP_LOGI(TAG, "Exiting camera preview loop (total %u frames rendered), restoring LVGL UI", (unsigned int)frame_count);

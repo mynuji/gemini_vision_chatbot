@@ -326,37 +326,43 @@ esp_lcd_panel_handle_t display_ui_get_panel_handle(void) {
   return s_panel_handle;
 }
 
-static uint16_t *s_direct_dma_chunk = NULL;
-
 void display_ui_start_camera_preview(void) {
-  ESP_LOGI(TAG, "Entering camera live preview mode (Direct LCD DMA stream)");
+  ESP_LOGI(TAG, "Entering camera live preview mode (LVGL widget switch)");
   display_ui_pause_auto_blink(true);
 
-  // 1. LVGL 태스크 일시 중지하여 CPU 100% 프리뷰 전용 확보 및 SPI 버스 독점
   lvgl_port_lock(-1);
-  lvgl_port_stop();
+  if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+  if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+  if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+  if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
+  if (s_cam_img) {
+    lv_obj_clear_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(s_cam_img);
+  }
   lvgl_port_unlock();
 
-  // 2. 전방 카메라 정방향(사물/글자) 출력을 위해 좌우 미러링 일시 해제
+  // 전방 카메라 정방향(사물/글자) 출력을 위해 좌우 미러링 일시 해제
   if (s_panel_handle) {
     esp_lcd_panel_mirror(s_panel_handle, false, false);
   }
 }
 
 void display_ui_stop_camera_preview(void) {
-  ESP_LOGI(TAG, "Exiting camera live preview mode (Resuming LVGL UI)");
+  ESP_LOGI(TAG, "Exiting camera live preview mode (LVGL widget restore)");
   if (s_panel_handle) {
     // 캐릭터 눈 UI를 위한 좌우 미러링 복원
     esp_lcd_panel_mirror(s_panel_handle, true, false);
   }
 
-  // LVGL 태스크 재개
-  lvgl_port_resume();
-  display_ui_pause_auto_blink(false);
-
   lvgl_port_lock(-1);
+  if (s_cam_img) lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
+  if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+  if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+  if (s_status_label) lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
   if (lv_scr_act()) lv_obj_invalidate(lv_scr_act());
   lvgl_port_unlock();
+
+  display_ui_pause_auto_blink(false);
 }
 
 uint16_t *display_ui_get_preview_buffer(void) {
@@ -372,23 +378,6 @@ void display_ui_refresh_camera_preview(void) {
 }
 
 void display_ui_draw_preview_frame(const uint16_t *rgb565_buf) {
-  if (!s_panel_handle || !rgb565_buf) return;
-
-  // 내부 SRAM DMA 버퍼 (240 * 40 * 2 = 19,200 bytes, SPI max_transfer_sz 규격)
-  if (s_direct_dma_chunk == NULL) {
-    s_direct_dma_chunk = (uint16_t *)heap_caps_malloc(240 * 40 * sizeof(uint16_t),
-                                                      MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!s_direct_dma_chunk) {
-      ESP_LOGE(TAG, "Failed to allocate 19KB internal DMA buffer for direct camera stream");
-      return;
-    }
-  }
-
-  // 240x240 전체를 40라인씩 6개 청크로 나누어 SPI DMA 고속 직접 전송
-  for (int chunk = 0; chunk < 6; chunk++) {
-    int y_start = chunk * 40;
-    int y_end = y_start + 40;
-    memcpy(s_direct_dma_chunk, rgb565_buf + (y_start * 240), 240 * 40 * sizeof(uint16_t));
-    esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y_start, 240, y_end, s_direct_dma_chunk);
-  }
+  // s_crop_buf는 이미 s_cam_img_dsc에 바인딩되어 있으므로 화면 무효화 트리거
+  display_ui_refresh_camera_preview();
 }
