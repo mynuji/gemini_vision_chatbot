@@ -260,14 +260,18 @@ void chat_state_set(chat_state_t new_state) {
 
         case CHAT_STATE_THINKING:
             audio_pipeline_enable_mic_streaming(false);
-            display_ui_pause_auto_blink(true);
-            display_ui_set_emotion(UI_EMOTION_SLEEPY, UI_EMOTION_SLEEPY, "THINKING...");
+            if (!s_camera_preview_active) {
+                display_ui_pause_auto_blink(true);
+                display_ui_set_emotion(UI_EMOTION_SLEEPY, UI_EMOTION_SLEEPY, "THINKING...");
+            }
             break;
 
         case CHAT_STATE_SPEAKING:
             audio_pipeline_enable_mic_streaming(false);
-            display_ui_pause_auto_blink(true);
-            display_ui_set_emotion(UI_EMOTION_SPEAKING, UI_EMOTION_SPEAKING, "SPEAKING...");
+            if (!s_camera_preview_active) {
+                display_ui_pause_auto_blink(true);
+                display_ui_set_emotion(UI_EMOTION_SPEAKING, UI_EMOTION_SPEAKING, "SPEAKING...");
+            }
             break;
     }
 

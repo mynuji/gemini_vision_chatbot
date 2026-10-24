@@ -43,6 +43,7 @@ static ui_emotion_t s_current_right_emotion = (ui_emotion_t)-1;
 
 static volatile bool s_is_animating = false;
 static volatile bool s_auto_blink_paused = false;
+static volatile bool s_camera_preview_mode = false;
 
 static const void *get_image_for_emotion(ui_emotion_t emotion) {
   switch (emotion) {
@@ -200,6 +201,7 @@ void display_ui_show_message(const char *msg) {
 
 void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
                             const char *status_text) {
+  if (s_camera_preview_mode) return;
   s_is_animating = false; // 진행 중이던 눈 깜빡임 즉각 취소 및 강제 표정 전환
 
   if (lvgl_port_lock(150)) {
@@ -228,7 +230,7 @@ void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
 }
 
 void display_ui_set_status(const char *status_text) {
-  if (status_text == NULL)
+  if (status_text == NULL || s_camera_preview_mode)
     return;
   if (lvgl_port_lock(150)) {
     if (s_status_label) {
@@ -330,6 +332,7 @@ esp_lcd_panel_handle_t display_ui_get_panel_handle(void) {
 
 void display_ui_start_camera_preview(void) {
   ESP_LOGI(TAG, "Entering camera live preview mode (direct hardware SPI pipeline)");
+  s_camera_preview_mode = true;
   display_ui_pause_auto_blink(true);
 
   if (lvgl_port_lock(150)) {
@@ -350,7 +353,10 @@ void display_ui_start_camera_preview(void) {
 }
 
 void display_ui_stop_camera_preview(void) {
+  if (!s_camera_preview_mode) return;
   ESP_LOGI(TAG, "Exiting camera live preview mode (restoring LVGL UI)");
+  s_camera_preview_mode = false;
+
   if (s_panel_handle) {
     // 캐릭터 눈 UI를 위한 좌우 미러링 복원
     esp_lcd_panel_mirror(s_panel_handle, true, false);
