@@ -20,21 +20,47 @@ import threading
 # 0. 환경 변수(.env) 로딩
 # ==========================================
 def load_env_file(path):
-    """server/.env 파일의 KEY=VALUE 항목을 환경 변수로 로드 (이미 설정된 값은 유지)"""
+    """KEY=VALUE 또는 export KEY=VALUE 항목을 환경 변수로 안전하게 로드"""
     if not os.path.exists(path):
-        return
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
+        return []
+    loaded_keys = []
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                # export 키워드 지원 (예: export OPENAI_API_KEY=...)
+                if line.startswith("export "):
+                    line = line[7:].strip()
+                key, value = line.split("=", 1)
+                key = key.strip()
+                # 따옴표 및 공백 정리
+                value = value.strip(" \t\r\n\"'")
+                if key:
+                    # 쉘에 환경변수가 없거나 빈 문자열인 경우 .env 값으로 설정
+                    if key not in os.environ or not os.environ[key].strip():
+                        os.environ[key] = value
+                        loaded_keys.append(key)
+    except Exception as e:
+        print(f"[경고] .env 로드 중 오류 ({path}): {e}")
+    return loaded_keys
 
-load_env_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+# 1) server.py가 있는 폴더의 .env 탐색
+_server_dir = os.path.dirname(os.path.abspath(__file__))
+_keys1 = load_env_file(os.path.join(_server_dir, ".env"))
+# 2) 상위 폴더(프로젝트 루트)의 .env 탐색
+_root_dir = os.path.abspath(os.path.join(_server_dir, ".."))
+_keys2 = load_env_file(os.path.join(_root_dir, ".env"))
+# 3) 현재 실행 위치(CWD)의 .env 탐색
+_keys3 = load_env_file(os.path.join(os.getcwd(), ".env"))
+
+_all_loaded = list(set(_keys1 + _keys2 + _keys3))
+if _all_loaded:
+    print(f"[시스템] .env 환경 변수 로드 완료: {', '.join(_all_loaded)}")
+else:
+    print(f"[시스템] .env 파일을 찾지 못했거나 등록된 키가 없습니다. (탐색 경로: {_server_dir}/.env)")
+
 
 # ==========================================
 # 1. 전역 설정 및 모델 초기화
