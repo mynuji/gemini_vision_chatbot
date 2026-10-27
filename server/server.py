@@ -60,7 +60,29 @@ GEMINI_FALLBACK_MODELS = [m.strip() for m in os.environ.get(
 GEMINI_THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "minimal").strip()
 GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "1024"))
 
-print(f"[시스템] Gemini LLM 준비 완료 (REST SSE 스트리밍): {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
+# ------------------------------------------
+# Local LLM 설정 (127.0.0.1:8080)
+# ------------------------------------------
+LOCAL_LLM_URL = os.environ.get("LOCAL_LLM_URL", "http://127.0.0.1:8080").strip()
+LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL", "default").strip()
+
+# ------------------------------------------
+# OpenAI Realtime API 설정
+# ------------------------------------------
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_REALTIME_MODEL = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17").strip()
+OPENAI_VOICE = os.environ.get("OPENAI_VOICE", "alloy").strip()
+
+# ------------------------------------------
+# Gemini Realtime (Multimodal Live API) 설정
+# ------------------------------------------
+GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-2.0-flash-exp").strip()
+GEMINI_REALTIME_VOICE = os.environ.get("GEMINI_REALTIME_VOICE", "Aoede").strip()
+
+print(f"[시스템] Gemini LLM 준비 완료: {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
+print(f"[시스템] Local LLM 설정: {LOCAL_LLM_URL} (모델: {LOCAL_LLM_MODEL})")
+print(f"[시스템] Gemini Realtime 모델: {GEMINI_REALTIME_MODEL} (음성: {GEMINI_REALTIME_VOICE})")
+print(f"[시스템] OpenAI Realtime 모델: {OPENAI_REALTIME_MODEL} (키 등록 여부: {'등록됨' if OPENAI_API_KEY else '미등록(환경변수 필요)'})")
 
 VOICE = "ko-KR-SunHiNeural"
 
@@ -320,53 +342,414 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
                 print(f"\n[Gemini] {model} 호출 실패 -> 대체 모델 시도: {e}")
     raise last_error or RuntimeError("사용 가능한 Gemini 모델이 없습니다.")
 
+# ==========================================
+# 2-1. 실시간 오디오 리샘플링 (16kHz <-> 24kHz)
+# ==========================================
+def resample_24k_to_16k(pcm24k_bytes):
+    """24kHz 16-bit Mono PCM -> 16kHz 16-bit Mono PCM (3:2 초고속 선형 다운샘플링)"""
+    if not pcm24k_bytes:
+        return b""
+    audio24 = np.frombuffer(pcm24k_bytes, dtype=np.int16)
+    n_out = int(len(audio24) * 2 / 3)
+    if n_out <= 0:
+        return b""
+    x_old = np.linspace(0, len(audio24) - 1, len(audio24))
+    x_new = np.linspace(0, len(audio24) - 1, n_out)
+    return np.interp(x_new, x_old, audio24).astype(np.int16).tobytes()
+
+def resample_16k_to_24k(pcm16k_bytes):
+    """16kHz 16-bit Mono PCM -> 24kHz 16-bit Mono PCM (2:3 초고속 선형 업샘플링)"""
+    if not pcm16k_bytes:
+        return b""
+    audio16 = np.frombuffer(pcm16k_bytes, dtype=np.int16)
+    n_out = int(len(audio16) * 3 / 2)
+    if n_out <= 0:
+        return b""
+    x_old = np.linspace(0, len(audio16) - 1, len(audio16))
+    x_new = np.linspace(0, len(audio16) - 1, n_out)
+    return np.interp(x_new, x_old, audio16).astype(np.int16).tobytes()
+
+# ==========================================
+# 2-2. Local LLM 스트리밍 (127.0.0.1:8080)
+# ==========================================
 async def stream_local_llm(messages, image_bytes=None):
-    """로컬 LLM (Ollama http://127.0.0.1:11434/api/chat 등) 스트리밍"""
-    local_url = os.environ.get("LOCAL_LLM_URL", "http://127.0.0.1:11434/api/chat")
-    local_model = os.environ.get("LOCAL_LLM_MODEL", "llama3.2")
+    """로컬 LLM (127.0.0.1:8080, OpenAI 호환 /v1/chat/completions 및 llama.cpp /completion) 스트리밍"""
+    base_url = LOCAL_LLM_URL.rstrip("/")
+    chat_url = f"{base_url}/v1/chat/completions"
     payload = {
-        "model": local_model,
+        "model": LOCAL_LLM_MODEL,
         "messages": [{"role": m["role"], "content": m["content"]} for m in messages if m.get("content")],
-        "stream": True
+        "stream": True,
+        "max_tokens": 512,
+        "temperature": 0.7
     }
-    try:
+    print(f"[Local LLM] 127.0.0.1:8080 요청 시작: {chat_url}")
+    
+    def fetch_stream():
         req = urllib.request.Request(
-            local_url,
+            chat_url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
-        def reader():
+        try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 for line in resp:
-                    if line:
+                    if not line:
+                        continue
+                    line_str = line.decode("utf-8", errors="ignore").strip()
+                    if line_str.startswith("data: "):
+                        data_str = line_str[6:].strip()
+                        if data_str == "[DONE]":
+                            break
                         try:
-                            data = json.loads(line.decode("utf-8"))
-                            chunk = data.get("message", {}).get("content", "")
+                            cj = json.loads(data_str)
+                            delta = cj.get("choices", [{}])[0].get("delta", {})
+                            chunk = delta.get("content", "")
                             if chunk:
                                 yield chunk
                         except Exception:
                             continue
+        except urllib.error.HTTPError as he:
+            if he.code == 404:
+                # /v1/chat/completions가 404이면 llama.cpp 기본 엔드포인트 /completion 시도
+                print("[Local LLM] /v1/chat/completions 404 -> /completion 엔드포인트로 폴백 시도")
+                prompt_lines = [f"{m['role']}: {m['content']}" for m in messages if m.get("content")]
+                prompt_lines.append("assistant:")
+                comp_payload = {
+                    "prompt": "\n".join(prompt_lines),
+                    "stream": True,
+                    "n_predict": 512
+                }
+                comp_req = urllib.request.Request(
+                    f"{base_url}/completion",
+                    data=json.dumps(comp_payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(comp_req, timeout=30) as c_resp:
+                    for c_line in c_resp:
+                        if not c_line:
+                            continue
+                        c_str = c_line.decode("utf-8", errors="ignore").strip()
+                        if c_str.startswith("data: "):
+                            try:
+                                c_json = json.loads(c_str[6:].strip())
+                                c_text = c_json.get("content", "")
+                                if c_text:
+                                    yield c_text
+                            except Exception:
+                                continue
+            else:
+                raise
+
+    try:
         loop = asyncio.get_running_loop()
-        chunks = await loop.run_in_executor(None, lambda: list(reader()))
-        for c in chunks:
-            yield c
+        queue = asyncio.Queue()
+
+        def worker():
+            try:
+                for chk in fetch_stream():
+                    asyncio.run_coroutine_threadsafe(queue.put(chk), loop).result()
+            except Exception as err:
+                print(f"[Local LLM 에러] {err}")
+            finally:
+                asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        has_any_token = False
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            has_any_token = True
+            yield item
+
+        if not has_any_token:
+            print("[Local LLM 경고] 수신된 토큰 없음 -> Gemini로 폴백")
+            async for c in stream_gemini(messages, image_bytes=image_bytes):
+                yield c
+
     except Exception as e:
-        print(f"[로컬 LLM 에러] {e} -> Gemini로 대체 스트리밍 실행")
+        print(f"[Local LLM 예외] {e} -> Gemini로 대체 실행")
         async for c in stream_gemini(messages, image_bytes=image_bytes):
             yield c
 
+# ==========================================
+# 2-3. Gemini Realtime 세션 (Multimodal Live API, STT/TTS 생략 직통)
+# ==========================================
+class GeminiLiveSession:
+    """Gemini Multimodal Live WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
+    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE):
+        self.esp_ws = esp_ws
+        self.api_key = api_key
+        self.model = model
+        self.voice = voice
+        self.gemini_ws = None
+        self.rx_task = None
+        self.is_connected = False
+        self.system_prompt = (
+            "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
+            "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘."
+        )
+
+    async def start(self):
+        ws_url = (
+            f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
+            f"?key={self.api_key}"
+        )
+        print(f"[Gemini Realtime] WebSocket 연결 시도 (model: {self.model}, voice: {self.voice})...")
+        try:
+            self.gemini_ws = await websockets.connect(ws_url, max_size=10 * 1024 * 1024)
+            setup_msg = {
+                "setup": {
+                    "model": f"models/{self.model}",
+                    "generationConfig": {
+                        "responseModalities": ["AUDIO"],
+                        "speechConfig": {
+                            "voiceConfig": {
+                                "prebuiltVoiceConfig": {
+                                    "voiceName": self.voice
+                                }
+                            }
+                        }
+                    },
+                    "systemInstruction": {
+                        "parts": [{"text": self.system_prompt}]
+                    }
+                }
+            }
+            await self.gemini_ws.send(json.dumps(setup_msg))
+            self.is_connected = True
+            print("[Gemini Realtime] 세션 Setup 완료 (STT/TTS 없는 직통 음성 스트리밍 대기)")
+            self.rx_task = asyncio.create_task(self._receive_loop())
+        except Exception as e:
+            print(f"[Gemini Realtime] 연결 실패: {e}")
+            self.is_connected = False
+
+    async def send_audio(self, pcm_chunk_16k):
+        """ESP32의 16kHz PCM 데이터를 Gemini로 즉각 전송"""
+        if not self.is_connected or not self.gemini_ws:
+            return
+        try:
+            b64_pcm = base64.b64encode(pcm_chunk_16k).decode("utf-8")
+            msg = {
+                "realtimeInput": {
+                    "mediaChunks": [
+                        {
+                            "mimeType": "audio/pcm;rate=16000",
+                            "data": b64_pcm
+                        }
+                    ]
+                }
+            }
+            await self.gemini_ws.send(json.dumps(msg))
+        except Exception as e:
+            print(f"[Gemini Realtime] 오디오 송신 오류: {e}")
+
+    async def _receive_loop(self):
+        """Gemini로부터 오는 24kHz 오디오를 16kHz로 리샘플링하여 ESP32로 즉시 바이너리 전송"""
+        try:
+            first_chunk = True
+            async for raw in self.gemini_ws:
+                data = json.loads(raw)
+                server_content = data.get("serverContent")
+                if not server_content:
+                    continue
+
+                # 사용자가 끼어들었음을 Gemini 서버가 감지했을 때
+                if server_content.get("interrupted"):
+                    print("\n[Gemini Realtime] 사용자 끼어들기 감지(interrupted) -> 스피커 플러시")
+                    await self.esp_ws.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
+                    first_chunk = True
+                    continue
+
+                model_turn = server_content.get("modelTurn")
+                if model_turn:
+                    for part in model_turn.get("parts", []):
+                        inline = part.get("inlineData")
+                        if inline and inline.get("mimeType", "").startswith("audio/pcm"):
+                            b64_pcm = inline.get("data", "")
+                            if b64_pcm:
+                                pcm24 = base64.b64decode(b64_pcm)
+                                pcm16 = resample_24k_to_16k(pcm24)
+                                if first_chunk:
+                                    first_chunk = False
+                                    await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+                                await self.esp_ws.send(pcm16)
+
+                if server_content.get("turnComplete"):
+                    first_chunk = True
+                    await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[Gemini Realtime] 수신 루프 오류: {e}")
+        finally:
+            self.is_connected = False
+
+    async def close(self):
+        self.is_connected = False
+        if self.rx_task and not self.rx_task.done():
+            self.rx_task.cancel()
+            try:
+                await self.rx_task
+            except asyncio.CancelledError:
+                pass
+        if self.gemini_ws:
+            try:
+                await self.gemini_ws.close()
+            except Exception:
+                pass
+            self.gemini_ws = None
+
+# ==========================================
+# 2-4. ChatGPT Realtime 세션 (OpenAI Realtime API, STT/TTS 생략 직통)
+# ==========================================
+class OpenAIRealtimeSession:
+    """OpenAI Realtime WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
+    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE):
+        self.esp_ws = esp_ws
+        self.api_key = api_key
+        self.model = model
+        self.voice = voice
+        self.openai_ws = None
+        self.rx_task = None
+        self.is_connected = False
+        self.system_prompt = (
+            "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
+            "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 대답해."
+        )
+
+    async def start(self):
+        if not self.api_key:
+            print("[OpenAI Realtime] OPENAI_API_KEY가 설정되지 않아 연결할 수 없습니다. server/.env에 설정해 주세요.")
+            await self.esp_ws.send(json.dumps({
+                "type": "status",
+                "message": "ERROR: OPENAI_API_KEY missing"
+            }))
+            return
+
+        ws_url = f"wss://api.openai.com/v1/realtime?model={self.model}"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "OpenAI-Beta": "realtime=v1"
+        }
+        print(f"[OpenAI Realtime] WebSocket 연결 시도 (model: {self.model}, voice: {self.voice})...")
+        try:
+            self.openai_ws = await websockets.connect(
+                ws_url,
+                extra_headers=headers,
+                max_size=10 * 1024 * 1024
+            )
+            session_update = {
+                "type": "session.update",
+                "session": {
+                    "modalities": ["audio", "text"],
+                    "instructions": self.system_prompt,
+                    "voice": self.voice,
+                    "input_audio_format": "pcm16",
+                    "output_audio_format": "pcm16",
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500
+                    }
+                }
+            }
+            await self.openai_ws.send(json.dumps(session_update))
+            self.is_connected = True
+            print("[OpenAI Realtime] 세션 Setup 완료 (STT/TTS 없는 직통 음성 스트리밍 대기)")
+            self.rx_task = asyncio.create_task(self._receive_loop())
+        except Exception as e:
+            print(f"[OpenAI Realtime] 연결 실패: {e}")
+            self.is_connected = False
+
+    async def send_audio(self, pcm_chunk_16k):
+        """ESP32의 16kHz PCM을 24kHz PCM으로 업샘플링하여 OpenAI로 전송"""
+        if not self.is_connected or not self.openai_ws:
+            return
+        try:
+            pcm24 = resample_16k_to_24k(pcm_chunk_16k)
+            b64_audio = base64.b64encode(pcm24).decode("utf-8")
+            msg = {
+                "type": "input_audio_buffer.append",
+                "audio": b64_audio
+            }
+            await self.openai_ws.send(json.dumps(msg))
+        except Exception as e:
+            print(f"[OpenAI Realtime] 오디오 송신 오류: {e}")
+
+    async def _receive_loop(self):
+        """OpenAI로부터 오는 24kHz 오디오를 16kHz로 다운샘플링하여 ESP32에 전송"""
+        try:
+            first_chunk = True
+            async for raw in self.openai_ws:
+                event = json.loads(raw)
+                event_type = event.get("type", "")
+
+                # 1. 발화 시작(Barge-in / OpenAI Server VAD 감지)
+                if event_type == "input_audio_buffer.speech_started":
+                    print("\n[OpenAI Realtime] 사용자 발화 감지(speech_started) -> 스피커 플러시")
+                    await self.esp_ws.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
+                    first_chunk = True
+
+                # 2. 오디오 스트리밍 델타 수신
+                elif event_type == "response.audio.delta":
+                    delta_b64 = event.get("delta", "")
+                    if delta_b64:
+                        pcm24 = base64.b64decode(delta_b64)
+                        pcm16 = resample_24k_to_16k(pcm24)
+                        if first_chunk:
+                            first_chunk = False
+                            await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+                        await self.esp_ws.send(pcm16)
+
+                # 3. 텍스트 트랜스크립트 델타 (디버그 로그)
+                elif event_type == "response.audio_transcript.delta":
+                    txt = event.get("delta", "")
+                    print(txt, end="", flush=True)
+
+                # 4. 발화 완료
+                elif event_type == "response.audio.done":
+                    print("\n[OpenAI Realtime] AI 발화 완료")
+                    first_chunk = True
+                    await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[OpenAI Realtime] 수신 루프 오류: {e}")
+        finally:
+            self.is_connected = False
+
+    async def close(self):
+        self.is_connected = False
+        if self.rx_task and not self.rx_task.done():
+            self.rx_task.cancel()
+            try:
+                await self.rx_task
+            except asyncio.CancelledError:
+                pass
+        if self.openai_ws:
+            try:
+                await self.openai_ws.close()
+            except Exception:
+                pass
+            self.openai_ws = None
+
+# ==========================================
+# 2-5. 통합 LLM 스트리밍 디스패처 (텍스트 기반)
+# ==========================================
 async def stream_llm(messages, image_bytes=None, llm_type="gemini api"):
-    """ESP32에서 선택한 LLM Type에 따라 분기 스트리밍"""
+    """ESP32에서 선택한 LLM Type에 따라 분기 스트리밍 (텍스트/TTS 모드)"""
     clean_type = (llm_type or "gemini api").strip().lower()
     print(f"[LLM 엔진 선택] 현재 활성화된 LLM Type: '{clean_type}'")
     if clean_type == "local llm":
         async for chunk in stream_local_llm(messages, image_bytes=image_bytes):
             yield chunk
-    elif clean_type in ("gemini realtime api", "chatgpt realtime api"):
-        print(f"[{clean_type}] 실시간 스트리밍 모드 실행 (Gemini Engine)")
-        async for chunk in stream_gemini(messages, image_bytes=image_bytes):
-            yield chunk
-    else:  # "gemini api" (기본값)
+    else:  # "gemini api", "gemini realtime api", "chatgpt realtime api" 등 텍스트 fallback
         async for chunk in stream_gemini(messages, image_bytes=image_bytes):
             yield chunk
 
@@ -994,6 +1377,25 @@ async def handler(websocket, path=None):
     rx_accum = np.array([], dtype=np.float32)
     current_llm_type = "gemini api"
 
+    active_realtime_session = None
+
+    async def switch_realtime_session(target_type):
+        nonlocal active_realtime_session
+        if active_realtime_session:
+            await active_realtime_session.close()
+            active_realtime_session = None
+
+        if target_type == "gemini realtime api":
+            print("[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중...")
+            active_realtime_session = GeminiLiveSession(websocket, GEMINI_API_KEY)
+            await active_realtime_session.start()
+        elif target_type == "chatgpt realtime api":
+            print("[세션 전환] ChatGPT Realtime (OpenAI WebSocket) 세션 초기화 중...")
+            active_realtime_session = OpenAIRealtimeSession(websocket, OPENAI_API_KEY)
+            await active_realtime_session.start()
+        else:
+            print(f"[세션 전환] 일반 음성 처리 파이프라인(VAD/Whisper/TTS) 모드: {target_type}")
+
     today_str = time.strftime("%Y년 %m월 %d일")
     chat_history = [
         {
@@ -1086,6 +1488,16 @@ async def handler(websocket, path=None):
                             pending_image_future.set_result(message)
                         continue
 
+                    # ★ Realtime API 모드 (Gemini Live / OpenAI Realtime):
+                    # STT와 TTS를 일절 거치지 않고, 수신된 16kHz PCM 오디오를 Realtime API로 즉시 직통 스트리밍!
+                    if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
+                        if not active_realtime_session or not active_realtime_session.is_connected:
+                            await switch_realtime_session(current_llm_type)
+                        if active_realtime_session and active_realtime_session.is_connected:
+                            await active_realtime_session.send_audio(message)
+                        continue
+
+                    # ★ 일반 모드 (gemini api / local llm): Silero VAD 및 로컬 Whisper STT / Edge-TTS
                     new_samples = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
                     rx_accum = np.concatenate([rx_accum, new_samples]) if len(rx_accum) > 0 else new_samples
                     
@@ -1448,8 +1860,14 @@ async def handler(websocket, path=None):
                                 # [F] LLM Type 변경 설정 수신
                                 elif msg_type == "set_llm_type":
                                     new_type = ctrl_json.get("llm_type", "gemini api").strip().lower()
+                                    need_reinit = (new_type != current_llm_type) or (
+                                        new_type in ("gemini realtime api", "chatgpt realtime api")
+                                        and (not active_realtime_session or not active_realtime_session.is_connected)
+                                    )
                                     current_llm_type = new_type
                                     print(f"\n[설정 수신] 클라이언트로부터 LLM Type 변경 알림 수신: '{current_llm_type}'")
+                                    if need_reinit:
+                                        await switch_realtime_session(current_llm_type)
                                     await websocket.send(json.dumps({
                                         "type": "status",
                                         "message": f"LLM Type set to {current_llm_type}"
@@ -1489,6 +1907,9 @@ async def handler(websocket, path=None):
     except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):
         pass
     finally:
+        if active_realtime_session:
+            await active_realtime_session.close()
+            active_realtime_session = None
         print("[클라이언트 연결 종료]")
 
 async def main():
