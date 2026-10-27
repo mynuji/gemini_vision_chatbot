@@ -152,37 +152,66 @@ static void show_view(subview_t view) {
 // [1] 메인 메뉴 (스크롤 목록)
 // ----------------------------------------------------------------------------
 static uint32_t s_last_menu_click_time = 0;
+static lv_point_t s_menu_press_pt = {0, 0};
+static bool s_menu_is_pressing = false;
 
-static void on_menu_btn_click(lv_event_t *e) {
-    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    if (now - s_last_menu_click_time < 350) return; // 350ms 디바운스
-    s_last_menu_click_time = now;
+static void on_menu_btn_event(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_get_act();
 
-    int id = (int)(intptr_t)lv_event_get_user_data(e);
-    audio_io_play_tone(1000.0f, 30);
+    if (code == LV_EVENT_PRESSED) {
+        if (indev) {
+            lv_indev_get_point(indev, &s_menu_press_pt);
+        }
+        s_menu_is_pressing = true;
+        return;
+    }
 
-    if (id == 1) show_view(SUBVIEW_VOLUME);
-    else if (id == 2) show_view(SUBVIEW_WIFI);
-    else if (id == 3) show_view(SUBVIEW_SERVER);
-    else if (id == 4) show_view(SUBVIEW_BRIGHTNESS);
-    else if (id == 5) show_view(SUBVIEW_MIC_GAIN);
-    else if (id == 6) show_view(SUBVIEW_LLM_TYPE);
-    else if (id == 7) show_view(SUBVIEW_INFO);
-    else if (id == 8) {
-        // 저장 후 재부팅
-        settings_manager_save(&s_edit_cfg);
-        audio_io_play_tone(1600.0f, 150);
-        vTaskDelay(pdMS_TO_TICKS(200));
-        esp_restart();
-    } else if (id == 9) {
-        // 기본값 복원
-        settings_manager_reset_to_default();
-        audio_io_play_tone(600.0f, 150);
-        vTaskDelay(pdMS_TO_TICKS(200));
-        esp_restart();
-    } else if (id == 0) {
-        // 닫기
-        ui_settings_close();
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+        if (s_menu_is_pressing && indev) {
+            lv_point_t cur_pt = {0, 0};
+            lv_indev_get_point(indev, &cur_pt);
+            int32_t dx = cur_pt.x - s_menu_press_pt.x;
+            int32_t dy = cur_pt.y - s_menu_press_pt.y;
+            s_menu_is_pressing = false;
+
+            // 터치 시작 지점과 뗀 지점 사이의 거리가 35픽셀을 넘으면 명백한 스크롤 동작이므로 클릭 취소
+            if ((dx * dx + dy * dy) > (35 * 35)) {
+                return;
+            }
+        }
+        s_menu_is_pressing = false;
+
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        if (now - s_last_menu_click_time < 350) return; // 350ms 디바운스
+        s_last_menu_click_time = now;
+
+        int id = (int)(intptr_t)lv_event_get_user_data(e);
+        audio_io_play_tone(1000.0f, 30);
+
+        if (id == 1) show_view(SUBVIEW_VOLUME);
+        else if (id == 2) show_view(SUBVIEW_WIFI);
+        else if (id == 3) show_view(SUBVIEW_SERVER);
+        else if (id == 4) show_view(SUBVIEW_BRIGHTNESS);
+        else if (id == 5) show_view(SUBVIEW_MIC_GAIN);
+        else if (id == 6) show_view(SUBVIEW_LLM_TYPE);
+        else if (id == 7) show_view(SUBVIEW_INFO);
+        else if (id == 8) {
+            // 저장 후 재부팅
+            settings_manager_save(&s_edit_cfg);
+            audio_io_play_tone(1600.0f, 150);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        } else if (id == 9) {
+            // 기본값 복원
+            settings_manager_reset_to_default();
+            audio_io_play_tone(600.0f, 150);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        } else if (id == 0) {
+            // 닫기
+            ui_settings_close();
+        }
     }
 }
 
@@ -192,11 +221,12 @@ static void create_main_menu(lv_obj_t *parent) {
     lv_obj_set_size(back_btn, 34, 26);
     lv_obj_align(back_btn, LV_ALIGN_TOP_MID, -54, 12);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x3A3A3A), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
     lv_obj_set_style_radius(back_btn, 13, 0); // 둥근 캡슐형
     lv_obj_t *back_lbl = lv_label_create(back_btn);
     lv_label_set_text(back_lbl, "<");
     lv_obj_center(back_lbl);
-    lv_obj_add_event_cb(back_btn, on_menu_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)0);
+    lv_obj_add_event_cb(back_btn, on_menu_btn_event, LV_EVENT_ALL, (void *)(intptr_t)0);
 
     // [타이틀 라벨] 원형 LCD 상단 중앙 우측에 배치 (중심 기준 x = 16, y = 16)
     lv_obj_t *title = lv_label_create(parent);
@@ -215,9 +245,10 @@ static void create_main_menu(lv_obj_t *parent) {
     lv_obj_set_style_pad_top(list, 10, 0);
     lv_obj_set_style_pad_bottom(list, 10, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER); // 오직 수직 스크롤만 허용
-    // 관성 스크롤(Momentum) 비활성화: 손을 떼는 즉시 스크롤이 딱 멈춰서 다음 터치가 100% 버튼 클릭으로 인식되도록 보장!
+    // 관성 스크롤 및 바운스 탄성 비활성화: 손을 떼는 즉시 정확히 멈춰서 스크롤 직후 탭도 100% 즉시 인식!
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_style_anim_time(list, 0, 0);
 
     const char *items[] = {
         "1. Volume Control",
@@ -240,9 +271,8 @@ static void create_main_menu(lv_obj_t *parent) {
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);       // 버튼 자체 스크롤 차단
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);  // 클릭 시 자동 스크롤 오작동 방지
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_GESTURE_BUBBLE);
-        // SHORT_CLICKED 및 CLICKED 둘 다 지원 (디바운스가 있어서 한 번만 확실하게 실행됨)
-        lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)(i + 1));
-        lv_obj_add_event_cb(btn, on_menu_btn_click, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
+        // LV_EVENT_ALL로 등록하여 PRESSED/RELEASED 좌표 차이 기반 탭 완벽 지원
+        lv_obj_add_event_cb(btn, on_menu_btn_event, LV_EVENT_ALL, (void *)(intptr_t)(i + 1));
     }
 }
 
@@ -527,18 +557,45 @@ static void on_wifi_save_click(lv_event_t *e) {
 // ----------------------------------------------------------------------------
 static wifi_ap_info_t s_scanned_aps[10];
 static int s_scanned_count = 0;
+static lv_point_t s_ap_press_pt = {0, 0};
+static bool s_ap_is_pressing = false;
 
-static void on_ap_select_click(lv_event_t *e) {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx >= 0 && idx < s_scanned_count) {
-        strncpy(s_edit_cfg.wifi_ssid, s_scanned_aps[idx].ssid, sizeof(s_edit_cfg.wifi_ssid) - 1);
-        s_edit_cfg.wifi_ssid[sizeof(s_edit_cfg.wifi_ssid) - 1] = '\0';
-        audio_io_play_tone(1400.0f, 60);
-        show_view(SUBVIEW_WIFI);
-    } else if (idx == -1) {
-        // 직접 수동 키보드 입력
-        audio_io_play_tone(1000.0f, 30);
-        open_scroll_keyboard(s_settings_container, "EDIT SSID", s_edit_cfg.wifi_ssid, sizeof(s_edit_cfg.wifi_ssid), SUBVIEW_WIFI);
+static void on_ap_select_event(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_get_act();
+
+    if (code == LV_EVENT_PRESSED) {
+        if (indev) {
+            lv_indev_get_point(indev, &s_ap_press_pt);
+        }
+        s_ap_is_pressing = true;
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+        if (s_ap_is_pressing && indev) {
+            lv_point_t cur_pt = {0, 0};
+            lv_indev_get_point(indev, &cur_pt);
+            int32_t dx = cur_pt.x - s_ap_press_pt.x;
+            int32_t dy = cur_pt.y - s_ap_press_pt.y;
+            s_ap_is_pressing = false;
+            if ((dx * dx + dy * dy) > (35 * 35)) {
+                return;
+            }
+        }
+        s_ap_is_pressing = false;
+
+        int idx = (int)(intptr_t)lv_event_get_user_data(e);
+        if (idx >= 0 && idx < s_scanned_count) {
+            strncpy(s_edit_cfg.wifi_ssid, s_scanned_aps[idx].ssid, sizeof(s_edit_cfg.wifi_ssid) - 1);
+            s_edit_cfg.wifi_ssid[sizeof(s_edit_cfg.wifi_ssid) - 1] = '\0';
+            audio_io_play_tone(1400.0f, 60);
+            show_view(SUBVIEW_WIFI);
+        } else if (idx == -1) {
+            // 직접 수동 키보드 입력
+            audio_io_play_tone(1000.0f, 30);
+            open_scroll_keyboard(s_settings_container, "EDIT SSID", s_edit_cfg.wifi_ssid, sizeof(s_edit_cfg.wifi_ssid), SUBVIEW_WIFI);
+        }
     }
 }
 
@@ -561,7 +618,8 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_style_anim_time(list, 0, 0);
 
     if (s_scanned_count == 0) {
         lv_obj_t *empty_btn = lv_list_add_btn(list, NULL, "(No APs Found)");
@@ -578,8 +636,7 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
             lv_obj_set_style_text_color(btn, lv_color_white(), 0);
             lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-            lv_obj_add_event_cb(btn, on_ap_select_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);
-            lv_obj_add_event_cb(btn, on_ap_select_click, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_add_event_cb(btn, on_ap_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
         }
     }
 
@@ -587,11 +644,11 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_t *manual_btn = lv_list_add_btn(list, NULL, "[+ Direct Input]");
     lv_obj_set_size(manual_btn, lv_pct(100), 36);
     lv_obj_set_style_bg_color(manual_btn, lv_color_hex(0x005588), 0);
+    lv_obj_set_style_bg_color(manual_btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
     lv_obj_set_style_text_color(manual_btn, lv_color_hex(0x00D1FF), 0);
     lv_obj_clear_flag(manual_btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(manual_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-    lv_obj_add_event_cb(manual_btn, on_ap_select_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)-1);
-    lv_obj_add_event_cb(manual_btn, on_ap_select_click, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
+    lv_obj_add_event_cb(manual_btn, on_ap_select_event, LV_EVENT_ALL, (void *)(intptr_t)-1);
 
     // 하단 제어 버튼: [RESCAN] 및 [BACK]
     lv_obj_t *rescan_btn = lv_btn_create(parent);
@@ -855,12 +912,40 @@ static void create_server_view(lv_obj_t *parent) {
 // ----------------------------------------------------------------------------
 // [LLM Type] 설정 서브화면
 // ----------------------------------------------------------------------------
-static void on_llm_type_select_click(lv_event_t *e) {
-    int type = (int)(intptr_t)lv_event_get_user_data(e);
-    if (type >= 0 && type < LLM_TYPE_COUNT) {
-        s_edit_cfg.llm_type = (uint8_t)type;
-        audio_io_play_tone(1100.0f, 25);
-        show_view(SUBVIEW_LLM_TYPE); // 선택 즉시 체크 표시 갱신
+static lv_point_t s_llm_press_pt = {0, 0};
+static bool s_llm_is_pressing = false;
+
+static void on_llm_type_select_event(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_get_act();
+
+    if (code == LV_EVENT_PRESSED) {
+        if (indev) {
+            lv_indev_get_point(indev, &s_llm_press_pt);
+        }
+        s_llm_is_pressing = true;
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+        if (s_llm_is_pressing && indev) {
+            lv_point_t cur_pt = {0, 0};
+            lv_indev_get_point(indev, &cur_pt);
+            int32_t dx = cur_pt.x - s_llm_press_pt.x;
+            int32_t dy = cur_pt.y - s_llm_press_pt.y;
+            s_llm_is_pressing = false;
+            if ((dx * dx + dy * dy) > (35 * 35)) {
+                return;
+            }
+        }
+        s_llm_is_pressing = false;
+
+        int type = (int)(intptr_t)lv_event_get_user_data(e);
+        if (type >= 0 && type < LLM_TYPE_COUNT) {
+            s_edit_cfg.llm_type = (uint8_t)type;
+            audio_io_play_tone(1100.0f, 25);
+            show_view(SUBVIEW_LLM_TYPE); // 선택 즉시 체크 표시 갱신
+        }
     }
 }
 
@@ -886,7 +971,8 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_style_anim_time(list, 0, 0);
 
     const char *names[LLM_TYPE_COUNT] = {
         "1. Gemini API",
@@ -912,8 +998,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-        lv_obj_add_event_cb(btn, on_llm_type_select_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);
-        lv_obj_add_event_cb(btn, on_llm_type_select_click, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(btn, on_llm_type_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
     }
 
     // 하단 제어 버튼: [APPLY] 및 [BACK]
