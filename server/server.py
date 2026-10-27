@@ -102,7 +102,7 @@ OPENAI_VOICE = os.environ.get("OPENAI_VOICE", "alloy").strip()
 # ------------------------------------------
 # Gemini Realtime (Multimodal Live API) 설정
 # ------------------------------------------
-GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-2.0-flash-exp").strip()
+GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-2.5-flash-native-audio-latest").strip()
 GEMINI_REALTIME_VOICE = os.environ.get("GEMINI_REALTIME_VOICE", "Aoede").strip()
 
 print(f"[시스템] Gemini LLM 준비 완료: {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
@@ -545,9 +545,25 @@ class GeminiLiveSession:
                 }
             }
             await self.gemini_ws.send(json.dumps(setup_msg))
-            self.is_connected = True
-            print("[Gemini Realtime] 세션 Setup 완료 (STT/TTS 없는 직통 음성 스트리밍 대기)")
-            self.rx_task = asyncio.create_task(self._receive_loop())
+            
+            # 서버의 setupComplete 응답 대기 (초기 핸드셰이크 완료 확인)
+            init_resp = await asyncio.wait_for(self.gemini_ws.recv(), timeout=5.0)
+            if isinstance(init_resp, bytes):
+                init_resp = init_resp.decode("utf-8", errors="ignore")
+            init_data = json.loads(init_resp) if init_resp else {}
+            
+            if "setupComplete" in init_data:
+                self.is_connected = True
+                print("[Gemini Realtime] 세션 Setup 완료 (STT/TTS 없는 직통 음성 스트리밍 준비 완료)")
+                self.rx_task = asyncio.create_task(self._receive_loop())
+            else:
+                print(f"[Gemini Realtime] 예기치 않은 Setup 응답: {init_resp}")
+                self.is_connected = True
+                self.rx_task = asyncio.create_task(self._receive_loop())
+                
+        except websockets.exceptions.ConnectionClosed as cc:
+            print(f"[Gemini Realtime] WebSocket 연결 거부 (Code: {cc.code}): {cc.reason}")
+            self.is_connected = False
         except Exception as e:
             print(f"[Gemini Realtime] 연결 실패: {e}")
             self.is_connected = False
@@ -572,11 +588,33 @@ class GeminiLiveSession:
         except Exception as e:
             print(f"[Gemini Realtime] 오디오 송신 오류: {e}")
 
+    async def send_text(self, text):
+        """텍스트 질문을 Gemini Live 세션으로 전달"""
+        if not self.is_connected or not self.gemini_ws:
+            return
+        try:
+            client_content = {
+                "clientContent": {
+                    "turns": [
+                        {
+                            "role": "user",
+                            "parts": [{"text": text}]
+                        }
+                    ],
+                    "turnComplete": True
+                }
+            }
+            await self.gemini_ws.send(json.dumps(client_content))
+        except Exception as e:
+            print(f"[Gemini Realtime] 텍스트 송신 오류: {e}")
+
     async def _receive_loop(self):
         """Gemini로부터 오는 24kHz 오디오를 16kHz로 리샘플링하여 ESP32로 즉시 바이너리 전송"""
         try:
             first_chunk = True
             async for raw in self.gemini_ws:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="ignore")
                 data = json.loads(raw)
                 server_content = data.get("serverContent")
                 if not server_content:
@@ -1404,9 +1442,15 @@ async def handler(websocket, path=None):
     current_llm_type = "gemini api"
 
     active_realtime_session = None
+    t_last_rt_retry = 0.0
 
     async def switch_realtime_session(target_type):
-        nonlocal active_realtime_session
+        nonlocal active_realtime_session, t_last_rt_retry
+        now = time.perf_counter()
+        if now - t_last_rt_retry < 3.0:
+            return  # 3초 이내 중복 재연결 방지
+        t_last_rt_retry = now
+
         if active_realtime_session:
             await active_realtime_session.close()
             active_realtime_session = None
