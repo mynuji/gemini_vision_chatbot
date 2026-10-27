@@ -86,7 +86,7 @@ esp_err_t display_ui_init(void) {
   timer_conf.speed_mode = LEDC_LOW_SPEED_MODE;
   timer_conf.duty_resolution = LEDC_TIMER_8_BIT;
   timer_conf.timer_num = LEDC_TIMER_0;
-  timer_conf.freq_hz = 5000;
+  timer_conf.freq_hz = 1000; // 1kHz로 설정하여 100k 풀업 회로에서도 완벽한 PWM 디밍 지원
   timer_conf.clk_cfg = LEDC_AUTO_CLK;
   ledc_timer_config(&timer_conf);
 

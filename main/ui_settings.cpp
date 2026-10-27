@@ -1010,19 +1010,22 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, "LLM TYPE");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
-    // 하단 APPLY/BACK 버튼과 절대 겹치지 않도록 높이 126px로 상단 정렬
+    // 스크롤 리스트 뷰포트(표시 범위)를 Y=32에서 시작해 Y=180(높이 148px)에서 엄격하게 클리핑
+    // 하단 버튼(Y=196~)과 완전히 분리되어 아이템이 많아져도 버튼 위로 절대 침범하지 않음
     lv_obj_t *list = lv_list_create(parent);
-    lv_obj_set_size(list, 196, 126);
-    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 28);
+    lv_obj_set_size(list, 188, 148);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 32);
     lv_obj_set_style_bg_color(list, lv_color_hex(0x222222), 0);
     lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_radius(list, 8, 0);
+    lv_obj_set_style_radius(list, 10, 0);
     lv_obj_set_style_pad_all(list, 2, 0);
+    lv_obj_set_style_pad_row(list, 4, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_style_clip_corner(list, true, 0);
     lv_obj_add_event_cb(list, (lv_event_cb_t)[](lv_event_t *e){
         lv_indev_t *indev = lv_indev_get_act();
         if (indev) {
@@ -1042,8 +1045,9 @@ static void create_llm_type_view(lv_obj_t *parent) {
         bool selected = (s_edit_cfg.llm_type == i);
         snprintf(item_txt, sizeof(item_txt), "%s %s", selected ? "[*]" : "[ ]", names[i]);
 
+        // 다른 메뉴와 동일하게 일관된 40px 높이 및 터치 간격 유지
         lv_obj_t *btn = lv_list_add_btn(list, NULL, item_txt);
-        lv_obj_set_size(btn, lv_pct(100), 28); // 28px로 최적화하여 4개 항목이 겹침 없이 정확히 노출
+        lv_obj_set_size(btn, lv_pct(100), 40);
         if (selected) {
             lv_obj_set_style_bg_color(btn, lv_color_hex(0x005588), 0);
             lv_obj_set_style_text_color(btn, lv_color_hex(0x00FFCC), 0);
@@ -1057,9 +1061,9 @@ static void create_llm_type_view(lv_obj_t *parent) {
         lv_obj_add_event_cb(btn, on_llm_type_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
     }
 
-    // 하단 제어 버튼: [APPLY] 및 [BACK] (리스트 하단 Y=154 아래 안전영역 Y=198에 배치되어 절대 겹치지 않음)
+    // 하단 제어 버튼: [APPLY] 및 [BACK] (리스트 뷰포트 Y=180 아래 안전영역 Y=196에 배치)
     lv_obj_t *apply_btn = lv_btn_create(parent);
-    lv_obj_set_size(apply_btn, 76, 28);
+    lv_obj_set_size(apply_btn, 76, 30);
     lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
     lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x007ACC), 0);
     lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
@@ -1070,7 +1074,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_obj_add_event_cb(apply_btn, on_llm_type_apply_click, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *back_btn = lv_btn_create(parent);
-    lv_obj_set_size(back_btn, 76, 28);
+    lv_obj_set_size(back_btn, 76, 30);
     lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -14);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
