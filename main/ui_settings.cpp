@@ -215,8 +215,8 @@ static void create_main_menu(lv_obj_t *parent) {
     lv_obj_set_style_pad_top(list, 10, 0);
     lv_obj_set_style_pad_bottom(list, 10, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER); // 오직 수직 스크롤만 허용
-    // 잔여 관성 스크롤(Momentum)과 탄성(Elastic) 기능 활성화 (사용자 선호 반영)
-    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    // 관성 스크롤(Momentum) 비활성화: 손을 떼는 즉시 스크롤이 딱 멈춰서 다음 터치가 100% 버튼 클릭으로 인식되도록 보장!
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     const char *items[] = {
@@ -233,8 +233,9 @@ static void create_main_menu(lv_obj_t *parent) {
 
     for (int i = 0; i < 9; i++) {
         lv_obj_t *btn = lv_list_add_btn(list, NULL, items[i]);
-        lv_obj_set_size(btn, lv_pct(100), 38);
+        lv_obj_set_size(btn, lv_pct(100), 42); // 38px -> 42px로 확대하여 터치 정확도 대폭 향상
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED); // 터치 즉시 시각 피드백 (하이라이트)
         lv_obj_set_style_text_color(btn, lv_color_white(), 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);       // 버튼 자체 스크롤 차단
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);  // 클릭 시 자동 스크롤 오작동 방지
@@ -559,20 +560,21 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_set_style_radius(list, 10, 0);
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     if (s_scanned_count == 0) {
         lv_obj_t *empty_btn = lv_list_add_btn(list, NULL, "(No APs Found)");
-        lv_obj_set_size(empty_btn, lv_pct(100), 36);
+        lv_obj_set_size(empty_btn, lv_pct(100), 40);
         lv_obj_set_style_bg_color(empty_btn, lv_color_hex(0x333333), 0);
     } else {
         for (int i = 0; i < s_scanned_count; i++) {
             char item_txt[64];
             snprintf(item_txt, sizeof(item_txt), "%s (%ddBm)", s_scanned_aps[i].ssid, s_scanned_aps[i].rssi);
             lv_obj_t *btn = lv_list_add_btn(list, NULL, item_txt);
-            lv_obj_set_size(btn, lv_pct(100), 36);
+            lv_obj_set_size(btn, lv_pct(100), 40);
             lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
             lv_obj_set_style_text_color(btn, lv_color_white(), 0);
             lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
@@ -883,7 +885,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_obj_set_style_radius(list, 10, 0);
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     const char *names[LLM_TYPE_COUNT] = {
@@ -899,7 +901,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
         snprintf(item_txt, sizeof(item_txt), "%s %s", selected ? "[*]" : "[ ]", names[i]);
 
         lv_obj_t *btn = lv_list_add_btn(list, NULL, item_txt);
-        lv_obj_set_size(btn, lv_pct(100), 34);
+        lv_obj_set_size(btn, lv_pct(100), 40); // 34px -> 40px로 확대
         if (selected) {
             lv_obj_set_style_bg_color(btn, lv_color_hex(0x005588), 0);
             lv_obj_set_style_text_color(btn, lv_color_hex(0x00FFCC), 0);
@@ -907,6 +909,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
             lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
             lv_obj_set_style_text_color(btn, lv_color_white(), 0);
         }
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
         lv_obj_add_event_cb(btn, on_llm_type_select_click, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);

@@ -245,15 +245,15 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
         s_anchor_y = y;
         s_drag_started = false;
     } else if (pressed && s_is_pressed) {
-        // 손가락 미세 떨림/미끄러짐으로 인한 스크롤 오인식 방지 (탭 앵커 필터)
+        // 손가락 미세 떨림/살 눌림으로 인한 스크롤 오인식 방지 (28픽셀 반경 탭 앵커 필터)
         if (!s_drag_started) {
             int32_t dx = (int32_t)x - s_anchor_x;
             int32_t dy = (int32_t)y - s_anchor_y;
-            if (dx * dx + dy * dy < 256) { // 16픽셀 이내 움직임은 최초 탭 지점으로 락
+            if (dx * dx + dy * dy < 784) { // 28픽셀 이내 움직임은 최초 탭 지점으로 단단히 고정
                 x = s_anchor_x;
                 y = s_anchor_y;
             } else {
-                s_drag_started = true; // 16픽셀 초과 이동 시 정상 스크롤/드래그 시작
+                s_drag_started = true; // 28픽셀 초과 이동 시 명확한 스크롤/드래그 시작
             }
         }
     }
@@ -284,10 +284,11 @@ esp_err_t touch_input_register_lvgl_indev(void) {
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = lvgl_touch_read_cb;
-    indev_drv.scroll_limit = 20; // 탭 판정 여유 거리
-    indev_drv.scroll_throw = 60; // 0.3초 내 깔끔하게 감속 정지되어 즉시 터치 클릭 가능
+    indev_drv.scroll_limit = 36;       // 탭 클릭 판정 여유 거리 확대 (손가락 살 눌림 완벽 흡수)
+    indev_drv.scroll_throw = 0;        // 터치 해제 즉시 스크롤 정지 (관성 스크롤 중 클릭 씹힘 원천 차단)
+    indev_drv.long_press_time = 500;   // 500ms 여유 있는 클릭 인정 시간
     lv_indev_drv_register(&indev_drv);
-    ESP_LOGI(TAG, "LVGL pointer input driver registered (scroll_limit=20, scroll_throw=60)!");
+    ESP_LOGI(TAG, "LVGL pointer input driver registered (scroll_limit=36, scroll_throw=0)!");
     return ESP_OK;
 }
 
