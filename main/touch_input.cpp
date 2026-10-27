@@ -163,13 +163,16 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
         esp_err_t ret = i2c_master_read_from_device(I2C_TOUCH_PORT, s_detected_addr,
                                                    data, 5, pdMS_TO_TICKS(20));
         if (ret == ESP_OK) {
-            // Seeed 공식 CHSC6X 프로토콜: data[0] == 0x01 (Touch Down)
-            // data[2] = X좌표 (0~239), data[4] = Y좌표 (0~239)
-            if (data[0] == 0x01 || pin_active) {
+            // Seeed 공식 CHSC6X 프로토콜: data[0] == 0x01 (Touch Down / Active), 0x00 (Released)
+            if (data[0] == 0x01 || data[0] == 0x02 || data[0] == 0x03) {
                 x = (int16_t)data[2]; // 정방향 (오른쪽으로 밀면 증가)
                 y = (int16_t)data[4];
                 pressed = true;
+            } else {
+                pressed = false; // 손을 떼었을 때 확실하게 릴리즈 처리 (직후 터치 좌표 점프 방지)
             }
+        } else {
+            pressed = pin_active;
         }
     } else if (s_chip_type == TOUCH_CHIP_FT6236) {
         uint8_t data[5] = {0};
@@ -200,36 +203,29 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
 
     // 상단 10회 연속 터치 감지 (터치가 새로 눌렸을 때, 설정 화면이 닫혀있을 때만 동작)
     if (pressed && !s_is_pressed && !ui_settings_is_active()) {
-        // 상단 영역 판정: Y <= 100 (화면 상단 절반 가까이)
-        // 또는 3초 이내에 연속해서 탭하는 중인 경우 설정 메뉴 진입으로 간주!
         bool is_rapid_tapping = (now - s_last_top_tap_time < 3000) && (s_top_tap_count > 0);
         bool is_top_area = (y <= 100) || is_rapid_tapping;
 
         if (is_top_area) {
-            // 상단 탭: 설정 메뉴 카운트만 증가시키고, 일반 대화 터치 플래그는 세팅하지 않음!
             if (now - s_last_top_tap_time < 3000) {
                 s_top_tap_count++;
             } else {
-                s_top_tap_count = 1; // 3.0초 이상 지났으면 리셋 후 1부터 시작
+                s_top_tap_count = 1;
             }
             s_last_top_tap_time = now;
 
             ESP_LOGI(TAG, "Top area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
-
-            // 가벼운 피드백 클릭 틱 소리 (2400Hz, 15ms)
             audio_io_play_tone(2400.0f, 15);
 
             if (s_top_tap_count >= 10) {
                 s_top_tap_count = 0;
                 ESP_LOGW(TAG, ">>> 10 TOP TAPS DETECTED! TRIGGERING SETTINGS MENU <<<");
-                // 성공 진입 비프음
                 audio_io_play_tone(1500.0f, 100);
                 if (s_settings_cb) {
                     s_settings_cb();
                 }
             }
         } else {
-            // 화면 하단(Y > 100) 단일 터치: 일반 대화용 터치(수동 호출 / 대화 중단) 플래그 발생!
             s_top_tap_count = 0;
             s_chat_touch_event_flag = true;
             ESP_LOGI(TAG, "Chat touch area tapped (x=%d, y=%d) -> Chat event flagged", x, y);
@@ -238,24 +234,36 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
 
     static int16_t s_anchor_x = 0;
     static int16_t s_anchor_y = 0;
-    static bool s_drag_started = false;
+    static bool s_vertical_scroll_active = false;
 
     if (pressed && !s_is_pressed) {
+        // 새 터치 시작: 앵커 좌표 기록 및 수직 스크롤 플래그 초기화
         s_anchor_x = x;
         s_anchor_y = y;
-        s_drag_started = false;
+        s_vertical_scroll_active = false;
+        // 터치 시작 시에는 최초 탭 좌표로 고정
+        x = s_anchor_x;
+        y = s_anchor_y;
     } else if (pressed && s_is_pressed) {
-        // 손가락 미세 떨림/살 눌림으로 인한 스크롤 오인식 방지 (28픽셀 반경 탭 앵커 필터)
-        if (!s_drag_started) {
+        if (!s_vertical_scroll_active) {
             int32_t dx = (int32_t)x - s_anchor_x;
             int32_t dy = (int32_t)y - s_anchor_y;
-            if (dx * dx + dy * dy < 784) { // 28픽셀 이내 움직임은 최초 탭 지점으로 단단히 고정
+            int32_t abs_dx = (dx < 0) ? -dx : dx;
+            int32_t abs_dy = (dy < 0) ? -dy : dy;
+
+            // [방향성 스크롤 필터] 오직 특정 방향성(수직 위/아래)으로 24픽셀 이상 이동할 때만 스크롤로 인정!
+            // 수직 이동량(abs_dy)이 수평 이동량(abs_dx)의 1.5배 이상이어야 함.
+            if (abs_dy >= 24 && abs_dy > (abs_dx * 3 / 2)) {
+                s_vertical_scroll_active = true;
+            } else {
+                // 그 외(제자리 탭, 살 눌림, 수평 흔들림 등)는 시작 앵커 좌표로 100% 락!
+                // LVGL은 0픽셀 이동으로 인식하여 스크롤 오인식을 원천 차단함!
                 x = s_anchor_x;
                 y = s_anchor_y;
-            } else {
-                s_drag_started = true; // 28픽셀 초과 이동 시 명확한 스크롤/드래그 시작
             }
         }
+    } else if (!pressed) {
+        s_vertical_scroll_active = false;
     }
 
     s_is_pressed = pressed;
@@ -284,11 +292,11 @@ esp_err_t touch_input_register_lvgl_indev(void) {
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = lvgl_touch_read_cb;
-    indev_drv.scroll_limit = 36;       // 탭 클릭 판정 여유 거리 확대 (손가락 살 눌림 완벽 흡수)
-    indev_drv.scroll_throw = 0;        // 터치 해제 즉시 스크롤 정지 (관성 스크롤 중 클릭 씹힘 원천 차단)
-    indev_drv.long_press_time = 500;   // 500ms 여유 있는 클릭 인정 시간
+    indev_drv.scroll_limit = 20;       // 수직 방향 스크롤 확인 후 민첩하게 스크롤 개시
+    indev_drv.scroll_throw = 0;        // 터치 해제 시 즉시 스크롤 정지하여 탄성 바운스만 깔끔하게 정착
+    indev_drv.long_press_time = 400;
     lv_indev_drv_register(&indev_drv);
-    ESP_LOGI(TAG, "LVGL pointer input driver registered (scroll_limit=36, scroll_throw=0)!");
+    ESP_LOGI(TAG, "LVGL pointer input driver registered (directional vertical scroll enabled)!");
     return ESP_OK;
 }
 

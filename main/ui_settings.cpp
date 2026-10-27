@@ -245,10 +245,15 @@ static void create_main_menu(lv_obj_t *parent) {
     lv_obj_set_style_pad_top(list, 10, 0);
     lv_obj_set_style_pad_bottom(list, 10, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER); // 오직 수직 스크롤만 허용
-    // 관성 스크롤 및 바운스 탄성 비활성화: 손을 떼는 즉시 정확히 멈춰서 스크롤 직후 탭도 100% 즉시 인식!
+    // [사용자 요구사항] 탄성 바운스는 유지하고, 스크롤 종료 시 즉시 바운스가 정착하여 다음 탭이 터치로 인식되도록 처리
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
-    lv_obj_set_style_anim_time(list, 0, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_add_event_cb(list, (lv_event_cb_t)[](lv_event_t *e){
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev) {
+            lv_indev_reset(indev, NULL);
+        }
+    }, LV_EVENT_SCROLL_END, NULL);
 
     const char *items[] = {
         "1. Volume Control",
@@ -618,8 +623,13 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
-    lv_obj_set_style_anim_time(list, 0, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_add_event_cb(list, (lv_event_cb_t)[](lv_event_t *e){
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev) {
+            lv_indev_reset(indev, NULL);
+        }
+    }, LV_EVENT_SCROLL_END, NULL);
 
     if (s_scanned_count == 0) {
         lv_obj_t *empty_btn = lv_list_add_btn(list, NULL, "(No APs Found)");
@@ -971,8 +981,13 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
-    lv_obj_set_style_anim_time(list, 0, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_add_event_cb(list, (lv_event_cb_t)[](lv_event_t *e){
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev) {
+            lv_indev_reset(indev, NULL);
+        }
+    }, LV_EVENT_SCROLL_END, NULL);
 
     const char *names[LLM_TYPE_COUNT] = {
         "1. Gemini API",
