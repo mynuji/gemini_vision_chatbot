@@ -515,6 +515,36 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                         settings_manager_set_llm_type(target_type);
                     }
                     handled = true;
+                } else if (strcmp(type->valuestring, "set_volume") == 0) {
+                    cJSON *vol_item = cJSON_GetObjectItem(root, "volume");
+                    if (vol_item != NULL && cJSON_IsNumber(vol_item)) {
+                        int vol = vol_item->valueint;
+                        if (vol < 10) vol = 10;
+                        if (vol > 100) vol = 100;
+                        settings_manager_set_volume((uint8_t)vol);
+                        ESP_LOGI(TAG, "Server commanded volume change to: %d%%", vol);
+                        char st_buf[32];
+                        snprintf(st_buf, sizeof(st_buf), "VOL: %d%%", vol);
+                        display_ui_set_status(st_buf);
+                    }
+                    handled = true;
+                } else if (strcmp(type->valuestring, "set_mic_gain") == 0 || strcmp(type->valuestring, "set_mic_sensitivity") == 0) {
+                    cJSON *gain_item = cJSON_GetObjectItem(root, "gain");
+                    if (gain_item == NULL) {
+                        gain_item = cJSON_GetObjectItem(root, "sensitivity");
+                    }
+                    if (gain_item != NULL && cJSON_IsNumber(gain_item)) {
+                        int gain = gain_item->valueint;
+                        if (gain < 10) gain = 10;
+                        if (gain > 60) gain = 60;
+                        settings_manager_set_mic_gain((uint8_t)gain);
+                        audio_pipeline_set_mic_gain((uint8_t)gain);
+                        ESP_LOGI(TAG, "Server commanded mic gain change to: %d (%.1fx)", gain, gain / 10.0f);
+                        char st_buf[32];
+                        snprintf(st_buf, sizeof(st_buf), "MIC: %.1fx", gain / 10.0f);
+                        display_ui_set_status(st_buf);
+                    }
+                    handled = true;
                 }
             }
             cJSON_Delete(root);

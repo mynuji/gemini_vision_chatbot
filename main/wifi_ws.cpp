@@ -38,7 +38,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         ESP_LOGI(TAG, "WebSocket Connected to %s", s_ws_uri);
         s_is_ws_connected = true;
         notify_state(WIFI_WS_STATE_WS_CONNECTED, "JETSON CONNECTED");
-        wifi_ws_send_llm_type(settings_manager_get()->llm_type);
+        wifi_ws_send_client_info();
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
@@ -336,4 +336,19 @@ esp_err_t wifi_ws_send_llm_type(uint8_t llm_type) {
     ESP_LOGI(TAG, "Sending LLM Type to server: %s", buf);
     return wifi_ws_send_text(buf);
 }
+
+esp_err_t wifi_ws_send_client_info(void) {
+    if (!s_is_ws_connected || s_ws_client == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const app_settings_t *cfg = settings_manager_get();
+    const char *llm_name = settings_manager_get_llm_type_name(cfg->llm_type);
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"client_info\",\"llm_type\":\"%s\",\"volume\":%u,\"mic_gain\":%u}",
+             llm_name, (unsigned int)cfg->volume, (unsigned int)cfg->mic_gain);
+    ESP_LOGI(TAG, "Sending client info to server: %s", buf);
+    return wifi_ws_send_text(buf);
+}
+
 

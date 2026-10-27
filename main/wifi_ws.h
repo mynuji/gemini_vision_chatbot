@@ -58,6 +58,11 @@ esp_err_t wifi_ws_send_text(const char *text);
 esp_err_t wifi_ws_send_llm_type(uint8_t llm_type);
 
 /**
+ * @brief 현재 설정된 클라이언트 상태(LLM Type, Volume, Mic Gain)를 서버로 전송
+ */
+esp_err_t wifi_ws_send_client_info(void);
+
+/**
  * @brief 네트워크 상태 콜백 등록 (UI 상태 갱신용)
  */
 void wifi_ws_set_state_callback(wifi_ws_state_cb_t cb);

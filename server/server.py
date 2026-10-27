@@ -505,19 +505,22 @@ async def stream_local_llm(messages, image_bytes=None):
 # ==========================================
 class GeminiLiveSession:
     """Gemini Multimodal Live WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None):
+    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None, on_adjust_audio=None):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
         self.voice = voice
         self.on_switch_llm = on_switch_llm
+        self.on_adjust_audio = on_adjust_audio
         self.gemini_ws = None
         self.rx_task = None
         self.is_connected = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
-            "만약 사용자가 다른 모델이나 LLM 타입(Gemini API, Local LLM, ChatGPT Realtime 등)으로 바꿔달라거나 전환해달라고 요청하면 반드시 switch_llm_type 도구를 호출해줘."
+            "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
+            "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
+            "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
         )
 
     async def start(self):
@@ -560,6 +563,28 @@ class GeminiLiveSession:
                                             }
                                         },
                                         "required": ["target_type"]
+                                    }
+                                },
+                                {
+                                    "name": "set_volume",
+                                    "description": "스피커 볼륨(소리 크기)을 변경합니다. level(10~100) 또는 direction('up', 'down', 'max', 'min')을 지정합니다.",
+                                    "parameters": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "level": {"type": "INTEGER", "description": "설정할 볼륨 퍼센트(10~100)"},
+                                            "direction": {"type": "STRING", "enum": ["up", "down", "max", "min"], "description": "볼륨 조절 방향"}
+                                        }
+                                    }
+                                },
+                                {
+                                    "name": "set_mic_sensitivity",
+                                    "description": "마이크 감도(민감도/게인)를 변경합니다. level(1~6배율 또는 10~60) 또는 direction('up', 'down', 'max', 'min')을 지정합니다.",
+                                    "parameters": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "level": {"type": "INTEGER", "description": "설정할 마이크 감도(1~6 또는 10~60)"},
+                                            "direction": {"type": "STRING", "enum": ["up", "down", "max", "min"], "description": "마이크 감도 조절 방향"}
+                                        }
                                     }
                                 }
                             ]
@@ -662,6 +687,28 @@ class GeminiLiveSession:
                             if self.on_switch_llm and target:
                                 asyncio.create_task(self.on_switch_llm(target))
                             return
+                        elif fc.get("name") in ("set_volume", "set_mic_sensitivity"):
+                            cmd_name = fc.get("name")
+                            args = fc.get("args", {})
+                            print(f"\n[Gemini Realtime Tool Call] {cmd_name} 호출 감지: {args}")
+                            call_id = fc.get("id")
+                            if self.on_adjust_audio:
+                                asyncio.create_task(self.on_adjust_audio(cmd_name, args))
+                            if call_id and self.gemini_ws:
+                                try:
+                                    resp = {
+                                        "toolResponse": {
+                                            "functionResponses": [
+                                                {
+                                                    "response": {"output": {"status": "success"}},
+                                                    "id": call_id
+                                                }
+                                            ]
+                                        }
+                                    }
+                                    await self.gemini_ws.send(json.dumps(resp))
+                                except Exception:
+                                    pass
 
                 model_turn = server_content.get("modelTurn")
                 if model_turn:
@@ -708,19 +755,22 @@ class GeminiLiveSession:
 # ==========================================
 class OpenAIRealtimeSession:
     """OpenAI Realtime WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE, on_switch_llm=None):
+    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE, on_switch_llm=None, on_adjust_audio=None):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
         self.voice = voice
         self.on_switch_llm = on_switch_llm
+        self.on_adjust_audio = on_adjust_audio
         self.openai_ws = None
         self.rx_task = None
         self.is_connected = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 대답해. "
-            "만약 사용자가 다른 모델이나 LLM 타입(Gemini API, Local LLM, Gemini Realtime 등)으로 바꿔달라거나 전환해달라고 요청하면 반드시 switch_llm_type 도구를 호출해줘."
+            "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
+            "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
+            "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
         )
 
     async def start(self):
@@ -773,6 +823,30 @@ class OpenAIRealtimeSession:
                                     }
                                 },
                                 "required": ["target_type"]
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "name": "set_volume",
+                            "description": "스피커 볼륨(소리 크기)을 변경합니다. level(10~100) 또는 direction('up', 'down', 'max', 'min')을 지정합니다.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "level": {"type": "integer", "description": "설정할 볼륨 퍼센트(10~100)"},
+                                    "direction": {"type": "string", "enum": ["up", "down", "max", "min"], "description": "볼륨 조절 방향"}
+                                }
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "name": "set_mic_sensitivity",
+                            "description": "마이크 감도(민감도/게인)를 변경합니다. level(1~6배율 또는 10~60) 또는 direction('up', 'down', 'max', 'min')을 지정합니다.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "level": {"type": "integer", "description": "설정할 마이크 감도(1~6 또는 10~60)"},
+                                    "direction": {"type": "string", "enum": ["up", "down", "max", "min"], "description": "마이크 감도 조절 방향"}
+                                }
                             }
                         }
                     ],
@@ -849,6 +923,15 @@ class OpenAIRealtimeSession:
                             print(f"\n[OpenAI Realtime Tool Call] switch_llm_type 감지 -> target: '{target}'")
                             if self.on_switch_llm and target:
                                 asyncio.create_task(self.on_switch_llm(target))
+                        except Exception as e:
+                            print(f"[OpenAI Realtime Tool Call 파싱 오류] {e}")
+                    elif func_name in ("set_volume", "set_mic_sensitivity"):
+                        args_raw = event.get("arguments", "{}")
+                        try:
+                            args_json = json.loads(args_raw)
+                            print(f"\n[OpenAI Realtime Tool Call] {func_name} 감지: {args_json}")
+                            if self.on_adjust_audio:
+                                asyncio.create_task(self.on_adjust_audio(func_name, args_json))
                         except Exception as e:
                             print(f"[OpenAI Realtime Tool Call 파싱 오류] {e}")
 
@@ -1018,6 +1101,109 @@ def parse_llm_switch_command(user_text):
                 "Gemini API",
                 "LLM을 기본 Gemini API로 변경했습니다. Gemini 2.5 Flash 모델로 대답할게요."
             )
+
+    return None, None, None
+
+def extract_number_from_text(text):
+    """텍스트에서 숫자(아라비아 숫자 또는 한글 수사)를 안전하게 추출"""
+    # 1. 아라비아 숫자 우선 (예: "80", "5", "100")
+    m = re.search(r'(\d+)', text)
+    if m:
+        return int(m.group(1))
+
+    # 2. 십 단위 복합 수사
+    tens = {
+        "백": 100, "구십": 90, "팔십": 80, "칠십": 70, "육십": 60,
+        "오십": 50, "사십": 40, "삼십": 30, "이십": 20, "십": 10
+    }
+    for k, v in tens.items():
+        if k in text:
+            return v
+
+    # 3. 고유어 수사
+    singles = {
+        "하나": 1, "둘": 2, "셋": 3, "넷": 4, "다섯": 5, "여섯": 6,
+        "일곱": 7, "여덟": 8, "아홉": 9, "열": 10
+    }
+    for k, v in singles.items():
+        if k in text:
+            return v
+
+    # 4. 한자어 수사는 다른 단어의 부분 일치(예: '마이크'의 '이', '게인'의 '이')를 방지하기 위해 조사/단위 접미사 결합 시에만 매칭
+    m_single = re.search(r'([일이삼사오육칠팔구])(?:로|으로|단계|레벨|배)', text)
+    if m_single:
+        s_map = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7, "팔": 8, "구": 9}
+        return s_map.get(m_single.group(1))
+
+    return None
+
+def parse_audio_settings_command(user_text, cur_vol=70, cur_gain=35):
+    """
+    사용자의 발화에서 볼륨 또는 마이크 감도 조절 명령을 분석합니다.
+    (cmd_type, new_val, resp_msg) 또는 (None, None, None) 반환
+    cmd_type: 'volume' | 'mic_gain'
+    """
+    if not user_text:
+        return None, None, None
+
+    text = user_text.lower().strip()
+
+    # [1] 마이크 감도 조절
+    if "마이크" in text or "mic" in text or "게인" in text or ("감도" in text and "볼륨" not in text) or ("민감도" in text):
+        # 1) 최대/최소
+        if any(k in text for k in ["최대", "제일 높", "가장 높", "제일 크게", "끝까지"]):
+            new_gain = 60
+            return "mic_gain", new_gain, "마이크 감도를 최대인 6배로 설정했습니다."
+        if any(k in text for k in ["최소", "제일 낮", "가장 낮", "제일 작게"]):
+            new_gain = 10
+            return "mic_gain", new_gain, "마이크 감도를 최소인 1배로 설정했습니다."
+
+        # 2) 올리기 / 민감하게 (키워드가 있으면 수치 추출보다 증감 의도 우선)
+        if any(k in text for k in ["올려", "키워", "높여", "더 크게", "민감하게", "잘 안 들려", "더 잘"]):
+            new_gain = min(60, cur_gain + 10)
+            return "mic_gain", new_gain, f"마이크 감도를 {new_gain / 10:.1f}배로 올렸습니다."
+
+        # 3) 내리기 / 둔하게
+        if any(k in text for k in ["내려", "줄여", "낮춰", "더 작게", "둔하게"]):
+            new_gain = max(10, cur_gain - 10)
+            return "mic_gain", new_gain, f"마이크 감도를 {new_gain / 10:.1f}배로 낮췄습니다."
+
+        # 4) 직접 숫자 지정
+        num = extract_number_from_text(text)
+        if num is not None:
+            if 1 <= num <= 6:
+                new_gain = num * 10
+            elif 10 <= num <= 60:
+                new_gain = num
+            else:
+                new_gain = max(10, min(60, num))
+            return "mic_gain", new_gain, f"마이크 감도를 {new_gain / 10:.1f}배로 설정했습니다."
+
+    # [2] 볼륨 (소리 크기) 조절
+    if any(k in text for k in ["볼륨", "소리", "음량", "목소리", "volume"]):
+        # 1) 최대/최소
+        if any(k in text for k in ["최대", "제일 크게", "가장 크게", "끝까지", "맥스", "max"]):
+            new_vol = 100
+            return "volume", new_vol, "볼륨을 최대인 100%로 설정했습니다."
+        if any(k in text for k in ["최소", "제일 작게", "가장 작게", "최저", "min"]):
+            new_vol = 10
+            return "volume", new_vol, "볼륨을 최소인 10%로 설정했습니다."
+
+        # 2) 올리기
+        if any(k in text for k in ["올려", "키워", "크게", "높여", "더 크게", "작아", "업", "더 커", "안 들려"]):
+            new_vol = min(100, cur_vol + 15)
+            return "volume", new_vol, f"볼륨을 {new_vol}%로 올렸습니다."
+
+        # 3) 내리기
+        if any(k in text for k in ["내려", "줄여", "작게", "낮춰", "더 작게", "너무 커", "시끄러", "다운"]):
+            new_vol = max(10, cur_vol - 15)
+            return "volume", new_vol, f"볼륨을 {new_vol}%로 줄였습니다."
+
+        # 4) 직접 숫자 지정 ("볼륨 80", "소리 50으로", "볼륨 오십")
+        num = extract_number_from_text(text)
+        if num is not None:
+            new_vol = max(10, min(100, num))
+            return "volume", new_vol, f"볼륨을 {new_vol}%로 설정했습니다."
 
     return None, None, None
 
@@ -1571,9 +1757,109 @@ async def handler(websocket, path=None):
     pre_speech_buffer = deque(maxlen=100)
     rx_accum = np.array([], dtype=np.float32)
     current_llm_type = "gemini api"
+    current_volume = 70
+    current_mic_gain = 35
 
     active_realtime_session = None
     t_last_rt_retry = 0.0
+
+    async def adjust_audio_settings(cmd_type, target_val_or_dir, custom_resp=None):
+        nonlocal current_volume, current_mic_gain
+        if cmd_type in ("set_volume", "volume"):
+            new_vol = current_volume
+            if isinstance(target_val_or_dir, dict):
+                lvl = target_val_or_dir.get("level")
+                direction = target_val_or_dir.get("direction")
+                if lvl is not None:
+                    new_vol = max(10, min(100, int(lvl)))
+                elif direction == "up":
+                    new_vol = min(100, current_volume + 15)
+                elif direction == "down":
+                    new_vol = max(10, current_volume - 15)
+                elif direction == "max":
+                    new_vol = 100
+                elif direction == "min":
+                    new_vol = 10
+            elif isinstance(target_val_or_dir, (int, float)):
+                new_vol = max(10, min(100, int(target_val_or_dir)))
+            elif target_val_or_dir == "up":
+                new_vol = min(100, current_volume + 15)
+            elif target_val_or_dir == "down":
+                new_vol = max(10, current_volume - 15)
+            elif target_val_or_dir == "max":
+                new_vol = 100
+            elif target_val_or_dir == "min":
+                new_vol = 10
+
+            current_volume = new_vol
+            print(f"\n[오디오 설정 변경] 볼륨 -> {current_volume}%")
+            try:
+                await websocket.send(json.dumps({
+                    "type": "set_volume",
+                    "volume": current_volume
+                }))
+            except Exception as e:
+                print(f"[설정 전송 오류] set_volume 전송 실패: {e}")
+
+            resp_msg = custom_resp or f"볼륨을 {current_volume}%로 설정했습니다."
+
+        elif cmd_type in ("set_mic_gain", "set_mic_sensitivity", "mic_gain"):
+            new_gain = current_mic_gain
+            if isinstance(target_val_or_dir, dict):
+                lvl = target_val_or_dir.get("level")
+                direction = target_val_or_dir.get("direction")
+                if lvl is not None:
+                    lvl_int = int(lvl)
+                    if 1 <= lvl_int <= 6:
+                        new_gain = lvl_int * 10
+                    else:
+                        new_gain = max(10, min(60, lvl_int))
+                elif direction == "up":
+                    new_gain = min(60, current_mic_gain + 10)
+                elif direction == "down":
+                    new_gain = max(10, current_mic_gain - 10)
+                elif direction == "max":
+                    new_gain = 60
+                elif direction == "min":
+                    new_gain = 10
+            elif isinstance(target_val_or_dir, (int, float)):
+                val_int = int(target_val_or_dir)
+                if 1 <= val_int <= 6:
+                    new_gain = val_int * 10
+                else:
+                    new_gain = max(10, min(60, val_int))
+            elif target_val_or_dir == "up":
+                new_gain = min(60, current_mic_gain + 10)
+            elif target_val_or_dir == "down":
+                new_gain = max(10, current_mic_gain - 10)
+            elif target_val_or_dir == "max":
+                new_gain = 60
+            elif target_val_or_dir == "min":
+                new_gain = 10
+
+            current_mic_gain = new_gain
+            print(f"\n[오디오 설정 변경] 마이크 감도 -> {current_mic_gain} ({current_mic_gain / 10:.1f}x)")
+            try:
+                await websocket.send(json.dumps({
+                    "type": "set_mic_gain",
+                    "gain": current_mic_gain
+                }))
+            except Exception as e:
+                print(f"[설정 전송 오류] set_mic_gain 전송 실패: {e}")
+
+            resp_msg = custom_resp or f"마이크 감도를 {current_mic_gain / 10:.1f}배로 설정했습니다."
+        else:
+            return
+
+        # AI 음성 안내(TTS) 및 완료 상태 전송
+        try:
+            await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+            pcm = await synthesize_tts_pcm(resp_msg)
+            if pcm:
+                await websocket.send(pcm)
+            await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
+        except Exception as e:
+            print(f"[안내 음성 오류] {e}")
 
     async def switch_and_notify_llm(target_type, display_name=None, response_text=None):
         nonlocal current_llm_type, active_realtime_session
@@ -1641,11 +1927,11 @@ async def handler(websocket, path=None):
 
         if target_type == "gemini realtime api":
             print("[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중...")
-            active_realtime_session = GeminiLiveSession(websocket, GEMINI_API_KEY, on_switch_llm=switch_and_notify_llm)
+            active_realtime_session = GeminiLiveSession(websocket, GEMINI_API_KEY, on_switch_llm=switch_and_notify_llm, on_adjust_audio=adjust_audio_settings)
             await active_realtime_session.start()
         elif target_type == "chatgpt realtime api":
             print("[세션 전환] ChatGPT Realtime (OpenAI WebSocket) 세션 초기화 중...")
-            active_realtime_session = OpenAIRealtimeSession(websocket, OPENAI_API_KEY, on_switch_llm=switch_and_notify_llm)
+            active_realtime_session = OpenAIRealtimeSession(websocket, OPENAI_API_KEY, on_switch_llm=switch_and_notify_llm, on_adjust_audio=adjust_audio_settings)
             await active_realtime_session.start()
         else:
             print(f"[세션 전환] 일반 음성 처리 파이프라인(VAD/Whisper/TTS) 모드: {target_type}")
@@ -1682,6 +1968,13 @@ async def handler(websocket, path=None):
         if sw_target:
             print(f"\n[음성 명령 감지] LLM 변경 요청: '{user_text}' -> '{sw_target}' ({sw_name})")
             await switch_and_notify_llm(sw_target, sw_name, sw_resp)
+            return
+
+        # 볼륨 / 마이크 감도 조절 음성 명령 감지
+        aud_cmd, aud_val, aud_resp = parse_audio_settings_command(user_text, current_volume, current_mic_gain)
+        if aud_cmd:
+            print(f"\n[음성 명령 감지] 오디오 설정 변경: '{user_text}' -> {aud_cmd}={aud_val}")
+            await adjust_audio_settings(aud_cmd, aud_val, aud_resp)
             return
 
         interrupted_holder["session"] = None
@@ -2134,6 +2427,18 @@ async def handler(websocket, path=None):
                                         "message": f"LLM Type set to {current_llm_type}"
                                     }))
 
+                                # [G] 클라이언트 초기 상태 수신 (LLM, Volume, Mic Gain)
+                                elif msg_type == "client_info":
+                                    if "volume" in ctrl_json:
+                                        current_volume = int(ctrl_json["volume"])
+                                    if "mic_gain" in ctrl_json:
+                                        current_mic_gain = int(ctrl_json["mic_gain"])
+                                    if "llm_type" in ctrl_json:
+                                        new_type = ctrl_json["llm_type"].strip().lower()
+                                        if new_type != current_llm_type:
+                                            current_llm_type = new_type
+                                    print(f"\n[설정 수신] 클라이언트 정보 동기화: LLM='{current_llm_type}', Vol={current_volume}%, MicGain={current_mic_gain} ({current_mic_gain/10:.1f}x)")
+
                         except Exception as parse_err:
                             print(f"[경고] JSON 파싱 실패 ({parse_err}), 일반 텍스트로 처리합니다.")
                             is_control_packet = False
@@ -2149,6 +2454,13 @@ async def handler(websocket, path=None):
                         if sw_target:
                             print(f"\n[텍스트 명령 감지] LLM 변경 요청: '{user_text}' -> '{sw_target}' ({sw_name})")
                             await switch_and_notify_llm(sw_target, sw_name, sw_resp)
+                            continue
+
+                        # 볼륨 / 마이크 감도 조절 명령 감지
+                        aud_cmd, aud_val, aud_resp = parse_audio_settings_command(user_text, current_volume, current_mic_gain)
+                        if aud_cmd:
+                            print(f"\n[텍스트 명령 감지] 오디오 설정 변경: '{user_text}' -> {aud_cmd}={aud_val}")
+                            await adjust_audio_settings(aud_cmd, aud_val, aud_resp)
                             continue
 
                         interrupted_holder["session"] = None
