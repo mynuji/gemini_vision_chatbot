@@ -511,8 +511,12 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                                 target_type = LLM_TYPE_GEMINI_API;
                             }
                         }
-                        ESP_LOGI(TAG, "Server commanded LLM Type change to: %u", (unsigned int)target_type);
+                        ESP_LOGI(TAG, "Server commanded LLM Type change to: %u (%s)",
+                                 (unsigned int)target_type, settings_manager_get_llm_type_name(target_type));
                         settings_manager_set_llm_type(target_type);
+                        char st_buf[32];
+                        snprintf(st_buf, sizeof(st_buf), "LLM: %s", settings_manager_get_llm_type_name(target_type));
+                        display_ui_set_status(st_buf);
                     }
                     handled = true;
                 } else if (strcmp(type->valuestring, "set_volume") == 0) {
@@ -653,6 +657,21 @@ void chat_state_tick(uint32_t now_ms) {
             } else {
                 chat_state_set(CHAT_STATE_IDLE);
             }
+        }
+    } else if (s_chat_state == CHAT_STATE_SPEAKING) {
+        // 스피커 버퍼가 비어있고 스피커 출력이 멈췄는데 SPEAKING 상태가 지속될 때 자동 복구 (Realtime 모드 지연/유실 대응)
+        bool spk_idle = audio_pipeline_is_spk_buffer_empty() && !audio_pipeline_is_speaker_playing();
+        if (spk_idle && elapsed >= 1500) {
+            ESP_LOGW(TAG, ">>> SPEAKING state idle watchdog timeout (%ums)! Auto-recovering to LISTENING/IDLE", (unsigned int)elapsed);
+            chat_state_handle_speaker_finished();
+        } else if (audio_pipeline_is_spk_buffer_empty() && elapsed >= 2500) {
+            // 버퍼가 비어있는데 SPEAKING 상태가 2.5초 이상 지속된 경우 플래그 상태 불문 강제 복구
+            ESP_LOGW(TAG, ">>> SPEAKING empty buffer watchdog timeout (2.5s)! Forcing recovery to LISTENING/IDLE");
+            chat_state_handle_speaker_finished();
+        } else if (elapsed >= 60000) {
+            // 최대 60초 절대 타임아웃
+            ESP_LOGW(TAG, ">>> Max SPEAKING timeout (60s)! Forcing recovery to LISTENING/IDLE");
+            chat_state_handle_speaker_finished();
         }
     }
 }

@@ -660,7 +660,21 @@ class GeminiLiveSession:
         """Gemini로부터 오는 24kHz 오디오를 16kHz로 리샘플링하여 ESP32로 즉시 바이너리 전송"""
         try:
             first_chunk = True
-            async for raw in self.gemini_ws:
+            speaking_active = False
+
+            while self.is_connected and self.gemini_ws:
+                try:
+                    # AI 음성이 스트리밍 중일 때는 1.2초 동안 새 오디오가 없으면 turnComplete로 간주하는 타임아웃 적용
+                    recv_timeout = 1.2 if speaking_active else None
+                    raw = await asyncio.wait_for(self.gemini_ws.recv(), timeout=recv_timeout)
+                except asyncio.TimeoutError:
+                    if speaking_active:
+                        print("\n[Gemini Realtime] AI 음성 출력 완료 감지 (침묵 1.2초 / turnComplete 누락 자동 보정) -> DONE 전송")
+                        speaking_active = False
+                        first_chunk = True
+                        await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
+                    continue
+
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", errors="ignore")
                 data = json.loads(raw)
@@ -673,6 +687,7 @@ class GeminiLiveSession:
                     print("\n[Gemini Realtime] 사용자 끼어들기 감지(interrupted) -> 스피커 플러시")
                     await self.esp_ws.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
                     first_chunk = True
+                    speaking_active = False
                     continue
 
                 # Tool Call (LLM Type 전환 등) 감지
@@ -719,13 +734,16 @@ class GeminiLiveSession:
                             if b64_pcm:
                                 pcm24 = base64.b64decode(b64_pcm)
                                 pcm16 = resample_24k_to_16k(pcm24)
+                                speaking_active = True
                                 if first_chunk:
                                     first_chunk = False
                                     await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
                                 await self.esp_ws.send(pcm16)
 
                 if server_content.get("turnComplete"):
+                    print("\n[Gemini Realtime] turnComplete 수신 -> DONE 전송")
                     first_chunk = True
+                    speaking_active = False
                     await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
 
         except asyncio.CancelledError:
@@ -1054,19 +1072,31 @@ def parse_llm_switch_command(user_text):
         return None, None, None
 
     text = user_text.lower().strip()
+    clean_text = re.sub(r'[^\w\s가-힣]', '', text)
 
     # 1. 전환/변경 관련 의도 키워드 검사
     switch_action_keywords = [
-        "바꿔", "변경", "전환", "교체", "선택", "설정", "바꾸", "바꿀", 
-        "쓸래", "사용할래", "적용", "스위치", "switch", "change", "시작해"
+        "바꿔", "변경", "전환", "교체", "선택", "설정", "바꾸", "바꿀", "바꿈",
+        "쓸래", "사용할래", "쓰자", "사용하자", "적용", "스위치", "switch", "change",
+        "시작해", "해줘", "해봐", "써줘", "사용해", "부탁", "넘어가", "골라", "틀어줘"
     ]
-    has_action = any(kw in text for kw in switch_action_keywords)
-    has_switch_syntax = has_action or ("으로" in text) or (" 로" in text) or ("모드" in text) or ("타입" in text)
+    has_action = any(kw in clean_text for kw in switch_action_keywords)
+    has_switch_syntax = (
+        has_action
+        or ("으로" in clean_text)
+        or ("로" in clean_text)
+        or ("모드" in clean_text)
+        or ("타입" in clean_text)
+        or ("모델" in clean_text)
+        or ("엔진" in clean_text)
+    )
 
     # 타겟 판별
+    is_gemini = any(k in clean_text for k in ["gemini", "제미나이", "제미니"])
+    is_realtime = any(k in clean_text for k in ["realtime", "리얼타임", "실시간", "라이브", "live"])
+
     # [1] Gemini Realtime API
-    if ("gemini" in text or "제미나이" in text or "제미니" in text) and \
-       ("realtime" in text or "리얼타임" in text or "실시간" in text or "라이브" in text):
+    if is_gemini and is_realtime:
         return (
             "gemini realtime api",
             "Gemini Realtime API",
@@ -1074,28 +1104,37 @@ def parse_llm_switch_command(user_text):
         )
 
     # [2] ChatGPT Realtime API
-    if ("chatgpt" in text or "chat gpt" in text or "챗지피티" in text or "챗gpt" in text or "지피티" in text or "gpt" in text or "오픈ai" in text or "openai" in text):
-        if not ("gemini" in text or "제미나이" in text or "local" in text or "로컬" in text):
-            if ("realtime" in text or "리얼타임" in text or "실시간" in text or "라이브" in text or has_switch_syntax):
-                return (
-                    "chatgpt realtime api",
-                    "ChatGPT Realtime API",
-                    "LLM을 ChatGPT Realtime API로 변경했습니다. 이제 ChatGPT 실시간 음성으로 대화해요."
-                )
+    is_chatgpt = any(k in clean_text for k in ["chatgpt", "chat gpt", "챗지피티", "챗gpt", "지피티", "gpt", "오픈ai", "openai"])
+    if is_chatgpt and not (is_gemini or "local" in clean_text or "로컬" in clean_text):
+        if is_realtime or has_switch_syntax:
+            return (
+                "chatgpt realtime api",
+                "ChatGPT Realtime API",
+                "LLM을 ChatGPT Realtime API로 변경했습니다. 이제 ChatGPT 실시간 음성으로 대화해요."
+            )
 
     # [3] Local LLM (127.0.0.1:8080)
-    if ("local" in text or "로컬" in text):
-        if ("llm" in text or "엘엘엠" in text or "모델" in text or "서버" in text or "인공지능" in text or has_switch_syntax):
+    is_local = any(k in clean_text for k in ["local", "로컬", "라마", "llama", "오프라인", "내부 모델", "로컬서버", "로컬 서버"])
+    if is_local:
+        if any(k in clean_text for k in ["llm", "엘엘엠", "모델", "서버", "인공지능", "모드", "타입", "엔진"]) or has_switch_syntax:
             return (
                 "local llm",
                 "Local LLM",
                 "LLM을 Local LLM으로 변경했습니다. 로컬 서버 모델로 응답해 드릴게요."
             )
 
-    # [4] 기본 Gemini API
-    if ("gemini" in text or "제미나이" in text or "제미니" in text) and \
-       not ("realtime" in text or "리얼타임" in text or "실시간" in text or "라이브" in text):
-        if ("api" in text or "기본" in text or "일반" in text or has_switch_syntax):
+    # [4] 기본 Gemini API (플래시/클라우드/일반/기본)
+    if is_gemini and not is_realtime:
+        if any(k in clean_text for k in ["api", "기본", "일반", "플래시", "flash", "클라우드"]) or has_switch_syntax:
+            return (
+                "gemini api",
+                "Gemini API",
+                "LLM을 기본 Gemini API로 변경했습니다. Gemini 2.5 Flash 모델로 대답할게요."
+            )
+
+    # [5] 명시적 모델 이름 없는 "기본/원래 모델로 복귀" 의도
+    if any(k in clean_text for k in ["기본으로", "원래대로", "기본 모델로", "원래 모델로", "기본 모델", "원래 모델"]):
+        if has_switch_syntax:
             return (
                 "gemini api",
                 "Gemini API",
@@ -1947,6 +1986,7 @@ async def handler(websocket, path=None):
                 "답변은 소리 내어 읽기 좋게 보통 두세 문장 이내로 간결하게 해. "
                 "사진이 함께 주어지면 그것은 네 카메라로 지금 앞을 찍은 장면이니, 보이는 것을 바탕으로 자연스럽게 설명해. "
                 "사용자가 이전에 한 말을 반드시 기억하고 문맥에 맞게 대답해. "
+                "너는 LLM 모델이나 시스템 설정을 직접 바꿀 수 있는 권한이 없으니, 사용자가 모델 변경을 요청했을 때 임의로 바꿨다고 거짓말하지 마. "
                 "사용자가 '이제 그만하자', '대화 끝내자', '잘 가' 등 대화를 종료하자고 하면, '네, 좋은 하루 보내세요. 언제든 알렉사라고 불러주세요'처럼 다정하게 작별 인사를 한두 문장으로 해."
             )
         }
@@ -1994,7 +2034,7 @@ async def handler(websocket, path=None):
                 await websocket.send(json.dumps({"type": "capture"}))
                 image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=3.5)
                 if image_bytes:
-                    print(f"[시각 질의 준비 완료] 사진 첨부하여 Gemini Vision 질의 시작 ({len(image_bytes)} bytes)")
+                    print(f"[시각 질의 준비 완료] 사진 첨부하여 {current_llm_type} 시각 질의 시작 ({len(image_bytes)} bytes)")
             except asyncio.TimeoutError:
                 print("[시각 질의] 카메라 사진 수신 시간 초과 -> 텍스트만으로 질의 진행")
             except Exception as e:
@@ -2251,6 +2291,10 @@ async def handler(websocket, path=None):
 
                                 # [B] 음성 발화 완료 신호 (클라이언트 VAD 감지)
                                 elif msg_type == "speech_end":
+                                    if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
+                                        print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 실시간 직통 스트리밍 대기)")
+                                        continue
+
                                     is_ai_busy = ai_task and not ai_task.done()
                                     if is_ai_busy:
                                         print("\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 (이미 AI 응답 처리 중이므로 무시)")

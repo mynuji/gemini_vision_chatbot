@@ -75,6 +75,7 @@ static void spk_play_task(void *pvParameters) {
     bool prebuffering = true;
 
     int empty_spk_count = 0;
+    int prebuf_wait_count = 0;
 
     while (1) {
         if (s_spk_ringbuf == NULL) {
@@ -92,6 +93,7 @@ static void spk_play_task(void *pvParameters) {
             s_spk_buffered_bytes = 0;
             prebuffering = true;
             empty_spk_count = 0;
+            prebuf_wait_count = 0;
         }
 
         // 지터 방지용 프리버퍼링 체크
@@ -101,23 +103,53 @@ static void spk_play_task(void *pvParameters) {
             if (cur_buffered >= SPK_PREBUFFER_THRESHOLD || (s_server_done && cur_buffered > 0)) {
                 prebuffering = false;
                 empty_spk_count = 0;
+                prebuf_wait_count = 0;
                 s_is_speaker_playing = true;
                 if (chat_state_get() != CHAT_STATE_SPEAKING) {
                     chat_state_set(CHAT_STATE_SPEAKING);
                 }
                 // I2S 스피커 앰프(MAX98357A) Mute 해제 및 워밍업 (첫 음절 잘림 방지)
                 audio_io_spk_write_silence(20);
+            } else if (cur_buffered > 0) {
+                // 버퍼에 데이터가 있지만 임계치(2KB)에 못 미치는 경우 (짧은 음성이거나 마지막 단락)
+                // 200ms(10 * 20ms) 동안 추가 유입이 없으면 대기하지 않고 즉시 재생 시작!
+                prebuf_wait_count++;
+                if (prebuf_wait_count >= 10) {
+                    prebuffering = false;
+                    prebuf_wait_count = 0;
+                    empty_spk_count = 0;
+                    s_is_speaker_playing = true;
+                    if (chat_state_get() != CHAT_STATE_SPEAKING) {
+                        chat_state_set(CHAT_STATE_SPEAKING);
+                    }
+                    audio_io_spk_write_silence(20);
+                } else {
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                    continue;
+                }
             } else if (s_server_done && cur_buffered == 0) {
                 // 오디오 수신 없이 서버 처리가 끝난 경우(무음/인식 실패 등) 즉시 스피커 종료 핸들러 호출
                 s_server_done = false;
                 s_is_speaker_playing = false;
                 prebuffering = true;
                 empty_spk_count = 0;
+                prebuf_wait_count = 0;
                 chat_state_handle_speaker_finished();
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             } else {
-                empty_spk_count = 0;
+                prebuf_wait_count = 0;
+                if (chat_state_get() == CHAT_STATE_SPEAKING && cur_buffered == 0) {
+                    empty_spk_count++;
+                    if (empty_spk_count >= 25) { // 500ms 버퍼 비어있음
+                        empty_spk_count = 0;
+                        s_is_speaker_playing = false;
+                        s_server_done = false;
+                        chat_state_handle_speaker_finished();
+                    }
+                } else {
+                    empty_spk_count = 0;
+                }
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
