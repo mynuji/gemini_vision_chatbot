@@ -505,17 +505,19 @@ async def stream_local_llm(messages, image_bytes=None):
 # ==========================================
 class GeminiLiveSession:
     """Gemini Multimodal Live WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE):
+    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
         self.voice = voice
+        self.on_switch_llm = on_switch_llm
         self.gemini_ws = None
         self.rx_task = None
         self.is_connected = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
-            "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘."
+            "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
+            "만약 사용자가 다른 모델이나 LLM 타입(Gemini API, Local LLM, ChatGPT Realtime 등)으로 바꿔달라거나 전환해달라고 요청하면 반드시 switch_llm_type 도구를 호출해줘."
         )
 
     async def start(self):
@@ -541,7 +543,28 @@ class GeminiLiveSession:
                     },
                     "systemInstruction": {
                         "parts": [{"text": self.system_prompt}]
-                    }
+                    },
+                    "tools": [
+                        {
+                            "functionDeclarations": [
+                                {
+                                    "name": "switch_llm_type",
+                                    "description": "사용자가 LLM 모델이나 타입을 변경/전환해 달라고 요청했을 때 호출합니다.",
+                                    "parameters": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "target_type": {
+                                                "type": "STRING",
+                                                "enum": ["gemini api", "gemini realtime api", "chatgpt realtime api", "local llm"],
+                                                "description": "변경할 대상 LLM 타입"
+                                            }
+                                        },
+                                        "required": ["target_type"]
+                                    }
+                                }
+                            ]
+                        }
+                    ]
                 }
             }
             await self.gemini_ws.send(json.dumps(setup_msg))
@@ -627,6 +650,19 @@ class GeminiLiveSession:
                     first_chunk = True
                     continue
 
+                # Tool Call (LLM Type 전환 등) 감지
+                tool_call = server_content.get("toolCall")
+                if tool_call:
+                    calls = tool_call.get("functionCalls", [])
+                    for fc in calls:
+                        if fc.get("name") == "switch_llm_type":
+                            args = fc.get("args", {})
+                            target = args.get("target_type")
+                            print(f"\n[Gemini Realtime Tool Call] switch_llm_type 호출 감지 -> target: '{target}'")
+                            if self.on_switch_llm and target:
+                                asyncio.create_task(self.on_switch_llm(target))
+                            return
+
                 model_turn = server_content.get("modelTurn")
                 if model_turn:
                     for part in model_turn.get("parts", []):
@@ -672,17 +708,19 @@ class GeminiLiveSession:
 # ==========================================
 class OpenAIRealtimeSession:
     """OpenAI Realtime WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE):
+    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE, on_switch_llm=None):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
         self.voice = voice
+        self.on_switch_llm = on_switch_llm
         self.openai_ws = None
         self.rx_task = None
         self.is_connected = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
-            "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 대답해."
+            "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 대답해. "
+            "만약 사용자가 다른 모델이나 LLM 타입(Gemini API, Local LLM, Gemini Realtime 등)으로 바꿔달라거나 전환해달라고 요청하면 반드시 switch_llm_type 도구를 호출해줘."
         )
 
     async def start(self):
@@ -719,7 +757,26 @@ class OpenAIRealtimeSession:
                         "threshold": 0.5,
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 500
-                    }
+                    },
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "switch_llm_type",
+                            "description": "사용자가 LLM 모델이나 타입을 변경/전환해 달라고 요청했을 때 호출합니다.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "target_type": {
+                                        "type": "string",
+                                        "description": "변경할 LLM 종류 ('gemini api', 'gemini realtime api', 'chatgpt realtime api', 'local llm')",
+                                        "enum": ["gemini api", "gemini realtime api", "chatgpt realtime api", "local llm"]
+                                    }
+                                },
+                                "required": ["target_type"]
+                            }
+                        }
+                    ],
+                    "tool_choice": "auto"
                 }
             }
             await self.openai_ws.send(json.dumps(session_update))
@@ -780,6 +837,20 @@ class OpenAIRealtimeSession:
                     print("\n[OpenAI Realtime] AI 발화 완료")
                     first_chunk = True
                     await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
+
+                # 5. Tool Call (LLM Type 전환 등) 감지
+                elif event_type == "response.function_call_arguments.done":
+                    func_name = event.get("name")
+                    if func_name == "switch_llm_type":
+                        args_raw = event.get("arguments", "{}")
+                        try:
+                            args_json = json.loads(args_raw)
+                            target = args_json.get("target_type")
+                            print(f"\n[OpenAI Realtime Tool Call] switch_llm_type 감지 -> target: '{target}'")
+                            if self.on_switch_llm and target:
+                                asyncio.create_task(self.on_switch_llm(target))
+                        except Exception as e:
+                            print(f"[OpenAI Realtime Tool Call 파싱 오류] {e}")
 
         except asyncio.CancelledError:
             pass
@@ -889,6 +960,66 @@ def is_meaningful_speech(text):
         return False
         
     return True
+
+def parse_llm_switch_command(user_text):
+    """
+    사용자의 발화에서 LLM Type 변경 의도를 분석합니다.
+    변경 요청일 경우 (target_type, display_name, response_text)를 반환하고,
+    아닐 경우 (None, None, None)을 반환합니다.
+    """
+    if not user_text:
+        return None, None, None
+
+    text = user_text.lower().strip()
+
+    # 1. 전환/변경 관련 의도 키워드 검사
+    switch_action_keywords = [
+        "바꿔", "변경", "전환", "교체", "선택", "설정", "바꾸", "바꿀", 
+        "쓸래", "사용할래", "적용", "스위치", "switch", "change", "시작해"
+    ]
+    has_action = any(kw in text for kw in switch_action_keywords)
+    has_switch_syntax = has_action or ("으로" in text) or (" 로" in text) or ("모드" in text) or ("타입" in text)
+
+    # 타겟 판별
+    # [1] Gemini Realtime API
+    if ("gemini" in text or "제미나이" in text or "제미니" in text) and \
+       ("realtime" in text or "리얼타임" in text or "실시간" in text or "라이브" in text):
+        return (
+            "gemini realtime api",
+            "Gemini Realtime API",
+            "LLM을 Gemini Realtime API로 변경했습니다. 이제 실시간 음성 스트리밍으로 대화해요."
+        )
+
+    # [2] ChatGPT Realtime API
+    if ("chatgpt" in text or "chat gpt" in text or "챗지피티" in text or "챗gpt" in text or "지피티" in text or "gpt" in text or "오픈ai" in text or "openai" in text):
+        if not ("gemini" in text or "제미나이" in text or "local" in text or "로컬" in text):
+            if ("realtime" in text or "리얼타임" in text or "실시간" in text or "라이브" in text or has_switch_syntax):
+                return (
+                    "chatgpt realtime api",
+                    "ChatGPT Realtime API",
+                    "LLM을 ChatGPT Realtime API로 변경했습니다. 이제 ChatGPT 실시간 음성으로 대화해요."
+                )
+
+    # [3] Local LLM (127.0.0.1:8080)
+    if ("local" in text or "로컬" in text):
+        if ("llm" in text or "엘엘엠" in text or "모델" in text or "서버" in text or "인공지능" in text or has_switch_syntax):
+            return (
+                "local llm",
+                "Local LLM",
+                "LLM을 Local LLM으로 변경했습니다. 로컬 서버 모델로 응답해 드릴게요."
+            )
+
+    # [4] 기본 Gemini API
+    if ("gemini" in text or "제미나이" in text or "제미니" in text) and \
+       not ("realtime" in text or "리얼타임" in text or "실시간" in text or "라이브" in text):
+        if ("api" in text or "기본" in text or "일반" in text or has_switch_syntax):
+            return (
+                "gemini api",
+                "Gemini API",
+                "LLM을 기본 Gemini API로 변경했습니다. Gemini 2.5 Flash 모델로 대답할게요."
+            )
+
+    return None, None, None
 
 # ==========================================
 # 3. LLM 응답 및 PCM 오디오 전송 파이프라인
@@ -1444,6 +1575,59 @@ async def handler(websocket, path=None):
     active_realtime_session = None
     t_last_rt_retry = 0.0
 
+    async def switch_and_notify_llm(target_type, display_name=None, response_text=None):
+        nonlocal current_llm_type, active_realtime_session
+        name_map = {
+            "gemini api": "Gemini API",
+            "gemini realtime api": "Gemini Realtime API",
+            "chatgpt realtime api": "ChatGPT Realtime API",
+            "local llm": "Local LLM"
+        }
+        disp_name = display_name or name_map.get(target_type, target_type)
+        resp_msg = response_text or f"LLM을 {disp_name}으로 변경했습니다."
+
+        print(f"\n[LLM Type 전환 처리 시작] 대상: '{target_type}' ({disp_name})")
+
+        # 1. ESP32로 변경 명령 전송 (NVS 영구 저장용)
+        try:
+            await websocket.send(json.dumps({
+                "type": "set_llm_type",
+                "llm_type": target_type
+            }))
+        except Exception as e:
+            print(f"[설정 전송 오류] ESP32 set_llm_type 전송 실패: {e}")
+
+        # 2. ESP32 상태 표시줄 갱신
+        try:
+            await websocket.send(json.dumps({
+                "type": "status",
+                "message": f"LLM: {disp_name}"
+            }))
+        except Exception:
+            pass
+
+        # 3. 기존 Realtime 세션이 있다면 종료
+        if active_realtime_session:
+            await active_realtime_session.close()
+            active_realtime_session = None
+
+        current_llm_type = target_type
+        print(f"[LLM Type 전환 완료] 서버 current_llm_type = '{current_llm_type}'")
+
+        # 4. 사용자에게 어떤 LLM으로 변경했는지 AI 음성(TTS) 및 화면 안내
+        try:
+            await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+            pcm = await synthesize_tts_pcm(resp_msg)
+            if pcm:
+                await websocket.send(pcm)
+            await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
+        except Exception as tts_err:
+            print(f"[안내 음성 합성 오류] {tts_err}")
+
+        # 5. 새 타입이 Realtime인 경우 실시간 세션 즉시 연결
+        if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
+            await switch_realtime_session(current_llm_type)
+
     async def switch_realtime_session(target_type):
         nonlocal active_realtime_session, t_last_rt_retry
         now = time.perf_counter()
@@ -1457,11 +1641,11 @@ async def handler(websocket, path=None):
 
         if target_type == "gemini realtime api":
             print("[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중...")
-            active_realtime_session = GeminiLiveSession(websocket, GEMINI_API_KEY)
+            active_realtime_session = GeminiLiveSession(websocket, GEMINI_API_KEY, on_switch_llm=switch_and_notify_llm)
             await active_realtime_session.start()
         elif target_type == "chatgpt realtime api":
             print("[세션 전환] ChatGPT Realtime (OpenAI WebSocket) 세션 초기화 중...")
-            active_realtime_session = OpenAIRealtimeSession(websocket, OPENAI_API_KEY)
+            active_realtime_session = OpenAIRealtimeSession(websocket, OPENAI_API_KEY, on_switch_llm=switch_and_notify_llm)
             await active_realtime_session.start()
         else:
             print(f"[세션 전환] 일반 음성 처리 파이프라인(VAD/Whisper/TTS) 모드: {target_type}")
@@ -1492,6 +1676,13 @@ async def handler(websocket, path=None):
             print(f"[서버 보호] 직전 요청과 간격이 너무 짧음({now - t_last_user_request:.2f}s < 1.2s) -> 중복 요청 무시")
             return
         t_last_user_request = now
+
+        # LLM Type 변경 음성 명령 감지
+        sw_target, sw_name, sw_resp = parse_llm_switch_command(user_text)
+        if sw_target:
+            print(f"\n[음성 명령 감지] LLM 변경 요청: '{user_text}' -> '{sw_target}' ({sw_name})")
+            await switch_and_notify_llm(sw_target, sw_name, sw_resp)
+            return
 
         interrupted_holder["session"] = None
         interrupted_holder["last_completed_session"] = None
@@ -1952,6 +2143,14 @@ async def handler(websocket, path=None):
                         user_text = raw_text
                         t_speech_end = time.perf_counter()
                         print(f"\n[텍스트 입력 수신 (LLM 질의)] {user_text}")
+
+                        # LLM Type 변경 명령 감지
+                        sw_target, sw_name, sw_resp = parse_llm_switch_command(user_text)
+                        if sw_target:
+                            print(f"\n[텍스트 명령 감지] LLM 변경 요청: '{user_text}' -> '{sw_target}' ({sw_name})")
+                            await switch_and_notify_llm(sw_target, sw_name, sw_resp)
+                            continue
+
                         interrupted_holder["session"] = None
                         
                         if ai_task and not ai_task.done():

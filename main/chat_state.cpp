@@ -1,4 +1,5 @@
 #include "chat_state.h"
+#include "settings_manager.h"
 #include "audio_pipeline.h"
 #include "audio_io.h"
 #include "display_ui.h"
@@ -490,6 +491,28 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                         chat_state_stop_camera_preview();
                     } else {
                         ESP_LOGI(TAG, "Speaker still playing. Deferring preview stop until speaker finished.");
+                    }
+                    handled = true;
+                } else if (strcmp(type->valuestring, "set_llm_type") == 0) {
+                    cJSON *llm_item = cJSON_GetObjectItem(root, "llm_type");
+                    if (llm_item != NULL) {
+                        uint8_t target_type = LLM_TYPE_GEMINI_API;
+                        if (cJSON_IsNumber(llm_item)) {
+                            target_type = (uint8_t)llm_item->valueint;
+                        } else if (cJSON_IsString(llm_item)) {
+                            const char *str = llm_item->valuestring;
+                            if (strcasecmp(str, "gemini realtime api") == 0 || strcasecmp(str, "gemini realtime") == 0) {
+                                target_type = LLM_TYPE_GEMINI_REALTIME;
+                            } else if (strcasecmp(str, "chatgpt realtime api") == 0 || strcasecmp(str, "chatgpt realtime") == 0) {
+                                target_type = LLM_TYPE_CHATGPT_REALTIME;
+                            } else if (strcasecmp(str, "local llm") == 0 || strcasecmp(str, "local") == 0) {
+                                target_type = LLM_TYPE_LOCAL_LLM;
+                            } else {
+                                target_type = LLM_TYPE_GEMINI_API;
+                            }
+                        }
+                        ESP_LOGI(TAG, "Server commanded LLM Type change to: %u", (unsigned int)target_type);
+                        settings_manager_set_llm_type(target_type);
                     }
                     handled = true;
                 }
