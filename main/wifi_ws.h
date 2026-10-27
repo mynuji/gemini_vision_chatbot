@@ -53,6 +53,11 @@ esp_err_t wifi_ws_send_bin(const uint8_t *data, size_t len);
 esp_err_t wifi_ws_send_text(const char *text);
 
 /**
+ * @brief 현재 설정된 LLM 타입을 서버로 전송
+ */
+esp_err_t wifi_ws_send_llm_type(uint8_t llm_type);
+
+/**
  * @brief 네트워크 상태 콜백 등록 (UI 상태 갱신용)
  */
 void wifi_ws_set_state_callback(wifi_ws_state_cb_t cb);

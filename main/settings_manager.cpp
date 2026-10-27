@@ -44,6 +44,19 @@ static void set_defaults(app_settings_t *cfg) {
     cfg->server_port = (port > 0) ? port : 8765;
     cfg->brightness = 100; // 100%
     cfg->mic_gain = 35;    // 3.5x
+    cfg->llm_type = LLM_TYPE_GEMINI_API; // 기본값: gemini api
+}
+
+static const char *s_llm_names[] = {
+    "gemini api",
+    "gemini realtime api",
+    "chatgpt realtime api",
+    "local llm"
+};
+
+const char* settings_manager_get_llm_type_name(uint8_t type) {
+    if (type >= LLM_TYPE_COUNT) return s_llm_names[0];
+    return s_llm_names[type];
 }
 
 esp_err_t settings_manager_init(void) {
@@ -73,15 +86,20 @@ esp_err_t settings_manager_init(void) {
         err = nvs_get_blob(nvs_handle, NVS_KEY, &s_settings, &required_size);
         nvs_close(nvs_handle);
 
-        if (err != ESP_OK || s_settings.magic != SETTINGS_MAGIC) {
+        if (err == ESP_OK && s_settings.magic == 0x53455431) {
+            ESP_LOGI(TAG, "Migrating NVS settings from SET1 to SET2 (adding LLM type)...");
+            s_settings.llm_type = LLM_TYPE_GEMINI_API;
+            s_settings.magic = SETTINGS_MAGIC;
+            need_save_default = true;
+        } else if (err != ESP_OK || s_settings.magic != SETTINGS_MAGIC) {
             ESP_LOGW(TAG, "Valid settings not found in NVS (err=%s, magic=0x%08lX). Setting defaults.",
                      esp_err_to_name(err), (unsigned long)s_settings.magic);
             set_defaults(&s_settings);
             need_save_default = true;
         } else {
-            ESP_LOGI(TAG, "Loaded settings from NVS successfully: SSID='%s', Server='%s:%u', Vol=%u%%, Bright=%u%%",
+            ESP_LOGI(TAG, "Loaded settings from NVS successfully: SSID='%s', Server='%s:%u', Vol=%u%%, Bright=%u%%, LLM='%s'",
                      s_settings.wifi_ssid, s_settings.server_ip, (unsigned int)s_settings.server_port,
-                     s_settings.volume, s_settings.brightness);
+                     s_settings.volume, s_settings.brightness, settings_manager_get_llm_type_name(s_settings.llm_type));
         }
     } else {
         ESP_LOGI(TAG, "NVS namespace '%s' not found. Initializing with defaults.", NVS_NAMESPACE);
@@ -155,5 +173,17 @@ esp_err_t settings_manager_set_mic_gain(uint8_t mic_gain) {
     if (mic_gain < 10) mic_gain = 10;
     if (mic_gain > 60) mic_gain = 60;
     s_settings.mic_gain = mic_gain;
+    return settings_manager_save(&s_settings);
+}
+
+esp_err_t settings_manager_set_port(uint16_t port) {
+    if (port == 0) port = 8765;
+    s_settings.server_port = port;
+    return settings_manager_save(&s_settings);
+}
+
+esp_err_t settings_manager_set_llm_type(uint8_t llm_type) {
+    if (llm_type >= LLM_TYPE_COUNT) llm_type = 0;
+    s_settings.llm_type = llm_type;
     return settings_manager_save(&s_settings);
 }

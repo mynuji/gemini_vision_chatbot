@@ -1,4 +1,5 @@
 #include "wifi_ws.h"
+#include "settings_manager.h"
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -37,6 +38,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         ESP_LOGI(TAG, "WebSocket Connected to %s", s_ws_uri);
         s_is_ws_connected = true;
         notify_state(WIFI_WS_STATE_WS_CONNECTED, "JETSON CONNECTED");
+        wifi_ws_send_llm_type(settings_manager_get()->llm_type);
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
@@ -322,5 +324,16 @@ int wifi_ws_scan_aps(wifi_ap_info_t *out_list, int max_aps) {
     free(records);
     ESP_LOGI(TAG, "Scan finished: returned %d unique APs.", count);
     return count;
+}
+
+esp_err_t wifi_ws_send_llm_type(uint8_t llm_type) {
+    if (!s_is_ws_connected || s_ws_client == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const char *name = settings_manager_get_llm_type_name(llm_type);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"type\":\"set_llm_type\",\"llm_type\":\"%s\"}", name);
+    ESP_LOGI(TAG, "Sending LLM Type to server: %s", buf);
+    return wifi_ws_send_text(buf);
 }
 

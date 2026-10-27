@@ -320,6 +320,56 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
                 print(f"\n[Gemini] {model} 호출 실패 -> 대체 모델 시도: {e}")
     raise last_error or RuntimeError("사용 가능한 Gemini 모델이 없습니다.")
 
+async def stream_local_llm(messages, image_bytes=None):
+    """로컬 LLM (Ollama http://127.0.0.1:11434/api/chat 등) 스트리밍"""
+    local_url = os.environ.get("LOCAL_LLM_URL", "http://127.0.0.1:11434/api/chat")
+    local_model = os.environ.get("LOCAL_LLM_MODEL", "llama3.2")
+    payload = {
+        "model": local_model,
+        "messages": [{"role": m["role"], "content": m["content"]} for m in messages if m.get("content")],
+        "stream": True
+    }
+    try:
+        req = urllib.request.Request(
+            local_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        def reader():
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                for line in resp:
+                    if line:
+                        try:
+                            data = json.loads(line.decode("utf-8"))
+                            chunk = data.get("message", {}).get("content", "")
+                            if chunk:
+                                yield chunk
+                        except Exception:
+                            continue
+        loop = asyncio.get_running_loop()
+        chunks = await loop.run_in_executor(None, lambda: list(reader()))
+        for c in chunks:
+            yield c
+    except Exception as e:
+        print(f"[로컬 LLM 에러] {e} -> Gemini로 대체 스트리밍 실행")
+        async for c in stream_gemini(messages, image_bytes=image_bytes):
+            yield c
+
+async def stream_llm(messages, image_bytes=None, llm_type="gemini api"):
+    """ESP32에서 선택한 LLM Type에 따라 분기 스트리밍"""
+    clean_type = (llm_type or "gemini api").strip().lower()
+    print(f"[LLM 엔진 선택] 현재 활성화된 LLM Type: '{clean_type}'")
+    if clean_type == "local llm":
+        async for chunk in stream_local_llm(messages, image_bytes=image_bytes):
+            yield chunk
+    elif clean_type in ("gemini realtime api", "chatgpt realtime api"):
+        print(f"[{clean_type}] 실시간 스트리밍 모드 실행 (Gemini Engine)")
+        async for chunk in stream_gemini(messages, image_bytes=image_bytes):
+            yield chunk
+    else:  # "gemini api" (기본값)
+        async for chunk in stream_gemini(messages, image_bytes=image_bytes):
+            yield chunk
+
 VISION_KEYWORDS = (
     "앞에", "보이는", "보여", "보이니", "보이나요", "보여요", "이거", "이게", "사진", "카메라", "찍어",
     "봐봐", "봐줘", "물건", "뭐야", "무엇", "글자", "읽어줘", "어떤",
@@ -467,7 +517,7 @@ def calculate_remaining_sentences(sentences_info, played_bytes):
         
     return remaining
 
-async def process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms=0.0, close_session_after=False, interrupted_holder=None, image_bytes=None):
+async def process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms=0.0, close_session_after=False, interrupted_holder=None, image_bytes=None, llm_type="gemini api"):
     full_answer = ""
     sentences_info = []  # [{"text": str, "pcm": bytes, "status": "pending"|"sending"|"done"}]
     sentence_buffer = ""
@@ -483,7 +533,7 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
         }
     try:
         img_info = f" (+이미지 {len(image_bytes) // 1024}KB)" if image_bytes else ""
-        print(f"\n[LLM 질의] {user_text}{img_info}")
+        print(f"\n[LLM 질의] {user_text}{img_info} (Type: {llm_type})")
         # AI 답변 생성 시작: ESP32 상태를 THINKING으로 즉시 전환하고 마이크 스트리밍을 중단시킴
         await websocket.send(json.dumps({"type": "status", "message": "THINKING..."}))
         
@@ -494,8 +544,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
         t_first_token = None
         t_first_sentence = None
 
-        # Google Gemini 실시간 스트리밍 (이미지는 이번 질문에만 첨부되며 대화 이력에는 저장하지 않음)
-        response = stream_gemini(recent_messages, image_bytes=image_bytes)
+        # 지정된 LLM Type에 따른 실시간 스트리밍
+        response = stream_llm(recent_messages, image_bytes=image_bytes, llm_type=llm_type)
 
         is_first_chunk = True
         pcm_queue = asyncio.Queue()
@@ -942,6 +992,7 @@ async def handler(websocket, path=None):
     # 앞 음절 손실 방지용 프리 버퍼 (100개 = 약 1,600ms 분량 보관)
     pre_speech_buffer = deque(maxlen=100)
     rx_accum = np.array([], dtype=np.float32)
+    current_llm_type = "gemini api"
 
     today_str = time.strftime("%Y년 %m월 %d일")
     chat_history = [
@@ -1000,7 +1051,8 @@ async def handler(websocket, path=None):
             time.perf_counter(), asr_ms,
             close_session_after=should_close,
             interrupted_holder=interrupted_holder,
-            image_bytes=image_bytes
+            image_bytes=image_bytes,
+            llm_type=current_llm_type
         )
 
         if should_close:
@@ -1393,6 +1445,16 @@ async def handler(websocket, path=None):
                                 elif msg_type == "status":
                                     print(f"[제어 명령] 상태 알림: {ctrl_json.get('message')}")
 
+                                # [F] LLM Type 변경 설정 수신
+                                elif msg_type == "set_llm_type":
+                                    new_type = ctrl_json.get("llm_type", "gemini api").strip().lower()
+                                    current_llm_type = new_type
+                                    print(f"\n[설정 수신] 클라이언트로부터 LLM Type 변경 알림 수신: '{current_llm_type}'")
+                                    await websocket.send(json.dumps({
+                                        "type": "status",
+                                        "message": f"LLM Type set to {current_llm_type}"
+                                    }))
+
                         except Exception as parse_err:
                             print(f"[경고] JSON 파싱 실패 ({parse_err}), 일반 텍스트로 처리합니다.")
                             is_control_packet = False
@@ -1413,7 +1475,7 @@ async def handler(websocket, path=None):
                         
                         await websocket.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
                         ai_task = asyncio.create_task(
-                            process_ai_response(websocket, user_text, chat_history, t_speech_end, 0.0, interrupted_holder=interrupted_holder)
+                            process_ai_response(websocket, user_text, chat_history, t_speech_end, 0.0, interrupted_holder=interrupted_holder, llm_type=current_llm_type)
                         )
 
             except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):

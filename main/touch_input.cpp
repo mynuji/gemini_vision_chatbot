@@ -285,9 +285,9 @@ esp_err_t touch_input_register_lvgl_indev(void) {
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = lvgl_touch_read_cb;
     indev_drv.scroll_limit = 20; // 탭 판정 여유 거리
-    indev_drv.scroll_throw = 15; // 부드러운 잔여 관성 스크롤 복원
+    indev_drv.scroll_throw = 60; // 0.3초 내 깔끔하게 감속 정지되어 즉시 터치 클릭 가능
     lv_indev_drv_register(&indev_drv);
-    ESP_LOGI(TAG, "LVGL pointer input driver registered (scroll_limit=20, scroll_throw=15)!");
+    ESP_LOGI(TAG, "LVGL pointer input driver registered (scroll_limit=20, scroll_throw=60)!");
     return ESP_OK;
 }
 
