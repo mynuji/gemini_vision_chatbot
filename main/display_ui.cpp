@@ -70,6 +70,7 @@ void display_ui_set_brightness(uint8_t percent) {
   if (percent > 100) percent = 100;
   if (percent < 5) percent = 5; // 최소 시인성 유지
   uint32_t duty = ((uint32_t)percent * 255) / 100;
+  ESP_LOGI(TAG, "Setting LCD backlight brightness: %u%% (duty=%lu/255)", (unsigned int)percent, (unsigned long)duty);
   ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
@@ -78,6 +79,9 @@ esp_err_t display_ui_init(void) {
   ESP_LOGI(TAG, "Initializing GC9A01 LCD & LVGL...");
 
   // 1. 백라이트 PWM(LEDC) 초기화 (5kHz, 8비트 해상도)
+  // UART0 콘솔 등으로 GPIO43이 묶여있을 수 있으므로 먼저 reset_pin 수행
+  gpio_reset_pin((gpio_num_t)LCD_BL);
+
   ledc_timer_config_t timer_conf = {};
   timer_conf.speed_mode = LEDC_LOW_SPEED_MODE;
   timer_conf.duty_resolution = LEDC_TIMER_8_BIT;

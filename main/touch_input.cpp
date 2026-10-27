@@ -235,35 +235,48 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
     static int16_t s_anchor_x = 0;
     static int16_t s_anchor_y = 0;
     static bool s_vertical_scroll_active = false;
+    static bool s_horizontal_drag_active = false;
 
     if (pressed && !s_is_pressed) {
-        // 새 터치 시작: 앵커 좌표 기록 및 수직 스크롤 플래그 초기화
+        // 새 터치 시작: 앵커 좌표 기록 및 스크롤/드래그 플래그 초기화
         s_anchor_x = x;
         s_anchor_y = y;
         s_vertical_scroll_active = false;
+        s_horizontal_drag_active = false;
         // 터치 시작 시에는 최초 탭 좌표로 고정
         x = s_anchor_x;
         y = s_anchor_y;
     } else if (pressed && s_is_pressed) {
-        if (!s_vertical_scroll_active) {
-            int32_t dx = (int32_t)x - s_anchor_x;
-            int32_t dy = (int32_t)y - s_anchor_y;
-            int32_t abs_dx = (dx < 0) ? -dx : dx;
-            int32_t abs_dy = (dy < 0) ? -dy : dy;
+        int32_t dx = (int32_t)x - s_anchor_x;
+        int32_t dy = (int32_t)y - s_anchor_y;
+        int32_t abs_dx = (dx < 0) ? -dx : dx;
+        int32_t abs_dy = (dy < 0) ? -dy : dy;
 
-            // [방향성 스크롤 필터] 오직 특정 방향성(수직 위/아래)으로 24픽셀 이상 이동할 때만 스크롤로 인정!
-            // 수직 이동량(abs_dy)이 수평 이동량(abs_dx)의 1.5배 이상이어야 함.
-            if (abs_dy >= 24 && abs_dy > (abs_dx * 3 / 2)) {
+        if (s_vertical_scroll_active) {
+            // 수직 스크롤 진행 중: x좌표는 앵커로 고정하여 좌우 흔들림 방지
+            x = s_anchor_x;
+        } else if (s_horizontal_drag_active) {
+            // 슬라이더 좌우 드래그 진행 중: y좌표는 앵커로 고정하여 상하 흔들림 방지
+            y = s_anchor_y;
+        } else {
+            // 방향 감지 단계
+            if (abs_dy >= 20 && abs_dy > (abs_dx * 3 / 2)) {
+                // 수직 스크롤 확정
                 s_vertical_scroll_active = true;
+                x = s_anchor_x;
+            } else if (abs_dx >= 12 && abs_dx > (abs_dy * 3 / 2)) {
+                // 슬라이더 좌우 드래그 확정
+                s_horizontal_drag_active = true;
+                y = s_anchor_y;
             } else {
-                // 그 외(제자리 탭, 살 눌림, 수평 흔들림 등)는 시작 앵커 좌표로 100% 락!
-                // LVGL은 0픽셀 이동으로 인식하여 스크롤 오인식을 원천 차단함!
+                // 탭/클릭 데드존: 미세 흔들림은 100% 시작 앵커로 고정하여 버튼 오인식 원천 차단!
                 x = s_anchor_x;
                 y = s_anchor_y;
             }
         }
     } else if (!pressed) {
         s_vertical_scroll_active = false;
+        s_horizontal_drag_active = false;
     }
 
     s_is_pressed = pressed;
@@ -292,11 +305,11 @@ esp_err_t touch_input_register_lvgl_indev(void) {
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = lvgl_touch_read_cb;
-    indev_drv.scroll_limit = 20;       // 수직 방향 스크롤 확인 후 민첩하게 스크롤 개시
-    indev_drv.scroll_throw = 0;        // 터치 해제 시 즉시 스크롤 정지하여 탄성 바운스만 깔끔하게 정착
-    indev_drv.long_press_time = 400;
+    indev_drv.scroll_limit = 16;
+    indev_drv.scroll_throw = 0;        // 터치 해제 시 즉시 스크롤 정지하여 깔끔하게 정착
+    indev_drv.long_press_time = 1500;   // 1500ms로 대폭 확장하여 일반적인 터치가 롱프레스로 오인식되어 클릭 취소되는 현상 원천 차단!
     lv_indev_drv_register(&indev_drv);
-    ESP_LOGI(TAG, "LVGL pointer input driver registered (directional vertical scroll enabled)!");
+    ESP_LOGI(TAG, "LVGL pointer input driver registered (horizontal drag & vertical scroll enabled)!");
     return ESP_OK;
 }
 

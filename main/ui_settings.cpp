@@ -282,6 +282,7 @@ static void create_main_menu(lv_obj_t *parent) {
 }
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // [2] 볼륨 조절 서브화면 (프로그레스바 / 슬라이더)
 // ----------------------------------------------------------------------------
 static lv_obj_t *s_vol_label = NULL;
@@ -294,14 +295,16 @@ static void on_vol_slider_changed(lv_event_t *e) {
     char buf[32];
     snprintf(buf, sizeof(buf), "VOLUME: %d%%", val);
     lv_label_set_text(s_vol_label, buf);
+}
 
-    // 슬라이더 조작 시 현재 볼륨에 맞춘 비프음 재생 (귀로 크기 즉각 확인)
-    audio_io_play_tone(440.0f, 30);
+static void on_vol_slider_released(lv_event_t *e) {
+    // 슬라이더를 떼었을 때 변경된 볼륨 소리 즉각 1회 확인 (드래그 중 렉 방지)
+    audio_io_play_tone(500.0f, 40);
 }
 
 static void on_vol_save_click(lv_event_t *e) {
     settings_manager_set_volume(s_edit_cfg.volume);
-    audio_io_play_tone(1200.0f, 60);
+    audio_io_play_tone(1200.0f, 40);
     show_view(SUBVIEW_MAIN);
 }
 
@@ -317,18 +320,23 @@ static void create_volume_view(lv_obj_t *parent) {
     lv_obj_t *slider = lv_slider_create(parent);
     lv_slider_set_range(slider, 10, 100);
     lv_slider_set_value(slider, s_edit_cfg.volume, LV_ANIM_OFF);
-    lv_obj_set_size(slider, 160, 18);
+    lv_obj_set_size(slider, 170, 22);
     lv_obj_align(slider, LV_ALIGN_CENTER, 0, -10);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0x444444), LV_PART_MAIN);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0x00FF88), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(slider, 6, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(slider, 14);
     lv_obj_add_event_cb(slider, on_vol_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(slider, on_vol_slider_released, LV_EVENT_RELEASED, NULL);
 
-    // [저장 & 완료] 버튼
+    // [APPLY] 버튼
     lv_obj_t *save_btn = lv_btn_create(parent);
-    lv_obj_set_size(save_btn, 80, 32);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -30);
+    lv_obj_set_size(save_btn, 90, 32);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -22);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(save_btn, 8);
     lv_obj_t *lbl = lv_label_create(save_btn);
     lv_label_set_text(lbl, "APPLY");
     lv_obj_center(lbl);
@@ -662,22 +670,32 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
 
     // 하단 제어 버튼: [RESCAN] 및 [BACK]
     lv_obj_t *rescan_btn = lv_btn_create(parent);
-    lv_obj_set_size(rescan_btn, 80, 30);
-    lv_obj_align(rescan_btn, LV_ALIGN_BOTTOM_LEFT, 24, -18);
+    lv_obj_set_size(rescan_btn, 76, 30);
+    lv_obj_align(rescan_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
     lv_obj_set_style_bg_color(rescan_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(rescan_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(rescan_btn, 6);
     lv_obj_t *rlbl = lv_label_create(rescan_btn);
     lv_label_set_text(rlbl, "RESCAN");
     lv_obj_center(rlbl);
-    lv_obj_add_event_cb(rescan_btn, (lv_event_cb_t)[](lv_event_t *e){ show_view(SUBVIEW_WIFI_SCAN); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(rescan_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(1200.0f, 40);
+        show_view(SUBVIEW_WIFI_SCAN);
+    }, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *back_btn = lv_btn_create(parent);
-    lv_obj_set_size(back_btn, 80, 30);
-    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -18);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -14);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
-    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){ show_view(SUBVIEW_WIFI); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_WIFI);
+    }, LV_EVENT_CLICKED, NULL);
 }
 
 static void create_wifi_view(lv_obj_t *parent) {
@@ -691,6 +709,8 @@ static void create_wifi_view(lv_obj_t *parent) {
     lv_obj_set_size(ssid_btn, 170, 34);
     lv_obj_align(ssid_btn, LV_ALIGN_TOP_MID, 0, 45);
     lv_obj_set_style_bg_color(ssid_btn, lv_color_hex(0x282828), 0);
+    lv_obj_set_style_bg_color(ssid_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(ssid_btn, 6);
     lv_obj_t *slbl = lv_label_create(ssid_btn);
     char sbuf[48];
     snprintf(sbuf, sizeof(sbuf), "SSID: %s", s_edit_cfg.wifi_ssid);
@@ -703,6 +723,8 @@ static void create_wifi_view(lv_obj_t *parent) {
     lv_obj_set_size(pw_btn, 170, 34);
     lv_obj_align(pw_btn, LV_ALIGN_TOP_MID, 0, 88);
     lv_obj_set_style_bg_color(pw_btn, lv_color_hex(0x282828), 0);
+    lv_obj_set_style_bg_color(pw_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(pw_btn, 6);
     lv_obj_t *plbl = lv_label_create(pw_btn);
     char pbuf[48];
     snprintf(pbuf, sizeof(pbuf), "PW: %s", s_edit_cfg.wifi_pass[0] ? "********" : "(None)");
@@ -712,22 +734,29 @@ static void create_wifi_view(lv_obj_t *parent) {
 
     // [저장] 및 [뒤로] 버튼
     lv_obj_t *save_btn = lv_btn_create(parent);
-    lv_obj_set_size(save_btn, 80, 32);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 24, -25);
+    lv_obj_set_size(save_btn, 76, 30);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
     lv_label_set_text(lbl, "SAVE");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, on_wifi_save_click, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *back_btn = lv_btn_create(parent);
-    lv_obj_set_size(back_btn, 80, 32);
-    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -25);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -16);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
-    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){ show_view(SUBVIEW_MAIN); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
 }
 
 // ----------------------------------------------------------------------------
@@ -865,7 +894,7 @@ static void on_edit_ip_click(lv_event_t *e) {
 
 static void on_server_save_click(lv_event_t *e) {
     settings_manager_save(&s_edit_cfg);
-    audio_io_play_tone(1400.0f, 60);
+    audio_io_play_tone(1200.0f, 40);
     show_view(SUBVIEW_MAIN);
 }
 
@@ -880,6 +909,8 @@ static void create_server_view(lv_obj_t *parent) {
     lv_obj_set_size(ip_btn, 170, 34);
     lv_obj_align(ip_btn, LV_ALIGN_TOP_MID, 0, 45);
     lv_obj_set_style_bg_color(ip_btn, lv_color_hex(0x282828), 0);
+    lv_obj_set_style_bg_color(ip_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(ip_btn, 6);
     lv_obj_t *ilbl = lv_label_create(ip_btn);
     char ibuf[80];
     snprintf(ibuf, sizeof(ibuf), "IP: %s", s_edit_cfg.server_ip);
@@ -892,6 +923,8 @@ static void create_server_view(lv_obj_t *parent) {
     lv_obj_set_size(port_btn, 170, 34);
     lv_obj_align(port_btn, LV_ALIGN_TOP_MID, 0, 88);
     lv_obj_set_style_bg_color(port_btn, lv_color_hex(0x282828), 0);
+    lv_obj_set_style_bg_color(port_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(port_btn, 6);
     lv_obj_t *plbl = lv_label_create(port_btn);
     char pbuf[32];
     snprintf(pbuf, sizeof(pbuf), "PORT: %u", (unsigned int)s_edit_cfg.server_port);
@@ -901,22 +934,29 @@ static void create_server_view(lv_obj_t *parent) {
 
     // [저장] 및 [뒤로] 버튼
     lv_obj_t *save_btn = lv_btn_create(parent);
-    lv_obj_set_size(save_btn, 80, 32);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 24, -25);
+    lv_obj_set_size(save_btn, 76, 30);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
     lv_label_set_text(lbl, "SAVE");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, on_server_save_click, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *back_btn = lv_btn_create(parent);
-    lv_obj_set_size(back_btn, 80, 32);
-    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -25);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -16);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
-    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){ show_view(SUBVIEW_MAIN); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
 }
 
 // ----------------------------------------------------------------------------
@@ -962,7 +1002,7 @@ static void on_llm_type_select_event(lv_event_t *e) {
 static void on_llm_type_apply_click(lv_event_t *e) {
     settings_manager_set_llm_type(s_edit_cfg.llm_type);
     wifi_ws_send_llm_type(s_edit_cfg.llm_type); // 서버로 실시간 통보!
-    audio_io_play_tone(1400.0f, 60);
+    audio_io_play_tone(1200.0f, 40);
     show_view(SUBVIEW_MAIN);
 }
 
@@ -970,14 +1010,15 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, "LLM TYPE");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
 
+    // 하단 APPLY/BACK 버튼과 절대 겹치지 않도록 높이 126px로 상단 정렬
     lv_obj_t *list = lv_list_create(parent);
-    lv_obj_set_size(list, 206, 140);
-    lv_obj_align(list, LV_ALIGN_CENTER, 0, 8);
+    lv_obj_set_size(list, 196, 126);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 28);
     lv_obj_set_style_bg_color(list, lv_color_hex(0x222222), 0);
     lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_radius(list, 10, 0);
+    lv_obj_set_style_radius(list, 8, 0);
     lv_obj_set_style_pad_all(list, 2, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
@@ -1002,7 +1043,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
         snprintf(item_txt, sizeof(item_txt), "%s %s", selected ? "[*]" : "[ ]", names[i]);
 
         lv_obj_t *btn = lv_list_add_btn(list, NULL, item_txt);
-        lv_obj_set_size(btn, lv_pct(100), 40); // 34px -> 40px로 확대
+        lv_obj_set_size(btn, lv_pct(100), 28); // 28px로 최적화하여 4개 항목이 겹침 없이 정확히 노출
         if (selected) {
             lv_obj_set_style_bg_color(btn, lv_color_hex(0x005588), 0);
             lv_obj_set_style_text_color(btn, lv_color_hex(0x00FFCC), 0);
@@ -1016,24 +1057,31 @@ static void create_llm_type_view(lv_obj_t *parent) {
         lv_obj_add_event_cb(btn, on_llm_type_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
     }
 
-    // 하단 제어 버튼: [APPLY] 및 [BACK]
+    // 하단 제어 버튼: [APPLY] 및 [BACK] (리스트 하단 Y=154 아래 안전영역 Y=198에 배치되어 절대 겹치지 않음)
     lv_obj_t *apply_btn = lv_btn_create(parent);
-    lv_obj_set_size(apply_btn, 80, 30);
-    lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 24, -18);
+    lv_obj_set_size(apply_btn, 76, 28);
+    lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
     lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(apply_btn, 6);
     lv_obj_t *albl = lv_label_create(apply_btn);
     lv_label_set_text(albl, "APPLY");
     lv_obj_center(albl);
     lv_obj_add_event_cb(apply_btn, on_llm_type_apply_click, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *back_btn = lv_btn_create(parent);
-    lv_obj_set_size(back_btn, 80, 30);
-    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -18);
+    lv_obj_set_size(back_btn, 76, 28);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -14);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
-    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){ show_view(SUBVIEW_MAIN); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
 }
 
 
@@ -1066,22 +1114,28 @@ static void create_brightness_view(lv_obj_t *parent) {
     lv_obj_t *slider = lv_slider_create(parent);
     lv_slider_set_range(slider, 10, 100);
     lv_slider_set_value(slider, s_edit_cfg.brightness, LV_ANIM_OFF);
-    lv_obj_set_size(slider, 160, 18);
+    lv_obj_set_size(slider, 170, 22);
     lv_obj_align(slider, LV_ALIGN_CENTER, 0, -10);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0x444444), LV_PART_MAIN);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0xFFDD00), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(slider, 6, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(slider, 14);
     lv_obj_add_event_cb(slider, on_bright_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_t *save_btn = lv_btn_create(parent);
-    lv_obj_set_size(save_btn, 80, 32);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -30);
+    lv_obj_set_size(save_btn, 90, 32);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -22);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(save_btn, 8);
     lv_obj_t *lbl = lv_label_create(save_btn);
     lv_label_set_text(lbl, "APPLY");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_brightness(s_edit_cfg.brightness);
+        display_ui_set_brightness(s_edit_cfg.brightness);
+        audio_io_play_tone(1200.0f, 40);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
 }
@@ -1120,23 +1174,27 @@ static void create_mic_gain_view(lv_obj_t *parent) {
     lv_obj_t *slider = lv_slider_create(parent);
     lv_slider_set_range(slider, 10, 60);
     lv_slider_set_value(slider, s_edit_cfg.mic_gain, LV_ANIM_OFF);
-    lv_obj_set_size(slider, 160, 18);
+    lv_obj_set_size(slider, 170, 22);
     lv_obj_align(slider, LV_ALIGN_CENTER, 0, -5);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0x444444), LV_PART_MAIN);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0xFF9900), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(slider, 6, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(slider, 14);
     lv_obj_add_event_cb(slider, on_mic_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_t *save_btn = lv_btn_create(parent);
-    lv_obj_set_size(save_btn, 80, 32);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -30);
+    lv_obj_set_size(save_btn, 90, 32);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -22);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(save_btn, 8);
     lv_obj_t *lbl = lv_label_create(save_btn);
     lv_label_set_text(lbl, "APPLY");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_mic_gain(s_edit_cfg.mic_gain);
-        audio_io_play_tone(1200.0f, 60);
+        audio_io_play_tone(1200.0f, 40);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
 }
@@ -1165,11 +1223,16 @@ static void create_info_view(lv_obj_t *parent) {
     lv_obj_align(info_lbl, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_t *back_btn = lv_btn_create(parent);
-    lv_obj_set_size(back_btn, 80, 32);
-    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_MID, 0, -25);
+    lv_obj_set_size(back_btn, 80, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_MID, 0, -22);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 8);
     lv_obj_t *blbl = lv_label_create(back_btn);
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
-    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){ show_view(SUBVIEW_MAIN); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
 }
