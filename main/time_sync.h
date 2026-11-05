@@ -64,6 +64,13 @@ esp_err_t time_sync_start(void);
  */
 bool time_sync_is_synced(void);
 
+typedef void (*time_sync_cb_t)(void);
+
+/**
+ * @brief NTP 시간 동기화 완료 콜백 등록
+ */
+void time_sync_set_callback(time_sync_cb_t cb);
+
 /**
  * @brief 설정 변경 시 NTP 서버 및 타임존을 즉시 반영
  */

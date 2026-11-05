@@ -34,6 +34,17 @@ static uint32_t s_next_eye_peek_time = 0;
 static uint32_t s_eye_peek_end_time = 0;
 static bool s_eye_peeking = false;
 
+static void on_ntp_time_synced(void) {
+    ESP_LOGI(TAG, "NTP Time Synced Callback received!");
+    display_ui_update_clock();
+    if (s_boot_clock_active) {
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        s_boot_clock_end_time = now + 5000;
+        s_idle_clock_start_time = now + 5000;
+        ESP_LOGI(TAG, "Boot clock extended by 5s after NTP sync");
+    }
+}
+
 /**
  * @brief 네트워크(Wi-Fi / WebSocket) 상태 변경 콜백
  */
@@ -219,29 +230,32 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(settings_manager_init());
     const app_settings_t *cfg = settings_manager_get();
 
-    // [0-1] 타임존 환경 변수 설정
+    // [0-1] 타임존 환경 변수 설정 및 NTP 완료 콜백 등록
     time_sync_init();
+    time_sync_set_callback(on_ntp_time_synced);
 
     // [1] 디스플레이 및 LVGL 초기화
     ESP_ERROR_CHECK(display_ui_init());
     display_ui_set_brightness(cfg->brightness);
-    display_ui_show_message("HW CHECK: LCD OK");
-    vTaskDelay(pdMS_TO_TICKS(400));
+
+    // [1-1] 부팅 즉시 시계 화면 활성화 (부팅 시작부터 5초 이상 표시)
+    display_ui_show_clock_mode(true);
+    s_boot_clock_active = true;
+    uint32_t boot_now = (uint32_t)(esp_timer_get_time() / 1000);
+    s_boot_clock_end_time = boot_now + 5000;
+    s_idle_clock_start_time = boot_now + 5000;
 
     // [2] 터치 센서 초기화 및 상단 10회 터치 콜백 등록
     ESP_ERROR_CHECK(touch_input_init());
     touch_input_set_settings_trigger_cb(ui_settings_open);
 
     // [3] 오디오 I/O (PDM RX 마이크 + I2S TX 스피커) 초기화
-    display_ui_show_message("AUDIO IO CHECK...");
     ESP_ERROR_CHECK(audio_io_init());
 
     // 스피커 동작 확인: '도-미-솔' 부팅 멜로디
     audio_io_play_boot_melody();
-    vTaskDelay(pdMS_TO_TICKS(200));
 
-    // [4] 캐릭터 눈 표정 모드로 전환 및 자동 깜빡임 시작
-    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, "INITIALIZING...");
+    // [4] 자동 깜빡임 태스크 시작 (이후 캐릭터 눈으로 전환될 때 동작)
     display_ui_start_auto_blink();
 
     // [5] 대화 상태 머신 초기화
@@ -249,17 +263,14 @@ extern "C" void app_main(void) {
 
     // [6] 네트워크 (Wi-Fi + WebSocket) 드라이버 초기화
     ESP_LOGI(TAG, "Initializing Wi-Fi & WebSocket driver...");
-    display_ui_set_status("INITIALIZING WIFI...");
     wifi_ws_set_state_callback(on_network_state_changed);
     wifi_ws_set_rx_callback(on_websocket_data_received);
     ESP_ERROR_CHECK(wifi_ws_init());
 
     // [7] 실시간 오디오 파이프라인 (PSRAM RingBuffers, FreeRTOS Tasks, esp-sr AFE) 초기화
-    display_ui_set_status("INITIALIZING AFE...");
     ESP_ERROR_CHECK(audio_pipeline_init());
 
     // [7-1] OV2640 카메라 초기화 (비전 질문용) - 실패해도 음성 챗봇은 계속 동작
-    display_ui_set_status("INITIALIZING CAMERA...");
     esp_err_t cam_err = camera_io_init();
     if (cam_err == ESP_OK) {
         // 부팅 시 테스트 촬영 1장으로 센서/프레임 버퍼 동작 확인
@@ -281,18 +292,15 @@ extern "C" void app_main(void) {
 
     // [9] Wi-Fi 및 WebSocket 접속 시작 (NVS 동적 설정 사용)
     ESP_LOGI(TAG, "Starting Wi-Fi & WebSocket connection to %s:%u...", cfg->server_ip, (unsigned int)cfg->server_port);
-    display_ui_set_status("CONNECTING WIFI...");
-
     char ws_uri[128];
     snprintf(ws_uri, sizeof(ws_uri), "ws://%s:%u", cfg->server_ip, (unsigned int)cfg->server_port);
     ESP_ERROR_CHECK(wifi_ws_start(cfg->wifi_ssid, cfg->wifi_pass, ws_uri));
 
-    // [10] 최초 부팅 완료 후 5초 동안 시계 표시 후 눈 표정으로 전환 (시계 중에도 Alexa 호출 작동)
-    display_ui_show_clock_mode(true);
-    s_boot_clock_active = true;
-    uint32_t boot_now = (uint32_t)(esp_timer_get_time() / 1000);
+    // [10] 모든 시스템 부팅 완료 시점 기준으로 정확히 5초 동안 시계가 유지되도록 카운트다운 시작
+    boot_now = (uint32_t)(esp_timer_get_time() / 1000);
     s_boot_clock_end_time = boot_now + 5000;
     s_idle_clock_start_time = boot_now + 5000;
+    display_ui_update_clock();
 
-    ESP_LOGI(TAG, "Step 3 Initialization complete. Ready for voice interaction!");
+    ESP_LOGI(TAG, "Initialization complete. Clock is showing for 5 seconds right after boot!");
 }

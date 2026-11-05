@@ -53,6 +53,11 @@ static const timezone_info_t s_timezones[] = {
 static const uint8_t s_timezone_count = sizeof(s_timezones) / sizeof(s_timezones[0]);
 
 static bool s_time_synced = false;
+static time_sync_cb_t s_sync_cb = NULL;
+
+void time_sync_set_callback(time_sync_cb_t cb) {
+    s_sync_cb = cb;
+}
 
 static void time_sync_notification_cb(struct timeval *tv) {
     s_time_synced = true;
@@ -65,6 +70,10 @@ static void time_sync_notification_cb(struct timeval *tv) {
     ESP_LOGI(TAG, "  NTP Time Synced Successfully!");
     ESP_LOGI(TAG, "  Current Local Time: %s", buf);
     ESP_LOGI(TAG, "==================================================");
+
+    if (s_sync_cb) {
+        s_sync_cb();
+    }
 }
 
 uint8_t time_sync_get_ntp_server_count(void) {

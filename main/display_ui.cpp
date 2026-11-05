@@ -184,6 +184,7 @@ esp_err_t display_ui_init(void) {
   lv_obj_set_style_text_color(s_center_label, lv_color_white(), 0);
   lv_label_set_text(s_center_label, "SYSTEM STARTING...");
   lv_obj_align(s_center_label, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
 
   // 양쪽 눈 이미지 생성 (초기에는 숨김 상태)
   s_left_eye = lv_img_create(s_screen);
@@ -299,11 +300,36 @@ void display_ui_show_message(const char *msg) {
 
 void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
                             const char *status_text) {
-  // 표정 전환 요청이 오면 프리뷰 및 시계 모드를 해제하여 캐릭터 표정이 항상 나타나도록 보장
+  // 표정 전환 요청이 오면 프리뷰 해제 및 깜빡임 즉각 취소
   s_camera_preview_mode = false;
-  s_is_animating = false; // 진행 중이던 눈 깜빡임 즉각 취소 및 강제 표정 전환
-  s_is_clock_mode = false;
-  s_clock_temp_hidden = false;
+  s_is_animating = false;
+
+  // 시계 모드가 활성화되어 있을 때 IDLE 상태로의 전이는 시계를 끄지 않고 유지
+  if (s_is_clock_mode) {
+    if (left == UI_EMOTION_IDLE && right == UI_EMOTION_IDLE) {
+      if (lvgl_port_lock(1000)) {
+        if (s_left_eye) {
+          lv_img_set_src(s_left_eye, get_image_for_emotion(left));
+          s_current_left_emotion = left;
+        }
+        if (s_right_eye) {
+          lv_img_set_src(s_right_eye, get_image_for_emotion(right));
+          s_current_right_emotion = right;
+        }
+        // 간헐적 눈 엿보기 중이 아닐 때는 시계 컨테이너가 화면 최상단에 머물도록 보장
+        if (!s_clock_temp_hidden && s_clock_container) {
+          lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_move_foreground(s_clock_container);
+        }
+        lvgl_port_unlock();
+      }
+      return;
+    } else {
+      // LISTENING, SPEAKING 등 실제 사용자 대화 상호작용 표정이 오면 시계 모드 즉각 해제
+      s_is_clock_mode = false;
+      s_clock_temp_hidden = false;
+    }
+  }
 
   if (lvgl_port_lock(1000)) {
     if (s_clock_container)
@@ -344,6 +370,10 @@ void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
 void display_ui_set_status(const char *status_text) {
   if (status_text == NULL || s_camera_preview_mode)
     return;
+  // 시계 모드가 활성화되어 있고 눈 엿보기 상태가 아닐 때는 하단 상태 텍스트로 시계를 가리지 않음
+  if (s_is_clock_mode && !s_clock_temp_hidden) {
+    return;
+  }
   if (lvgl_port_lock(500)) {
     if (s_status_label) {
       lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
@@ -360,7 +390,7 @@ static void auto_blink_task(void *pvParameters) {
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(1000 + (esp_random() % 2000)));
 
-    if (!s_is_animating && !s_auto_blink_paused &&
+    if (!s_is_animating && !s_auto_blink_paused && !s_is_clock_mode &&
         s_current_left_emotion == UI_EMOTION_IDLE &&
         s_current_right_emotion == UI_EMOTION_IDLE) {
 
@@ -506,46 +536,49 @@ void display_ui_draw_preview_frame(const uint16_t *rgb565_buf) {
 }
 
 void display_ui_update_clock(void) {
-  if (!s_clock_container || lv_obj_has_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN)) {
-    return;
-  }
+  if (lvgl_port_lock(500)) {
+    if (s_clock_container && !lv_obj_has_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN)) {
+      time_t now = time(NULL);
+      struct tm timeinfo;
+      localtime_r(&now, &timeinfo);
 
-  time_t now = time(NULL);
-  struct tm timeinfo;
-  localtime_r(&now, &timeinfo);
+      // 1. 상단 날짜 및 요일
+      static const char *s_days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+      int wday = timeinfo.tm_wday;
+      if (wday < 0 || wday > 6) wday = 0;
 
-  // 1. 상단 날짜 및 요일
-  static const char *s_days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-  int wday = timeinfo.tm_wday;
-  if (wday < 0 || wday > 6) wday = 0;
+      char date_buf[48];
+      if (timeinfo.tm_year > 100) { // 2000년 이후 유효 시간 동기화 완료 상태
+        snprintf(date_buf, sizeof(date_buf), "%04d. %02d. %02d  %s",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, s_days[wday]);
+      } else {
+        snprintf(date_buf, sizeof(date_buf), "SYNCING TIME...");
+      }
+      lv_label_set_text(s_clock_date_lbl, date_buf);
+      lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 42);
 
-  char date_buf[48];
-  if (timeinfo.tm_year > 100) { // 2000년 이후 유효 시간 동기화 완료 상태
-    snprintf(date_buf, sizeof(date_buf), "%04d. %02d. %02d  %s",
-             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, s_days[wday]);
-  } else {
-    snprintf(date_buf, sizeof(date_buf), "SYNCING TIME...");
-  }
-  lv_label_set_text(s_clock_date_lbl, date_buf);
-  lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 42);
+      // 2. 12시간제 시간 (1~12 : 00~59)
+      int hour12 = timeinfo.tm_hour % 12;
+      if (hour12 == 0) hour12 = 12;
+      bool is_pm = (timeinfo.tm_hour >= 12);
 
-  // 2. 12시간제 시간 (1~12 : 00~59)
-  int hour12 = timeinfo.tm_hour % 12;
-  if (hour12 == 0) hour12 = 12;
-  bool is_pm = (timeinfo.tm_hour >= 12);
+      char time_buf[16];
+      snprintf(time_buf, sizeof(time_buf), "%d:%02d", hour12, timeinfo.tm_min);
+      lv_label_set_text(s_clock_time_lbl, time_buf);
+      lv_obj_update_layout(s_clock_time_lbl);
 
-  char time_buf[16];
-  snprintf(time_buf, sizeof(time_buf), "%d:%02d", hour12, timeinfo.tm_min);
-  lv_label_set_text(s_clock_time_lbl, time_buf);
-
-  // 3. AM(윗첨자) / PM(아랫첨자) 설정
-  lv_label_set_text(s_clock_ampm_lbl, is_pm ? "PM" : "AM");
-  if (is_pm) {
-    // PM: 시간 앞 아랫첨자 위치
-    lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_BOTTOM, -6, -4);
-  } else {
-    // AM: 시간 앞 윗첨자 위치
-    lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
+      // 3. AM(윗첨자) / PM(아랫첨자) 설정
+      lv_label_set_text(s_clock_ampm_lbl, is_pm ? "PM" : "AM");
+      lv_obj_update_layout(s_clock_ampm_lbl);
+      if (is_pm) {
+        // PM: 시간 앞 아랫첨자 위치
+        lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_BOTTOM, -6, -4);
+      } else {
+        // AM: 시간 앞 윗첨자 위치
+        lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
+      }
+    }
+    lvgl_port_unlock();
   }
 }
 
@@ -563,6 +596,7 @@ void display_ui_show_clock_mode(bool enable) {
 
       if (s_clock_container) {
         lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_clock_container);
         display_ui_update_clock();
       }
     } else {
