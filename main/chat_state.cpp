@@ -227,7 +227,7 @@ void chat_state_set(chat_state_t new_state) {
 
     if (s_chat_state == new_state) {
         if (new_state == CHAT_STATE_IDLE) {
-            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' 또는 터치" : "SAY 'ALEXA' OR TOUCH");
+            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
         } else if (new_state == CHAT_STATE_LISTENING) {
             display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, is_ko ? "듣고 있어요..." : "LISTENING...");
         }
@@ -250,7 +250,7 @@ void chat_state_set(chat_state_t new_state) {
             s_close_session_after_speaking = false;
             audio_pipeline_enable_mic_streaming(false);
             display_ui_pause_auto_blink(false);
-            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' 또는 터치" : "SAY 'ALEXA' OR TOUCH");
+            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
             break;
 
         case CHAT_STATE_LISTENING:

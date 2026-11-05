@@ -327,6 +327,11 @@ void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
         if (!s_clock_temp_hidden && s_clock_container) {
           lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
           lv_obj_move_foreground(s_clock_container);
+        } else if (s_clock_temp_hidden && s_status_label) {
+          bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+          lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(s_status_label, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+          lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -26);
         }
         lvgl_port_unlock();
       }
@@ -361,10 +366,17 @@ void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
       s_current_right_emotion = right;
     }
 
-    if (s_status_label && status_text != NULL) {
-      lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
-      lv_label_set_text(s_status_label, status_text);
-      lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -26);
+    if (s_status_label) {
+      bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+      const char *txt = status_text;
+      if (txt == NULL && left == UI_EMOTION_IDLE && right == UI_EMOTION_IDLE) {
+        txt = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
+      }
+      if (txt != NULL) {
+        lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(s_status_label, txt);
+        lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -26);
+      }
     }
 
     if (lv_scr_act()) {
@@ -645,6 +657,12 @@ void display_ui_show_clock_mode(bool enable) {
       }
       if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_status_label) {
+        bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+        lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(s_status_label, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+        lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -26);
+      }
     }
     if (lv_scr_act()) lv_obj_invalidate(lv_scr_act());
     lvgl_port_unlock();
@@ -660,14 +678,21 @@ void display_ui_temp_hide_clock(bool hide) {
   s_clock_temp_hidden = hide;
   if (lvgl_port_lock(500)) {
     if (hide) {
-      // 대기 중 간헐적으로 눈 표정 표시
+      // 대기 중 간헐적으로 눈 표정 표시 + 하단 발화/터치 유도 텍스트 표시
       if (s_clock_container) lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
       if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_status_label) {
+        bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+        lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(s_status_label, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+        lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -26);
+      }
     } else {
       // 다시 시계 화면으로 복귀
       if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
       if (s_clock_container) {
         lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
         display_ui_update_clock();

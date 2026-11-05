@@ -29,7 +29,8 @@ static uint32_t s_boot_clock_timeout = 0;   // NTP 동기화 대기 최대 30초
 static uint32_t s_boot_clock_end_time = 0;  // 동기화 완료 후 5초 표시 시간
 static bool s_boot_clock_active = false;
 static bool s_boot_clock_synced_seen = false;
-static uint32_t s_last_ntp_retry_time = 0;  // 1분 주기 재시도 타임스탬프
+static uint32_t s_last_ntp_retry_time = 0;  // 1분 주기 재시도 타임스탬프 (최초 동기화 전)
+static time_t s_last_24h_sync_sec = 0;      // 24시간 주기 정기 재동기화 타임스탬프
 
 static uint32_t s_idle_clock_start_time = 0;
 static bool s_idle_clock_active = false;
@@ -39,6 +40,8 @@ static bool s_eye_peeking = false;
 
 static void on_ntp_time_synced(void) {
     ESP_LOGI(TAG, "NTP Time Synced Callback received!");
+    time_t now_sec = time(NULL);
+    s_last_24h_sync_sec = now_sec;
     display_ui_update_clock();
     if (s_boot_clock_active) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -155,7 +158,8 @@ static void chat_monitor_loop_task(void *pvParameters) {
                 if (now >= s_boot_clock_end_time) {
                     s_boot_clock_active = false;
                     display_ui_show_clock_mode(false);
-                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, NULL);
+                    bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
                     s_idle_clock_start_time = now;
                     ESP_LOGI(TAG, "Boot clock 5-second display completed -> Switched to Character Eyes");
                 }
@@ -171,18 +175,32 @@ static void chat_monitor_loop_task(void *pvParameters) {
                     // 30초 이상 동기화 지연 시: 다음 화면(눈)으로 넘어가게 한 후, 1분 주기로 NTP 동기화 시도
                     s_boot_clock_active = false;
                     display_ui_show_clock_mode(false);
-                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, NULL);
+                    bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
                     s_idle_clock_start_time = now;
                     ESP_LOGW(TAG, "NTP sync boot timeout (>30s) -> Switched to Eyes. Retrying NTP every 1 minute.");
                 }
             }
         }
 
-        // 1-2. NTP 미동기화 시 1분(60초) 간격으로 NTP 재시도
+        // 1-2. NTP 시간 동기화 주기 관리
+        // (A) 최초 동기화 전: 1분(60초) 간격으로 NTP 재시도
+        // (B) 동기화 성공 후: 24시간(86400초) 주기로 1회씩 정기 동기화 수행
+        //     - 실패하더라도 반복 재시도하지 않고 다음 24시간 주기에 수행
         if (!time_sync_is_synced()) {
             if (now - s_last_ntp_retry_time >= 60000) {
                 s_last_ntp_retry_time = now;
                 ESP_LOGI(TAG, "NTP not synced yet -> Retrying NTP sync (1-min interval)...");
+                time_sync_start();
+            }
+        } else {
+            time_t cur_sec = time(NULL);
+            if (s_last_24h_sync_sec == 0) {
+                s_last_24h_sync_sec = cur_sec;
+            } else if (cur_sec >= s_last_24h_sync_sec + (24 * 3600)) {
+                // 24시간 주기 도달: 타임스탬프를 먼저 갱신하여 실패하더라도 즉시 반복 재시도하지 않고 다음 주기에 수행
+                s_last_24h_sync_sec = cur_sec;
+                ESP_LOGI(TAG, "24-hour periodic NTP sync initiated (next sync in 24 hours)");
                 time_sync_start();
             }
         }
