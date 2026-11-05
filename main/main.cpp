@@ -14,6 +14,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/idf_additions.h"
@@ -22,6 +23,16 @@
 #include <string.h>
 
 static const char *TAG = "MAIN_APP";
+
+// 시계 화면 표시 타이머 상태 변수
+static uint32_t s_boot_clock_end_time = 0;
+static bool s_boot_clock_active = false;
+
+static uint32_t s_idle_clock_start_time = 0;
+static bool s_idle_clock_active = false;
+static uint32_t s_next_eye_peek_time = 0;
+static uint32_t s_eye_peek_end_time = 0;
+static bool s_eye_peeking = false;
 
 /**
  * @brief 네트워크(Wi-Fi / WebSocket) 상태 변경 콜백
@@ -84,8 +95,15 @@ static void chat_monitor_loop_task(void *pvParameters) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         bool has_event = touch_input_has_event();
 
-        // 0. 설정 메뉴가 열려 있을 때는 메인 대화 터치 동작 중단
+        // 0. 설정 메뉴가 열려 있을 때는 메인 대화 터치 동작 중단 및 대기 타이머 일시 리셋
         if (ui_settings_is_active()) {
+            if (s_idle_clock_active || s_boot_clock_active) {
+                s_idle_clock_active = false;
+                s_boot_clock_active = false;
+                s_eye_peeking = false;
+                display_ui_show_clock_mode(false);
+            }
+            s_idle_clock_start_time = now;
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -93,9 +111,76 @@ static void chat_monitor_loop_task(void *pvParameters) {
         // 1. 터치 감지 처리: 인터럽트 에지 이벤트 기반 1회 즉시 감지 (디바운스 600ms)
         if (has_event && (now - last_touch_handled_time > 600)) {
             ESP_LOGI(TAG, "User Touch Event Handled! Forwarding to chat_state_handle_touch()");
+            if (s_boot_clock_active || s_idle_clock_active) {
+                s_boot_clock_active = false;
+                s_idle_clock_active = false;
+                s_eye_peeking = false;
+                display_ui_show_clock_mode(false);
+            }
+            s_idle_clock_start_time = now;
+
             chat_state_handle_touch();
             chat_state_activity_occurred();
             last_touch_handled_time = now;
+        }
+
+        // 1-1. 최초 부팅 5초 시계 관리 (시계 표시 중에도 'Alexa' 발화 감지 시 즉시 눈 및 LISTENING 전환)
+        if (s_boot_clock_active) {
+            if (chat_state_get() != CHAT_STATE_IDLE) {
+                s_boot_clock_active = false;
+                display_ui_show_clock_mode(false);
+                s_idle_clock_start_time = now;
+            } else if (now >= s_boot_clock_end_time) {
+                s_boot_clock_active = false;
+                display_ui_show_clock_mode(false);
+                display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, NULL);
+                s_idle_clock_start_time = now;
+                ESP_LOGI(TAG, "Boot 5-second clock completed -> Switched to Character Eyes");
+            }
+        }
+
+        // 1-2. 5분 대기 초과 시 시계 표시 및 간헐적 눈 애니메이션 관리
+        if (!s_boot_clock_active) {
+            chat_state_t cur_state = chat_state_get();
+            if (cur_state != CHAT_STATE_IDLE) {
+                // 대화 진행 중(LISTENING, THINKING, SPEAKING)일 때는 시계 해제 및 대기 시간 리셋
+                s_idle_clock_start_time = now;
+                if (s_idle_clock_active) {
+                    s_idle_clock_active = false;
+                    s_eye_peeking = false;
+                    display_ui_show_clock_mode(false);
+                }
+            } else {
+                // CHAT_STATE_IDLE 상태 (Alexa 호출 대기 중)
+                if (!s_idle_clock_active) {
+                    // 5분(300,000ms) 초과 여부 검사
+                    if (now - s_idle_clock_start_time >= 300000) {
+                        s_idle_clock_active = true;
+                        display_ui_show_clock_mode(true);
+                        // 약 30초~1분(30,000 ~ 60,000ms) 사이 첫 번째 눈 깜빡임 시점 계산
+                        s_next_eye_peek_time = now + 30000 + (esp_random() % 30000);
+                        s_eye_peeking = false;
+                        ESP_LOGI(TAG, "Standby idle > 5 minutes -> Switching to Clock display mode");
+                    }
+                } else {
+                    // 시계 표시 모드 유지 중: 30초~1분 사이마다 간헐적으로 눈 애니메이션 표시
+                    if (!s_eye_peeking) {
+                        if (now >= s_next_eye_peek_time) {
+                            s_eye_peeking = true;
+                            s_eye_peek_end_time = now + 3500; // 약 3.5초 동안 눈 표시 및 깜빡임
+                            display_ui_temp_hide_clock(true);
+                            ESP_LOGI(TAG, "Clock peek: displaying eyes to indicate Alexa standby");
+                        }
+                    } else {
+                        if (now >= s_eye_peek_end_time) {
+                            s_eye_peeking = false;
+                            s_next_eye_peek_time = now + 30000 + (esp_random() % 30000); // 다음 30~60초 후
+                            display_ui_temp_hide_clock(false);
+                            ESP_LOGI(TAG, "Clock peek: returning to Clock display");
+                        }
+                    }
+                }
+            }
         }
 
         // 2. 대화 상태 머신 타임아웃 틱 (최신 타임스탬프로 갱신 전달)
@@ -107,8 +192,10 @@ static void chat_monitor_loop_task(void *pvParameters) {
             const char *st_name = (st == CHAT_STATE_IDLE) ? "IDLE" :
                                   (st == CHAT_STATE_LISTENING) ? "LISTENING" :
                                   (st == CHAT_STATE_THINKING) ? "THINKING" : "SPEAKING";
-            ESP_LOGI(TAG, "Health Check: State=%s(%d), WS=%s, FreeHeap=%uKB",
-                     st_name, (int)st, wifi_ws_is_connected() ? "CONNECTED" : "NO",
+            ESP_LOGI(TAG, "Health Check: State=%s(%d), ClockMode=%s, WS=%s, FreeHeap=%uKB",
+                     st_name, (int)st,
+                     s_boot_clock_active ? "BOOT_CLOCK" : s_idle_clock_active ? (s_eye_peeking ? "EYE_PEEK" : "IDLE_CLOCK") : "EYES",
+                     wifi_ws_is_connected() ? "CONNECTED" : "NO",
                      (unsigned int)(esp_get_free_internal_heap_size() / 1024));
             last_status_log_time = now;
         }
@@ -199,6 +286,13 @@ extern "C" void app_main(void) {
     char ws_uri[128];
     snprintf(ws_uri, sizeof(ws_uri), "ws://%s:%u", cfg->server_ip, (unsigned int)cfg->server_port);
     ESP_ERROR_CHECK(wifi_ws_start(cfg->wifi_ssid, cfg->wifi_pass, ws_uri));
+
+    // [10] 최초 부팅 완료 후 5초 동안 시계 표시 후 눈 표정으로 전환 (시계 중에도 Alexa 호출 작동)
+    display_ui_show_clock_mode(true);
+    s_boot_clock_active = true;
+    uint32_t boot_now = (uint32_t)(esp_timer_get_time() / 1000);
+    s_boot_clock_end_time = boot_now + 5000;
+    s_idle_clock_start_time = boot_now + 5000;
 
     ESP_LOGI(TAG, "Step 3 Initialization complete. Ready for voice interaction!");
 }

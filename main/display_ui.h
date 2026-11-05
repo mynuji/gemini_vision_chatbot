@@ -79,6 +79,26 @@ void display_ui_draw_preview_frame(const uint16_t *rgb565_buf);
  */
 void display_ui_set_brightness(uint8_t percent);
 
+/**
+ * @brief 시계 화면 모드 활성화 / 비활성화
+ */
+void display_ui_show_clock_mode(bool enable);
+
+/**
+ * @brief 현재 시계 화면 모드가 활성화되어 있는지 여부
+ */
+bool display_ui_is_clock_mode(void);
+
+/**
+ * @brief 시계 화면 일시 숨김 (대기 중 간헐적 눈 애니메이션 표시용)
+ */
+void display_ui_temp_hide_clock(bool hide);
+
+/**
+ * @brief 시계 화면 텍스트 즉시 갱신
+ */
+void display_ui_update_clock(void);
+
 #ifdef __cplusplus
 }
 #endif

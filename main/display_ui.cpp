@@ -19,6 +19,8 @@
 #include "freertos/idf_additions.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
+#include <time.h>
+#include <sys/time.h>
 
 static const char *TAG = "DISPLAY_UI";
 
@@ -40,6 +42,15 @@ static lv_obj_t *s_center_label = NULL;
 static lv_obj_t *s_cam_img = NULL;
 static lv_img_dsc_t s_cam_img_dsc = {};
 static uint16_t *s_crop_buf = NULL;
+
+// 시계 화면 표시용 위젯
+static lv_obj_t *s_clock_container = NULL;
+static lv_obj_t *s_clock_date_lbl = NULL;
+static lv_obj_t *s_clock_time_lbl = NULL;
+static lv_obj_t *s_clock_ampm_lbl = NULL;
+static lv_timer_t *s_clock_timer = NULL;
+static volatile bool s_is_clock_mode = false;
+static volatile bool s_clock_temp_hidden = false;
 
 static ui_emotion_t s_current_left_emotion = (ui_emotion_t)-1;
 static ui_emotion_t s_current_right_emotion = (ui_emotion_t)-1;
@@ -223,6 +234,42 @@ esp_err_t display_ui_init(void) {
     ESP_LOGE(TAG, "Failed to allocate 115KB PSRAM for camera preview buffer");
   }
 
+  // 6-2. 대기/부팅 시계 화면 전용 컨테이너 생성 (240x240 원형 화면 전체)
+  s_clock_container = lv_obj_create(s_screen);
+  lv_obj_set_size(s_clock_container, 240, 240);
+  lv_obj_align(s_clock_container, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_bg_color(s_clock_container, lv_color_black(), 0);
+  lv_obj_set_style_border_width(s_clock_container, 0, 0);
+  lv_obj_set_style_pad_all(s_clock_container, 0, 0);
+  lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
+
+  // 상단 일자 및 요일 라벨 (조금 작은 16px 폰트, 상단 안전영역 Y=42)
+  s_clock_date_lbl = lv_label_create(s_clock_container);
+  lv_obj_set_style_text_font(s_clock_date_lbl, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(s_clock_date_lbl, lv_color_hex(0x00D1FF), 0);
+  lv_label_set_text(s_clock_date_lbl, "2026. 11. 05  THU");
+  lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 42);
+
+  // 중앙 시간 영역 라벨 (화면의 약 80% 폭을 차지하는 48px 대형 폰트)
+  s_clock_time_lbl = lv_label_create(s_clock_container);
+  lv_obj_set_style_text_font(s_clock_time_lbl, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_text_color(s_clock_time_lbl, lv_color_white(), 0);
+  lv_label_set_text(s_clock_time_lbl, "12:00");
+  lv_obj_align(s_clock_time_lbl, LV_ALIGN_CENTER, 14, 10);
+
+  // AM / PM 라벨 (시간 앞에 위치, AM은 윗첨자 형태, PM은 아랫첨자 형태)
+  s_clock_ampm_lbl = lv_label_create(s_clock_container);
+  lv_obj_set_style_text_font(s_clock_ampm_lbl, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(s_clock_ampm_lbl, lv_color_hex(0x00D1FF), 0);
+  lv_label_set_text(s_clock_ampm_lbl, "AM");
+  lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
+
+  // 1초 주기로 시계 텍스트 자동 갱신
+  s_clock_timer = lv_timer_create([](lv_timer_t *t){
+    display_ui_update_clock();
+  }, 1000, NULL);
+
   lvgl_port_unlock();
 
   ESP_LOGI(TAG, "Display UI initialization complete.");
@@ -233,6 +280,8 @@ void display_ui_show_message(const char *msg) {
   if (msg == NULL)
     return;
   lvgl_port_lock(-1);
+  if (s_clock_container)
+    lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
   if (s_left_eye)
     lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
   if (s_right_eye)
@@ -250,11 +299,16 @@ void display_ui_show_message(const char *msg) {
 
 void display_ui_set_emotion(ui_emotion_t left, ui_emotion_t right,
                             const char *status_text) {
-  // 표정 전환 요청이 오면 프리뷰 모드를 해제하여 캐릭터 표정이 항상 나타나도록 보장
+  // 표정 전환 요청이 오면 프리뷰 및 시계 모드를 해제하여 캐릭터 표정이 항상 나타나도록 보장
   s_camera_preview_mode = false;
   s_is_animating = false; // 진행 중이던 눈 깜빡임 즉각 취소 및 강제 표정 전환
+  s_is_clock_mode = false;
+  s_clock_temp_hidden = false;
 
   if (lvgl_port_lock(1000)) {
+    if (s_clock_container)
+      lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
+
     if (s_center_label)
       lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
 
@@ -450,3 +504,103 @@ void display_ui_draw_preview_frame(const uint16_t *rgb565_buf) {
   // s_crop_buf는 이미 s_cam_img_dsc에 바인딩되어 있으므로 화면 무효화(invalidate) 트리거
   display_ui_refresh_camera_preview();
 }
+
+void display_ui_update_clock(void) {
+  if (!s_clock_container || lv_obj_has_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN)) {
+    return;
+  }
+
+  time_t now = time(NULL);
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
+
+  // 1. 상단 날짜 및 요일
+  static const char *s_days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+  int wday = timeinfo.tm_wday;
+  if (wday < 0 || wday > 6) wday = 0;
+
+  char date_buf[48];
+  if (timeinfo.tm_year > 100) { // 2000년 이후 유효 시간 동기화 완료 상태
+    snprintf(date_buf, sizeof(date_buf), "%04d. %02d. %02d  %s",
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, s_days[wday]);
+  } else {
+    snprintf(date_buf, sizeof(date_buf), "SYNCING TIME...");
+  }
+  lv_label_set_text(s_clock_date_lbl, date_buf);
+  lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 42);
+
+  // 2. 12시간제 시간 (1~12 : 00~59)
+  int hour12 = timeinfo.tm_hour % 12;
+  if (hour12 == 0) hour12 = 12;
+  bool is_pm = (timeinfo.tm_hour >= 12);
+
+  char time_buf[16];
+  snprintf(time_buf, sizeof(time_buf), "%d:%02d", hour12, timeinfo.tm_min);
+  lv_label_set_text(s_clock_time_lbl, time_buf);
+
+  // 3. AM(윗첨자) / PM(아랫첨자) 설정
+  lv_label_set_text(s_clock_ampm_lbl, is_pm ? "PM" : "AM");
+  if (is_pm) {
+    // PM: 시간 앞 아랫첨자 위치
+    lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_BOTTOM, -6, -4);
+  } else {
+    // AM: 시간 앞 윗첨자 위치
+    lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
+  }
+}
+
+void display_ui_show_clock_mode(bool enable) {
+  s_is_clock_mode = enable;
+  s_clock_temp_hidden = false;
+
+  if (lvgl_port_lock(500)) {
+    if (enable) {
+      if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+      if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
+      if (s_cam_img) lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
+
+      if (s_clock_container) {
+        lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
+        display_ui_update_clock();
+      }
+    } else {
+      if (s_clock_container) {
+        lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
+      }
+      if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (lv_scr_act()) lv_obj_invalidate(lv_scr_act());
+    lvgl_port_unlock();
+  }
+}
+
+bool display_ui_is_clock_mode(void) {
+  return s_is_clock_mode;
+}
+
+void display_ui_temp_hide_clock(bool hide) {
+  if (!s_is_clock_mode) return;
+  s_clock_temp_hidden = hide;
+  if (lvgl_port_lock(500)) {
+    if (hide) {
+      // 대기 중 간헐적으로 눈 표정 표시
+      if (s_clock_container) lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
+      if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      // 다시 시계 화면으로 복귀
+      if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_clock_container) {
+        lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
+        display_ui_update_clock();
+      }
+    }
+    if (lv_scr_act()) lv_obj_invalidate(lv_scr_act());
+    lvgl_port_unlock();
+  }
+}
+
