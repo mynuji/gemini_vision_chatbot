@@ -1072,40 +1072,33 @@ def parse_llm_switch_command(user_text):
         return None, None, None
 
     text = user_text.lower().strip()
-    clean_text = re.sub(r'[^\w\s가-힣]', '', text)
+    clean_text = re.sub(r'[^\w\s가-힣]', ' ', text)
+    no_space_text = re.sub(r'[\s_]+', '', clean_text)
 
-    # 1. 전환/변경 관련 의도 키워드 검사
+    # 1. 전환/변경 관련 의도 키워드 검사 (한국어 및 영어)
     switch_action_keywords = [
         "바꿔", "변경", "전환", "교체", "선택", "설정", "바꾸", "바꿀", "바꿈",
         "쓸래", "사용할래", "쓰자", "사용하자", "적용", "스위치", "switch", "change",
-        "시작해", "해줘", "해봐", "써줘", "사용해", "부탁", "넘어가", "골라", "틀어줘"
+        "시작해", "해줘", "해봐", "써줘", "사용해", "부탁", "넘어가", "골라", "틀어줘",
+        "set", "use", "turn on", "enable"
     ]
-    has_action = any(kw in clean_text for kw in switch_action_keywords)
+    has_action = any(kw in clean_text or kw in no_space_text for kw in switch_action_keywords)
     has_switch_syntax = (
         has_action
-        or ("으로" in clean_text)
-        or ("로" in clean_text)
-        or ("모드" in clean_text)
-        or ("타입" in clean_text)
-        or ("모델" in clean_text)
-        or ("엔진" in clean_text)
+        or any(k in clean_text for k in ["으로", "로", "모드", "타입", "모델", "엔진", "api", "에이피아이", "mode", "type"])
+        or any(k in no_space_text for k in ["으로", "로", "모드", "타입", "모델", "엔진", "api", "에이피아이", "mode", "type"])
     )
 
-    # 타겟 판별
-    is_gemini = any(k in clean_text for k in ["gemini", "제미나이", "제미니"])
-    is_realtime = any(k in clean_text for k in ["realtime", "리얼타임", "실시간", "라이브", "live"])
+    # 2. 타겟 모델 식별 키워드
+    is_gemini = any(k in clean_text or k in no_space_text for k in ["gemini", "제미나이", "제미니"])
+    is_realtime = any(k in clean_text or k in no_space_text for k in ["realtime", "리얼타임", "실시간", "라이브", "live", "리얼", "타임"]) and (
+        any(k in no_space_text for k in ["realtime", "리얼타임", "실시간", "live", "라이브"])
+    )
+    is_chatgpt = any(k in clean_text or k in no_space_text for k in ["chatgpt", "챗지피티", "챗gpt", "지피티", "gpt", "오픈ai", "openai"])
+    is_local = any(k in clean_text or k in no_space_text for k in ["local", "로컬", "라마", "llama", "오프라인", "내부모델", "로컬서버"])
 
-    # [1] Gemini Realtime API
-    if is_gemini and is_realtime:
-        return (
-            "gemini realtime api",
-            "Gemini Realtime API",
-            "LLM을 Gemini Realtime API로 변경했습니다. 이제 실시간 음성 스트리밍으로 대화해요."
-        )
-
-    # [2] ChatGPT Realtime API
-    is_chatgpt = any(k in clean_text for k in ["chatgpt", "chat gpt", "챗지피티", "챗gpt", "지피티", "gpt", "오픈ai", "openai"])
-    if is_chatgpt and not (is_gemini or "local" in clean_text or "로컬" in clean_text):
+    # [1] ChatGPT Realtime API
+    if is_chatgpt and not (is_gemini or is_local):
         if is_realtime or has_switch_syntax:
             return (
                 "chatgpt realtime api",
@@ -1113,10 +1106,18 @@ def parse_llm_switch_command(user_text):
                 "LLM을 ChatGPT Realtime API로 변경했습니다. 이제 ChatGPT 실시간 음성으로 대화해요."
             )
 
+    # [2] Gemini Realtime API (Gemini+Realtime 이거나, ChatGPT/Local 언급 없는 단독 실시간/리얼타임 전환 요청)
+    if is_realtime:
+        if is_gemini or (not is_chatgpt and not is_local and has_switch_syntax):
+            return (
+                "gemini realtime api",
+                "Gemini Realtime API",
+                "LLM을 Gemini Realtime API로 변경했습니다. 이제 실시간 음성 스트리밍으로 대화해요."
+            )
+
     # [3] Local LLM (127.0.0.1:8080)
-    is_local = any(k in clean_text for k in ["local", "로컬", "라마", "llama", "오프라인", "내부 모델", "로컬서버", "로컬 서버"])
     if is_local:
-        if any(k in clean_text for k in ["llm", "엘엘엠", "모델", "서버", "인공지능", "모드", "타입", "엔진"]) or has_switch_syntax:
+        if has_switch_syntax or any(k in clean_text for k in ["llm", "엘엘엠", "모델", "서버"]):
             return (
                 "local llm",
                 "Local LLM",
@@ -1125,7 +1126,7 @@ def parse_llm_switch_command(user_text):
 
     # [4] 기본 Gemini API (플래시/클라우드/일반/기본)
     if is_gemini and not is_realtime:
-        if any(k in clean_text for k in ["api", "기본", "일반", "플래시", "flash", "클라우드"]) or has_switch_syntax:
+        if has_switch_syntax or any(k in clean_text for k in ["api", "기본", "일반", "플래시", "flash", "클라우드"]):
             return (
                 "gemini api",
                 "Gemini API",
@@ -1133,7 +1134,7 @@ def parse_llm_switch_command(user_text):
             )
 
     # [5] 명시적 모델 이름 없는 "기본/원래 모델로 복귀" 의도
-    if any(k in clean_text for k in ["기본으로", "원래대로", "기본 모델로", "원래 모델로", "기본 모델", "원래 모델"]):
+    if any(k in no_space_text for k in ["기본으로", "원래대로", "기본모델로", "원래모델로", "기본모델", "원래모델"]):
         if has_switch_syntax:
             return (
                 "gemini api",
@@ -1986,7 +1987,7 @@ async def handler(websocket, path=None):
                 "답변은 소리 내어 읽기 좋게 보통 두세 문장 이내로 간결하게 해. "
                 "사진이 함께 주어지면 그것은 네 카메라로 지금 앞을 찍은 장면이니, 보이는 것을 바탕으로 자연스럽게 설명해. "
                 "사용자가 이전에 한 말을 반드시 기억하고 문맥에 맞게 대답해. "
-                "너는 LLM 모델이나 시스템 설정을 직접 바꿀 수 있는 권한이 없으니, 사용자가 모델 변경을 요청했을 때 임의로 바꿨다고 거짓말하지 마. "
+                "사용자가 모델 변경이나 볼륨 등 기기 설정을 요청하면 시스템 제어기가 음성 명령을 감지하여 직접 처리하므로 '설정을 변경할 수 없다'는 거절성 답변은 하지 마. "
                 "사용자가 '이제 그만하자', '대화 끝내자', '잘 가' 등 대화를 종료하자고 하면, '네, 좋은 하루 보내세요. 언제든 알렉사라고 불러주세요'처럼 다정하게 작별 인사를 한두 문장으로 해."
             )
         }

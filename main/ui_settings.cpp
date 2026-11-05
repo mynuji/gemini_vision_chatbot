@@ -122,6 +122,16 @@ void ui_settings_close(void) {
 }
 
 // ----------------------------------------------------------------------------
+// 미저장 변경사항 취소 및 하드웨어 상태 복원 함수
+// ----------------------------------------------------------------------------
+static void revert_edit_config(void) {
+    const app_settings_t *saved = settings_manager_get();
+    memcpy(&s_edit_cfg, saved, sizeof(app_settings_t));
+    display_ui_set_brightness(saved->brightness);
+    audio_pipeline_set_mic_gain(saved->mic_gain);
+}
+
+// ----------------------------------------------------------------------------
 // 뷰 전환 함수
 // ----------------------------------------------------------------------------
 static void show_view(subview_t view) {
@@ -234,7 +244,8 @@ static void on_menu_btn_event(lv_event_t *e) {
             vTaskDelay(pdMS_TO_TICKS(200));
             esp_restart();
         } else if (id == 0) {
-            // 닫기
+            // 닫기 (미저장 편집 취소)
+            revert_edit_config();
             ui_settings_close();
         }
     }
@@ -355,7 +366,14 @@ static void on_vol_save_click(lv_event_t *e) {
     show_view(SUBVIEW_MAIN);
 }
 
+static void on_vol_back_click(lv_event_t *e) {
+    revert_edit_config();
+    audio_io_play_tone(900.0f, 30);
+    show_view(SUBVIEW_MAIN);
+}
+
 static void create_volume_view(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
     s_vol_label = lv_label_create(parent);
     char buf[32];
     snprintf(buf, sizeof(buf), "VOLUME: %d%%", s_edit_cfg.volume);
@@ -377,17 +395,28 @@ static void create_volume_view(lv_obj_t *parent) {
     lv_obj_add_event_cb(slider, on_vol_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(slider, on_vol_slider_released, LV_EVENT_RELEASED, NULL);
 
-    // [APPLY] 버튼
+    // [APPLY] 및 [BACK] 버튼
     lv_obj_t *save_btn = lv_btn_create(parent);
-    lv_obj_set_size(save_btn, 90, 32);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -22);
+    lv_obj_set_size(save_btn, 76, 30);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
-    lv_obj_set_ext_click_area(save_btn, 8);
+    lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
-    lv_label_set_text(lbl, "APPLY");
+    lv_label_set_text(lbl, is_ko ? "적용" : "APPLY");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, on_vol_save_click, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -16);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, on_vol_back_click, LV_EVENT_CLICKED, NULL);
 }
 
 // ----------------------------------------------------------------------------
@@ -565,11 +594,27 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
 
     lv_obj_clean(parent);
 
+    // 0. 취소/뒤로가기 버튼 (<)
+    lv_obj_t *cancel_btn = lv_btn_create(parent);
+    lv_obj_set_size(cancel_btn, 32, 24);
+    lv_obj_align(cancel_btn, LV_ALIGN_TOP_LEFT, 16, 4);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x3A3A3A), 0);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(cancel_btn, 12, 0);
+    lv_obj_set_ext_click_area(cancel_btn, 6);
+    lv_obj_t *c_lbl = lv_label_create(cancel_btn);
+    lv_label_set_text(c_lbl, "<");
+    lv_obj_center(c_lbl);
+    lv_obj_add_event_cb(cancel_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(s_return_view);
+    }, LV_EVENT_CLICKED, NULL);
+
     // 1. 상단 타이틀
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, title_str);
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 10, 6);
 
     // 2. 입력된 텍스트 표시 상자
     lv_obj_t *box = lv_obj_create(parent);
@@ -819,6 +864,7 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_WIFI);
     }, LV_EVENT_CLICKED, NULL);
@@ -880,6 +926,7 @@ static void create_wifi_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
@@ -925,11 +972,27 @@ static void open_numeric_keyboard(lv_obj_t *parent, const char *title_str, uint1
     snprintf(s_port_edit_buf, sizeof(s_port_edit_buf), "%u", (unsigned int)current_val);
     lv_obj_clean(parent);
 
+    // 0. 취소/뒤로가기 버튼 (<)
+    lv_obj_t *cancel_btn = lv_btn_create(parent);
+    lv_obj_set_size(cancel_btn, 32, 24);
+    lv_obj_align(cancel_btn, LV_ALIGN_TOP_LEFT, 16, 4);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x3A3A3A), 0);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(cancel_btn, 12, 0);
+    lv_obj_set_ext_click_area(cancel_btn, 6);
+    lv_obj_t *c_lbl = lv_label_create(cancel_btn);
+    lv_label_set_text(c_lbl, "<");
+    lv_obj_center(c_lbl);
+    lv_obj_add_event_cb(cancel_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_SERVER);
+    }, LV_EVENT_CLICKED, NULL);
+
     // 1. 타이틀
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, title_str);
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 10, 8);
 
     // 2. 입력된 포트 번호 표시 상자
     lv_obj_t *box = lv_obj_create(parent);
@@ -1080,6 +1143,7 @@ static void create_server_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
@@ -1209,6 +1273,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
@@ -1331,6 +1396,7 @@ static void create_ntp_server_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
@@ -1453,6 +1519,7 @@ static void create_timezone_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
@@ -1497,19 +1564,37 @@ static void create_brightness_view(lv_obj_t *parent) {
     lv_obj_set_ext_click_area(slider, 14);
     lv_obj_add_event_cb(slider, on_bright_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
+
+    // [APPLY] 및 [BACK] 버튼
     lv_obj_t *save_btn = lv_btn_create(parent);
-    lv_obj_set_size(save_btn, 90, 32);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -22);
+    lv_obj_set_size(save_btn, 76, 30);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
-    lv_obj_set_ext_click_area(save_btn, 8);
+    lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
-    lv_label_set_text(lbl, "APPLY");
+    lv_label_set_text(lbl, is_ko ? "적용" : "APPLY");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_brightness(s_edit_cfg.brightness);
         display_ui_set_brightness(s_edit_cfg.brightness);
         audio_io_play_tone(1200.0f, 40);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -16);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
+        audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
 }
@@ -1533,6 +1618,7 @@ static void on_mic_slider_changed(lv_event_t *e) {
 }
 
 static void create_mic_gain_view(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
     s_mic_label = lv_label_create(parent);
     char buf[32];
     snprintf(buf, sizeof(buf), "MIC GAIN: %.1fx", s_edit_cfg.mic_gain / 10.0f);
@@ -1557,18 +1643,34 @@ static void create_mic_gain_view(lv_obj_t *parent) {
     lv_obj_set_ext_click_area(slider, 14);
     lv_obj_add_event_cb(slider, on_mic_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
+    // [APPLY] 및 [BACK] 버튼
     lv_obj_t *save_btn = lv_btn_create(parent);
-    lv_obj_set_size(save_btn, 90, 32);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -22);
+    lv_obj_set_size(save_btn, 76, 30);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x007ACC), 0);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
-    lv_obj_set_ext_click_area(save_btn, 8);
+    lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
-    lv_label_set_text(lbl, "APPLY");
+    lv_label_set_text(lbl, is_ko ? "적용" : "APPLY");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_mic_gain(s_edit_cfg.mic_gain);
         audio_io_play_tone(1200.0f, 40);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -16);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
+        audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
 }
@@ -1688,7 +1790,7 @@ static void create_language_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
-        s_edit_cfg.language = settings_manager_get()->language;
+        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
@@ -1733,6 +1835,7 @@ static void create_info_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);

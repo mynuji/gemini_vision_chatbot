@@ -65,7 +65,11 @@ static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
         break;
 
     case WIFI_WS_STATE_WIFI_CONNECTED:
-        display_ui_set_status(is_ko ? "와이파이 연결됨! 서버 접속 중..." : "WIFI OK! WS CONN...");
+        display_ui_set_status(is_ko ? "와이파이 연결됨! 시간 동기화 중..." : "WIFI OK! SYNCING TIME...");
+        if (s_boot_clock_active && !s_boot_clock_synced_seen) {
+            uint32_t net_now = (uint32_t)(esp_timer_get_time() / 1000);
+            s_boot_clock_timeout = net_now + 15000; // Wi-Fi 연결 시점부터 15초 카운트
+        }
         break;
 
     case WIFI_WS_STATE_WS_CONNECTING:

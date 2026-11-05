@@ -9,12 +9,12 @@
 
 static const char *TAG = "TIME_SYNC";
 
-// 유명 NTP 서버 목록 (기본: pool.ntp.org)
+// 유명 NTP 서버 목록 (기본: time.google.com - Anycast 초고속 응답)
 static const ntp_server_info_t s_ntp_servers[] = {
-    {"pool.ntp.org (Default)",  "pool.ntp.org"},
-    {"kr.pool.ntp.org (Korea)", "kr.pool.ntp.org"},
     {"time.google.com (Google)","time.google.com"},
+    {"kr.pool.ntp.org (Korea)", "kr.pool.ntp.org"},
     {"time.cloudflare.com",     "time.cloudflare.com"},
+    {"pool.ntp.org (Global)",   "pool.ntp.org"},
     {"time.windows.com (MS)",   "time.windows.com"},
     {"time.apple.com (Apple)",  "time.apple.com"}
 };
@@ -136,7 +136,14 @@ esp_err_t time_sync_start(void) {
         esp_sntp_stop();
     }
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED); // 첫 패킷 수신 즉시 로컬 클럭 동기화!
     esp_sntp_setservername(0, s_ntp_servers[s_idx].server);
+#if CONFIG_LWIP_SNTP_MAX_SERVERS > 1
+    esp_sntp_setservername(1, "time.google.com");
+#endif
+#if CONFIG_LWIP_SNTP_MAX_SERVERS > 2
+    esp_sntp_setservername(2, "time.cloudflare.com");
+#endif
     sntp_set_time_sync_notification_cb(time_sync_notification_cb);
     esp_sntp_init();
 
@@ -166,7 +173,14 @@ void time_sync_apply_settings(uint8_t server_idx, uint8_t tz_idx) {
         esp_sntp_stop();
     }
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
     esp_sntp_setservername(0, s_ntp_servers[server_idx].server);
+#if CONFIG_LWIP_SNTP_MAX_SERVERS > 1
+    esp_sntp_setservername(1, "time.google.com");
+#endif
+#if CONFIG_LWIP_SNTP_MAX_SERVERS > 2
+    esp_sntp_setservername(2, "time.cloudflare.com");
+#endif
     sntp_set_time_sync_notification_cb(time_sync_notification_cb);
     esp_sntp_init();
 }
