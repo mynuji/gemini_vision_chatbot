@@ -114,6 +114,10 @@ void ui_settings_close(void) {
     }
     lvgl_port_unlock();
 
+    bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+    display_ui_update_clock();
+
     audio_io_play_tone(800.0f, 60);
 }
 
@@ -1588,6 +1592,8 @@ static void create_language_view(lv_obj_t *parent) {
     lv_obj_center(albl);
     lv_obj_add_event_cb(apply_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_language((app_language_t)s_edit_cfg.language);
+        bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
+        display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
         display_ui_update_clock();
         audio_io_play_tone(1200.0f, 40);
         show_view(SUBVIEW_MAIN);
