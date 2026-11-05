@@ -395,7 +395,7 @@ static void create_volume_view(lv_obj_t *parent) {
     lv_obj_add_event_cb(slider, on_vol_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(slider, on_vol_slider_released, LV_EVENT_RELEASED, NULL);
 
-    // [APPLY] 및 [BACK] 버튼
+    // [SAVE] 및 [BACK] 버튼 (한국어: 저장 / 취소, 영어: SAVE / BACK)
     lv_obj_t *save_btn = lv_btn_create(parent);
     lv_obj_set_size(save_btn, 76, 30);
     lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
@@ -403,7 +403,7 @@ static void create_volume_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
-    lv_label_set_text(lbl, is_ko ? "적용" : "APPLY");
+    lv_label_set_text(lbl, is_ko ? "저장" : "SAVE");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, on_vol_save_click, LV_EVENT_CLICKED, NULL);
 
@@ -414,7 +414,7 @@ static void create_volume_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, on_vol_back_click, LV_EVENT_CLICKED, NULL);
 }
@@ -616,9 +616,9 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 10, 6);
 
-    // 2. 입력된 텍스트 표시 상자
+    // 2. 입력된 텍스트 표시 상자 (원형 화면 테두리 잘림 방지를 위해 너비 164로 축소)
     lv_obj_t *box = lv_obj_create(parent);
-    lv_obj_set_size(box, 196, 30);
+    lv_obj_set_size(box, 164, 28);
     lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 26);
     lv_obj_set_style_bg_color(box, lv_color_hex(0x111111), 0);
     lv_obj_set_style_border_color(box, lv_color_hex(0x00D1FF), 0);
@@ -839,7 +839,8 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_clear_flag(manual_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_add_event_cb(manual_btn, on_ap_select_event, LV_EVENT_ALL, (void *)(intptr_t)-1);
 
-    // 하단 제어 버튼: [RESCAN] 및 [BACK]
+    // 하단 제어 버튼: [RESCAN] 및 [BACK] (한국어: 재검색 / 취소)
+    bool is_scan_ko = (s_edit_cfg.language == APP_LANG_KO);
     lv_obj_t *rescan_btn = lv_btn_create(parent);
     lv_obj_set_size(rescan_btn, 76, 30);
     lv_obj_align(rescan_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
@@ -847,7 +848,7 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(rescan_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(rescan_btn, 6);
     lv_obj_t *rlbl = lv_label_create(rescan_btn);
-    lv_label_set_text(rlbl, "RESCAN");
+    lv_label_set_text(rlbl, is_scan_ko ? "재검색" : "RESCAN");
     lv_obj_center(rlbl);
     lv_obj_add_event_cb(rescan_btn, (lv_event_cb_t)[](lv_event_t *e){
         audio_io_play_tone(1200.0f, 40);
@@ -861,7 +862,7 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, "BACK");
+    lv_label_set_text(blbl, is_scan_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();
@@ -871,14 +872,15 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
 }
 
 static void create_wifi_view(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
     lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "WI-FI CONFIG");
+    lv_label_set_text(title, is_ko ? "와이파이 설정" : "WI-FI CONFIG");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
-    // SSID 버튼
+    // SSID 버튼 (원형 화면 잘림 방지를 위해 너비 160으로 최적화)
     lv_obj_t *ssid_btn = lv_btn_create(parent);
-    lv_obj_set_size(ssid_btn, 170, 34);
+    lv_obj_set_size(ssid_btn, 160, 32);
     lv_obj_align(ssid_btn, LV_ALIGN_TOP_MID, 0, 45);
     lv_obj_set_style_bg_color(ssid_btn, lv_color_hex(0x282828), 0);
     lv_obj_set_style_bg_color(ssid_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
@@ -890,9 +892,9 @@ static void create_wifi_view(lv_obj_t *parent) {
     lv_obj_center(slbl);
     lv_obj_add_event_cb(ssid_btn, on_edit_ssid_click, LV_EVENT_CLICKED, NULL);
 
-    // PW 버튼
+    // PW 버튼 (원형 화면 잘림 방지를 위해 너비 160으로 최적화)
     lv_obj_t *pw_btn = lv_btn_create(parent);
-    lv_obj_set_size(pw_btn, 170, 34);
+    lv_obj_set_size(pw_btn, 160, 32);
     lv_obj_align(pw_btn, LV_ALIGN_TOP_MID, 0, 88);
     lv_obj_set_style_bg_color(pw_btn, lv_color_hex(0x282828), 0);
     lv_obj_set_style_bg_color(pw_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
@@ -904,7 +906,7 @@ static void create_wifi_view(lv_obj_t *parent) {
     lv_obj_center(plbl);
     lv_obj_add_event_cb(pw_btn, on_edit_pw_click, LV_EVENT_CLICKED, NULL);
 
-    // [저장] 및 [뒤로] 버튼
+    // [저장] 및 [취소] 버튼 (한국어: 저장 / 취소, 영어: SAVE / BACK)
     lv_obj_t *save_btn = lv_btn_create(parent);
     lv_obj_set_size(save_btn, 76, 30);
     lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
@@ -912,7 +914,7 @@ static void create_wifi_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
-    lv_label_set_text(lbl, "SAVE");
+    lv_label_set_text(lbl, is_ko ? "저장" : "SAVE");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, on_wifi_save_click, LV_EVENT_CLICKED, NULL);
 
@@ -923,7 +925,7 @@ static void create_wifi_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();
@@ -1088,14 +1090,15 @@ static void on_server_save_click(lv_event_t *e) {
 }
 
 static void create_server_view(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
     lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "SERVER CONFIG");
+    lv_label_set_text(title, is_ko ? "서버 설정" : "SERVER CONFIG");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
-    // IP 버튼
+    // IP 버튼 (원형 화면 잘림 방지를 위해 너비 160으로 최적화)
     lv_obj_t *ip_btn = lv_btn_create(parent);
-    lv_obj_set_size(ip_btn, 170, 34);
+    lv_obj_set_size(ip_btn, 160, 32);
     lv_obj_align(ip_btn, LV_ALIGN_TOP_MID, 0, 45);
     lv_obj_set_style_bg_color(ip_btn, lv_color_hex(0x282828), 0);
     lv_obj_set_style_bg_color(ip_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
@@ -1107,9 +1110,9 @@ static void create_server_view(lv_obj_t *parent) {
     lv_obj_center(ilbl);
     lv_obj_add_event_cb(ip_btn, on_edit_ip_click, LV_EVENT_CLICKED, NULL);
 
-    // PORT 버튼 (숫자 키패드로 수정 가능)
+    // PORT 버튼 (원형 화면 잘림 방지를 위해 너비 160으로 최적화)
     lv_obj_t *port_btn = lv_btn_create(parent);
-    lv_obj_set_size(port_btn, 170, 34);
+    lv_obj_set_size(port_btn, 160, 32);
     lv_obj_align(port_btn, LV_ALIGN_TOP_MID, 0, 88);
     lv_obj_set_style_bg_color(port_btn, lv_color_hex(0x282828), 0);
     lv_obj_set_style_bg_color(port_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
@@ -1121,7 +1124,7 @@ static void create_server_view(lv_obj_t *parent) {
     lv_obj_center(plbl);
     lv_obj_add_event_cb(port_btn, on_edit_port_click, LV_EVENT_CLICKED, NULL);
 
-    // [저장] 및 [뒤로] 버튼
+    // [저장] 및 [취소] 버튼 (한국어: 저장 / 취소, 영어: SAVE / BACK)
     lv_obj_t *save_btn = lv_btn_create(parent);
     lv_obj_set_size(save_btn, 76, 30);
     lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
@@ -1129,7 +1132,7 @@ static void create_server_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
-    lv_label_set_text(lbl, "SAVE");
+    lv_label_set_text(lbl, is_ko ? "저장" : "SAVE");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, on_server_save_click, LV_EVENT_CLICKED, NULL);
 
@@ -1140,7 +1143,7 @@ static void create_server_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();
@@ -1251,7 +1254,8 @@ static void create_llm_type_view(lv_obj_t *parent) {
         lv_obj_add_event_cb(btn, on_llm_type_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
     }
 
-    // 하단 제어 버튼: [APPLY] 및 [BACK] (리스트 뷰포트 Y=180 아래 안전영역 Y=196에 배치)
+    // 하단 제어 버튼: [저장] 및 [취소] (한국어: 저장 / 취소, 영어: SAVE / BACK)
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
     lv_obj_t *apply_btn = lv_btn_create(parent);
     lv_obj_set_size(apply_btn, 76, 30);
     lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
@@ -1259,7 +1263,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(apply_btn, 6);
     lv_obj_t *albl = lv_label_create(apply_btn);
-    lv_label_set_text(albl, "APPLY");
+    lv_label_set_text(albl, is_ko ? "저장" : "SAVE");
     lv_obj_center(albl);
     lv_obj_add_event_cb(apply_btn, on_llm_type_apply_click, LV_EVENT_CLICKED, NULL);
 
@@ -1270,7 +1274,7 @@ static void create_llm_type_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();
@@ -1370,6 +1374,7 @@ static void create_ntp_server_view(lv_obj_t *parent) {
         lv_obj_add_event_cb(btn, on_ntp_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
     }
 
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
     lv_obj_t *apply_btn = lv_btn_create(parent);
     lv_obj_set_size(apply_btn, 76, 30);
     lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
@@ -1377,7 +1382,7 @@ static void create_ntp_server_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(apply_btn, 6);
     lv_obj_t *albl = lv_label_create(apply_btn);
-    lv_label_set_text(albl, "APPLY");
+    lv_label_set_text(albl, is_ko ? "저장" : "SAVE");
     lv_obj_center(albl);
     lv_obj_add_event_cb(apply_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_ntp_server(s_edit_cfg.ntp_server_idx);
@@ -1393,7 +1398,7 @@ static void create_ntp_server_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();
@@ -1493,6 +1498,7 @@ static void create_timezone_view(lv_obj_t *parent) {
         lv_obj_add_event_cb(btn, on_tz_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
     }
 
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
     lv_obj_t *apply_btn = lv_btn_create(parent);
     lv_obj_set_size(apply_btn, 76, 30);
     lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
@@ -1500,7 +1506,7 @@ static void create_timezone_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(apply_btn, 6);
     lv_obj_t *albl = lv_label_create(apply_btn);
-    lv_label_set_text(albl, "APPLY");
+    lv_label_set_text(albl, is_ko ? "저장" : "SAVE");
     lv_obj_center(albl);
     lv_obj_add_event_cb(apply_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_timezone(s_edit_cfg.timezone_idx);
@@ -1516,7 +1522,7 @@ static void create_timezone_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();
@@ -1566,7 +1572,7 @@ static void create_brightness_view(lv_obj_t *parent) {
 
     bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
 
-    // [APPLY] 및 [BACK] 버튼
+    // [저장] 및 [취소] 버튼 (한국어: 저장 / 취소, 영어: SAVE / BACK)
     lv_obj_t *save_btn = lv_btn_create(parent);
     lv_obj_set_size(save_btn, 76, 30);
     lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
@@ -1574,7 +1580,7 @@ static void create_brightness_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
-    lv_label_set_text(lbl, is_ko ? "적용" : "APPLY");
+    lv_label_set_text(lbl, is_ko ? "저장" : "SAVE");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_brightness(s_edit_cfg.brightness);
@@ -1590,7 +1596,7 @@ static void create_brightness_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();
@@ -1643,7 +1649,7 @@ static void create_mic_gain_view(lv_obj_t *parent) {
     lv_obj_set_ext_click_area(slider, 14);
     lv_obj_add_event_cb(slider, on_mic_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // [APPLY] 및 [BACK] 버튼
+    // [저장] 및 [취소] 버튼 (한국어: 저장 / 취소, 영어: SAVE / BACK)
     lv_obj_t *save_btn = lv_btn_create(parent);
     lv_obj_set_size(save_btn, 76, 30);
     lv_obj_align(save_btn, LV_ALIGN_BOTTOM_LEFT, 32, -16);
@@ -1651,7 +1657,7 @@ static void create_mic_gain_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(save_btn, 6);
     lv_obj_t *lbl = lv_label_create(save_btn);
-    lv_label_set_text(lbl, is_ko ? "적용" : "APPLY");
+    lv_label_set_text(lbl, is_ko ? "저장" : "SAVE");
     lv_obj_center(lbl);
     lv_obj_add_event_cb(save_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_mic_gain(s_edit_cfg.mic_gain);
@@ -1666,7 +1672,7 @@ static void create_mic_gain_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();
@@ -1769,7 +1775,7 @@ static void create_language_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(apply_btn, 6);
     lv_obj_t *albl = lv_label_create(apply_btn);
-    lv_label_set_text(albl, is_ko ? "적용" : "APPLY");
+    lv_label_set_text(albl, is_ko ? "저장" : "SAVE");
     lv_obj_center(albl);
     lv_obj_add_event_cb(apply_btn, (lv_event_cb_t)[](lv_event_t *e){
         settings_manager_set_language((app_language_t)s_edit_cfg.language);
@@ -1787,7 +1793,7 @@ static void create_language_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 6);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_label_set_text(blbl, is_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         revert_edit_config();

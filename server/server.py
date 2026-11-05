@@ -748,8 +748,16 @@ class GeminiLiveSession:
 
         except asyncio.CancelledError:
             pass
+        except websockets.exceptions.ConnectionClosed as cc:
+            if "inactivity" in str(cc).lower() or getattr(cc, "code", None) == 1008:
+                print("\n[Gemini Realtime] 장시간 미사용으로 클라우드 세션 만료(1008 Session closed due to client inactivity). 다음 발화 시 자동 재연결됩니다.")
+            else:
+                print(f"\n[Gemini Realtime] WebSocket 연결 종료 (Code: {getattr(cc, 'code', 'unknown')}): {cc}")
         except Exception as e:
-            print(f"[Gemini Realtime] 수신 루프 오류: {e}")
+            if "inactivity" in str(e).lower():
+                print("\n[Gemini Realtime] 장시간 미사용으로 클라우드 세션 만료. 다음 발화 시 자동 재연결됩니다.")
+            else:
+                print(f"[Gemini Realtime] 수신 루프 오류: {e}")
         finally:
             self.is_connected = False
 
@@ -893,6 +901,16 @@ class OpenAIRealtimeSession:
             await self.openai_ws.send(json.dumps(msg))
         except Exception as e:
             print(f"[OpenAI Realtime] 오디오 송신 오류: {e}")
+
+    async def commit_audio(self):
+        """클라이언트 발화 종료(speech_end) 시 버퍼 확정 및 응답 생성 요청"""
+        if not self.is_connected or not self.openai_ws:
+            return
+        try:
+            await self.openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+            await self.openai_ws.send(json.dumps({"type": "response.create"}))
+        except Exception as e:
+            print(f"[OpenAI Realtime] commit_audio 오류: {e}")
 
     async def _receive_loop(self):
         """OpenAI로부터 오는 24kHz 오디오를 16kHz로 다운샘플링하여 ESP32에 전송"""
@@ -1085,8 +1103,8 @@ def parse_llm_switch_command(user_text):
     has_action = any(kw in clean_text or kw in no_space_text for kw in switch_action_keywords)
     has_switch_syntax = (
         has_action
-        or any(k in clean_text for k in ["으로", "로", "모드", "타입", "모델", "엔진", "api", "에이피아이", "mode", "type"])
-        or any(k in no_space_text for k in ["으로", "로", "모드", "타입", "모델", "엔진", "api", "에이피아이", "mode", "type"])
+        or any(k in clean_text for k in ["으로", "로", "모드", "타입", "모델", "엔진", "api", "에이피아이", "mode", "type", "llm", "엘엘엠"])
+        or any(k in no_space_text for k in ["으로", "로", "모드", "타입", "모델", "엔진", "api", "에이피아이", "mode", "type", "llm", "엘엘엠"])
     )
 
     # 2. 타겟 모델 식별 키워드
@@ -1097,7 +1115,27 @@ def parse_llm_switch_command(user_text):
     is_chatgpt = any(k in clean_text or k in no_space_text for k in ["chatgpt", "챗지피티", "챗gpt", "지피티", "gpt", "오픈ai", "openai"])
     is_local = any(k in clean_text or k in no_space_text for k in ["local", "로컬", "라마", "llama", "오프라인", "내부모델", "로컬서버"])
 
-    # [1] ChatGPT Realtime API
+    # [1] 기본 LLM / Gemini 일반 API
+    # "기본 LLM으로 전환", "기본 모델로 변경", "기본으로", "gemini 일반 api", "제미나이 일반", "일반 api" 등
+    is_default_keyword = any(k in no_space_text for k in [
+        "기본llm", "기본엘엘엠", "기본모델", "원래모델", "기본으로", "원래대로",
+        "일반llm", "일반엘엘엠", "일반api", "기본api", "일반제미나이", "제미나이일반",
+        "일반gemini", "gemini일반", "제미니일반", "일반제미니"
+    ]) or (
+        ("기본" in clean_text or "원래" in clean_text) and any(m in clean_text for m in ["llm", "엘엘엠", "모델", "api", "모드"])
+    ) or (
+        is_gemini and any(k in clean_text for k in ["일반", "기본", "플래시", "flash"])
+    )
+
+    if is_default_keyword:
+        if has_switch_syntax or has_action:
+            return (
+                "gemini api",
+                "Gemini API",
+                "LLM을 기본 Gemini API로 변경했습니다. Gemini 2.5 Flash 모델로 대답할게요."
+            )
+
+    # [2] ChatGPT Realtime API
     if is_chatgpt and not (is_gemini or is_local):
         if is_realtime or has_switch_syntax:
             return (
@@ -1106,7 +1144,7 @@ def parse_llm_switch_command(user_text):
                 "LLM을 ChatGPT Realtime API로 변경했습니다. 이제 ChatGPT 실시간 음성으로 대화해요."
             )
 
-    # [2] Gemini Realtime API (Gemini+Realtime 이거나, ChatGPT/Local 언급 없는 단독 실시간/리얼타임 전환 요청)
+    # [3] Gemini Realtime API (Gemini+Realtime 이거나, ChatGPT/Local 언급 없는 단독 실시간/리얼타임 전환 요청)
     if is_realtime:
         if is_gemini or (not is_chatgpt and not is_local and has_switch_syntax):
             return (
@@ -1115,7 +1153,7 @@ def parse_llm_switch_command(user_text):
                 "LLM을 Gemini Realtime API로 변경했습니다. 이제 실시간 음성 스트리밍으로 대화해요."
             )
 
-    # [3] Local LLM (127.0.0.1:8080)
+    # [4] Local LLM (127.0.0.1:8080)
     if is_local:
         if has_switch_syntax or any(k in clean_text for k in ["llm", "엘엘엠", "모델", "서버"]):
             return (
@@ -1124,7 +1162,7 @@ def parse_llm_switch_command(user_text):
                 "LLM을 Local LLM으로 변경했습니다. 로컬 서버 모델로 응답해 드릴게요."
             )
 
-    # [4] 기본 Gemini API (플래시/클라우드/일반/기본)
+    # [5] 일반 Gemini API (플래시/클라우드/일반/기본)
     if is_gemini and not is_realtime:
         if has_switch_syntax or any(k in clean_text for k in ["api", "기본", "일반", "플래시", "flash", "클라우드"]):
             return (
@@ -1133,8 +1171,8 @@ def parse_llm_switch_command(user_text):
                 "LLM을 기본 Gemini API로 변경했습니다. Gemini 2.5 Flash 모델로 대답할게요."
             )
 
-    # [5] 명시적 모델 이름 없는 "기본/원래 모델로 복귀" 의도
-    if any(k in no_space_text for k in ["기본으로", "원래대로", "기본모델로", "원래모델로", "기본모델", "원래모델"]):
+    # [6] 기타 기본/원래 복귀 의도
+    if any(k in no_space_text for k in ["기본으로", "원래대로", "기본모델로", "원래모델로"]):
         if has_switch_syntax:
             return (
                 "gemini api",
@@ -2293,7 +2331,16 @@ async def handler(websocket, path=None):
                                 # [B] 음성 발화 완료 신호 (클라이언트 VAD 감지)
                                 elif msg_type == "speech_end":
                                     if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
-                                        print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 실시간 직통 스트리밍 대기)")
+                                        print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 턴 완료 전송)")
+                                        if current_llm_type == "gemini realtime api":
+                                            if active_realtime_session and active_realtime_session.is_connected:
+                                                # Gemini Multimodal Live API VAD는 발화 직후 500ms(16,000 bytes)의 침묵 구간을 수신해야
+                                                # 사용자 발화 턴이 끝났음을 인지하고 modelTurn AI 음성 생성을 시작합니다.
+                                                silence_chunk = b"\x00" * 16000
+                                                await active_realtime_session.send_audio(silence_chunk)
+                                        elif current_llm_type == "chatgpt realtime api":
+                                            if active_realtime_session and active_realtime_session.is_connected:
+                                                await active_realtime_session.commit_audio()
                                         continue
 
                                     is_ai_busy = ai_task and not ai_task.done()
@@ -2381,6 +2428,10 @@ async def handler(websocket, path=None):
                                     pre_speech_buffer.clear()
                                     is_speaking = False
                                     silence_time = 0.0
+
+                                    if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
+                                        if not active_realtime_session or not active_realtime_session.is_connected:
+                                            asyncio.create_task(switch_realtime_session(current_llm_type))
 
                                 # [D] 화면 터치로 대화 시작 또는 수동 발화 완료
                                 elif msg_type == "touch" or msg_type == "session_start":
