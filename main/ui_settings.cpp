@@ -293,7 +293,7 @@ static void create_main_menu(lv_obj_t *parent) {
         "8. 시간대 (타임존)",
         "9. 언어 설정 (Language)",
         "10. 시스템 정보",
-        "11. 저장 및 재부팅",
+        "11. 재부팅",
         "12. 공장 초기화"
     };
 
@@ -308,7 +308,7 @@ static void create_main_menu(lv_obj_t *parent) {
         "8. Timezone (Region)",
         "9. Language (언어)",
         "10. System Info",
-        "11. Save & Reboot",
+        "11. Reboot",
         "12. Factory Reset"
     };
 
@@ -393,12 +393,20 @@ static void create_volume_view(lv_obj_t *parent) {
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // [3] 초경량 가로 스크롤 텍스트 입력기 (메인 메뉴와 동일한 물리적 탄성 스와이프 적용)
 // ----------------------------------------------------------------------------
-static const char *s_char_palette = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-!@#$%&*";
-#define CHAR_PALETTE_LEN 72
+#define KEY_SLOT_MAX 26
+
+static const char *s_chars_upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+static const char *s_chars_lower = "abcdefghijklmnopqrstuvwxyz";
+static const char *s_chars_digit = "0123456789";
+static const char *s_chars_punct = "._-!@#$%&*";
+
+static int s_current_tab = 0; // 0: ABC, 1: abc, 2: 123, 3: #@!
 static lv_obj_t *s_char_list = NULL;
-static lv_obj_t *s_char_btns[CHAR_PALETTE_LEN] = {NULL};
+static lv_obj_t *s_char_btns[KEY_SLOT_MAX] = {NULL};
+static lv_obj_t *s_char_lbls[KEY_SLOT_MAX] = {NULL};
 static lv_obj_t *s_tab_btns[4] = {NULL};
 static lv_obj_t *s_group_indicator_label = NULL;
 
@@ -412,31 +420,37 @@ static void update_text_display(void) {
     }
 }
 
-static void update_active_tab_highlight(int active_tab) {
+static void set_char_group(int mode) {
+    s_current_tab = mode;
+    const char *chars = s_chars_upper;
+    if (mode == 1) chars = s_chars_lower;
+    else if (mode == 2) chars = s_chars_digit;
+    else if (mode == 3) chars = s_chars_punct;
+
+    size_t count = strlen(chars);
+    for (int i = 0; i < KEY_SLOT_MAX; i++) {
+        if (!s_char_btns[i] || !s_char_lbls[i]) continue;
+        if ((size_t)i < count) {
+            char cstr[2] = { chars[i], '\0' };
+            lv_label_set_text(s_char_lbls[i], cstr);
+            lv_obj_clear_flag(s_char_btns[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_char_btns[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    // 활성 탭 버튼 하이라이트
     for (int t = 0; t < 4; t++) {
         if (s_tab_btns[t]) {
-            if (t == active_tab) {
+            if (t == mode) {
                 lv_obj_set_style_bg_color(s_tab_btns[t], lv_color_hex(0x007ACC), 0);
             } else {
                 lv_obj_set_style_bg_color(s_tab_btns[t], lv_color_hex(0x282828), 0);
             }
         }
     }
-}
 
-static void on_char_list_scroll(lv_event_t *e) {
-    lv_obj_t *list = lv_event_get_target(e);
-    lv_coord_t sx = lv_obj_get_scroll_x(list);
-    // 버튼 폭 34 + 간격 6 = 40px 기준
-    int idx = sx / 40;
-    int group = 0;
-    if (idx < 20) group = 0;
-    else if (idx < 46) group = 1;
-    else if (idx < 58) group = 2;
-    else group = 3;
-
-    update_active_tab_highlight(group);
-
+    // 그룹 인디케이터 라벨
     if (s_group_indicator_label) {
         const char *group_names[] = {
             "<   A - Z   >",
@@ -444,7 +458,11 @@ static void on_char_list_scroll(lv_event_t *e) {
             "<   0 - 9   >",
             "<   # - *   >"
         };
-        lv_label_set_text(s_group_indicator_label, group_names[group]);
+        lv_label_set_text(s_group_indicator_label, group_names[mode]);
+    }
+
+    if (s_char_list) {
+        lv_obj_scroll_to_x(s_char_list, 0, LV_ANIM_OFF);
     }
 }
 
@@ -479,10 +497,15 @@ static void on_char_btn_event(lv_event_t *e) {
         if (now - s_last_char_click_time < 200) return; // 200ms 디바운스
         s_last_char_click_time = now;
 
-        int idx = (int)(intptr_t)lv_event_get_user_data(e);
-        size_t pal_len = strlen(s_char_palette);
-        if (idx >= 0 && (size_t)idx < pal_len) {
-            char ch = s_char_palette[idx];
+        int slot = (int)(intptr_t)lv_event_get_user_data(e);
+        const char *chars = s_chars_upper;
+        if (s_current_tab == 1) chars = s_chars_lower;
+        else if (s_current_tab == 2) chars = s_chars_digit;
+        else if (s_current_tab == 3) chars = s_chars_punct;
+
+        size_t count = strlen(chars);
+        if (slot >= 0 && (size_t)slot < count) {
+            char ch = chars[slot];
             size_t len = strlen(s_input_target_buf);
             if (len < s_input_max_len - 1) {
                 s_input_target_buf[len] = ch;
@@ -496,17 +519,7 @@ static void on_char_btn_event(lv_event_t *e) {
 
 static void on_mode_tab_click(lv_event_t *e) {
     int mode = (int)(intptr_t)lv_event_get_user_data(e);
-    int target_idx = 0;
-    if (mode == 0) target_idx = 0;       // A-Z
-    else if (mode == 1) target_idx = 26; // a-z
-    else if (mode == 2) target_idx = 52; // 0-9
-    else if (mode == 3) target_idx = 62; // 특수문자
-
-    update_active_tab_highlight(mode);
-
-    if (s_char_btns[target_idx]) {
-        lv_obj_scroll_to_view(s_char_btns[target_idx], LV_ANIM_ON);
-    }
+    set_char_group(mode);
     audio_io_play_tone(1300.0f, 20);
 }
 
@@ -545,7 +558,10 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
     s_group_indicator_label = NULL;
     s_char_list = NULL;
     for (int t = 0; t < 4; t++) s_tab_btns[t] = NULL;
-    for (int i = 0; i < CHAR_PALETTE_LEN; i++) s_char_btns[i] = NULL;
+    for (int i = 0; i < KEY_SLOT_MAX; i++) {
+        s_char_btns[i] = NULL;
+        s_char_lbls[i] = NULL;
+    }
 
     lv_obj_clean(parent);
 
@@ -607,10 +623,8 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
             lv_indev_reset(indev, NULL);
         }
     }, LV_EVENT_SCROLL_END, NULL);
-    lv_obj_add_event_cb(s_char_list, on_char_list_scroll, LV_EVENT_SCROLL, NULL);
 
-    const int pal_len = strlen(s_char_palette);
-    for (int i = 0; i < pal_len && i < CHAR_PALETTE_LEN; i++) {
+    for (int i = 0; i < KEY_SLOT_MAX; i++) {
         s_char_btns[i] = lv_btn_create(s_char_list);
         lv_obj_set_size(s_char_btns[i], 34, 38);
         lv_obj_set_style_bg_color(s_char_btns[i], lv_color_hex(0x333333), 0);
@@ -618,10 +632,8 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
         lv_obj_set_style_radius(s_char_btns[i], 6, 0);
         lv_obj_set_style_pad_all(s_char_btns[i], 0, 0);
 
-        lv_obj_t *lbl = lv_label_create(s_char_btns[i]);
-        char cstr[2] = { s_char_palette[i], '\0' };
-        lv_label_set_text(lbl, cstr);
-        lv_obj_center(lbl);
+        s_char_lbls[i] = lv_label_create(s_char_btns[i]);
+        lv_obj_center(s_char_lbls[i]);
 
         lv_obj_add_event_cb(s_char_btns[i], on_char_btn_event, LV_EVENT_ALL, (void *)(intptr_t)i);
     }
@@ -659,6 +671,9 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
     lv_label_set_text(ok_lbl, "OK");
     lv_obj_center(ok_lbl);
     lv_obj_add_event_cb(ok_btn, on_text_input_done, LV_EVENT_CLICKED, NULL);
+
+    // 초기 그룹 로드 (기본: ABC 대문자)
+    set_char_group(0);
 }
 
 static void on_edit_ssid_click(lv_event_t *e) {
