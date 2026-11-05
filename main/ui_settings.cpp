@@ -6,6 +6,7 @@
 #include "audio_pipeline.h"
 #include "bsp_board.h"
 #include "wifi_ws.h"
+#include "lv_font_nanum.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -35,6 +36,7 @@ typedef enum {
     SUBVIEW_LLM_TYPE,
     SUBVIEW_NTP_SERVER,
     SUBVIEW_TIMEZONE,
+    SUBVIEW_LANGUAGE,
     SUBVIEW_INFO
 } subview_t;
 
@@ -60,6 +62,7 @@ static void create_mic_gain_view(lv_obj_t *parent);
 static void create_llm_type_view(lv_obj_t *parent);
 static void create_ntp_server_view(lv_obj_t *parent);
 static void create_timezone_view(lv_obj_t *parent);
+static void create_language_view(lv_obj_t *parent);
 static void create_info_view(lv_obj_t *parent);
 
 esp_err_t ui_settings_init(void) {
@@ -92,6 +95,7 @@ void ui_settings_open(void) {
     lv_obj_set_style_pad_all(s_settings_container, 4, 0);
     lv_obj_set_style_radius(s_settings_container, 120, 0); // 원형 디스플레이에 꼭 맞춤
     lv_obj_clear_flag(s_settings_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_text_font(s_settings_container, &lv_font_nanum_16, 0);
 
     show_view(SUBVIEW_MAIN);
     lvgl_port_unlock();
@@ -153,6 +157,9 @@ static void show_view(subview_t view) {
         case SUBVIEW_TIMEZONE:
             create_timezone_view(s_settings_container);
             break;
+        case SUBVIEW_LANGUAGE:
+            create_language_view(s_settings_container);
+            break;
         case SUBVIEW_INFO:
             create_info_view(s_settings_container);
             break;
@@ -208,14 +215,15 @@ static void on_menu_btn_event(lv_event_t *e) {
         else if (id == 6) show_view(SUBVIEW_LLM_TYPE);
         else if (id == 7) show_view(SUBVIEW_NTP_SERVER);
         else if (id == 8) show_view(SUBVIEW_TIMEZONE);
-        else if (id == 9) show_view(SUBVIEW_INFO);
-        else if (id == 10) {
+        else if (id == 9) show_view(SUBVIEW_LANGUAGE);
+        else if (id == 10) show_view(SUBVIEW_INFO);
+        else if (id == 11) {
             // 저장 후 재부팅
             settings_manager_save(&s_edit_cfg);
             audio_io_play_tone(1600.0f, 150);
             vTaskDelay(pdMS_TO_TICKS(200));
             esp_restart();
-        } else if (id == 11) {
+        } else if (id == 12) {
             // 기본값 복원
             settings_manager_reset_to_default();
             audio_io_play_tone(600.0f, 150);
@@ -229,6 +237,8 @@ static void on_menu_btn_event(lv_event_t *e) {
 }
 
 static void create_main_menu(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
+
     // [이전 화면 복귀 버튼] 원형 LCD 상단 좌측 안전 영역에 배치 (중심 기준 x = -54, y = 14)
     lv_obj_t *back_btn = lv_btn_create(parent);
     lv_obj_set_size(back_btn, 34, 26);
@@ -243,7 +253,7 @@ static void create_main_menu(lv_obj_t *parent) {
 
     // [타이틀 라벨] 원형 LCD 상단 중앙 우측에 배치 (중심 기준 x = 16, y = 16)
     lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "SETTINGS");
+    lv_label_set_text(title, is_ko ? "설정" : "SETTINGS");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 16, 16);
 
@@ -268,7 +278,22 @@ static void create_main_menu(lv_obj_t *parent) {
         }
     }, LV_EVENT_SCROLL_END, NULL);
 
-    const char *items[] = {
+    const char *items_ko[] = {
+        "1. 음량 조절",
+        "2. 와이파이 설정",
+        "3. 서버 주소 설정",
+        "4. 화면 밝기 조절",
+        "5. 마이크 감도",
+        "6. LLM 모델 선택",
+        "7. NTP 서버 설정",
+        "8. 시간대 (타임존)",
+        "9. 언어 설정 (Language)",
+        "10. 시스템 정보",
+        "11. 저장 및 재부팅",
+        "12. 공장 초기화"
+    };
+
+    const char *items_en[] = {
         "1. Volume Control",
         "2. Wi-Fi Config",
         "3. Server Address",
@@ -277,12 +302,15 @@ static void create_main_menu(lv_obj_t *parent) {
         "6. LLM Type",
         "7. NTP Server",
         "8. Timezone (Region)",
-        "9. System Info",
-        "10. Save & Reboot",
-        "11. Factory Reset"
+        "9. Language (언어)",
+        "10. System Info",
+        "11. Save & Reboot",
+        "12. Factory Reset"
     };
 
-    for (int i = 0; i < 11; i++) {
+    const char **items = is_ko ? items_ko : items_en;
+
+    for (int i = 0; i < 12; i++) {
         lv_obj_t *btn = lv_list_add_btn(list, NULL, items[i]);
         lv_obj_set_size(btn, lv_pct(100), 42); // 38px -> 42px로 확대하여 터치 정확도 대폭 향상
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
@@ -1463,11 +1491,131 @@ static void create_mic_gain_view(lv_obj_t *parent) {
 }
 
 // ----------------------------------------------------------------------------
+// [6-3] 언어 설정 (Language) 서브화면
+// ----------------------------------------------------------------------------
+static lv_point_t s_lang_press_pt = {0, 0};
+static bool s_lang_is_pressing = false;
+
+static void on_lang_select_event(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_get_act();
+
+    if (code == LV_EVENT_PRESSED) {
+        if (indev) {
+            lv_indev_get_point(indev, &s_lang_press_pt);
+        }
+        s_lang_is_pressing = true;
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+        if (s_lang_is_pressing && indev) {
+            lv_point_t cur_pt = {0, 0};
+            lv_indev_get_point(indev, &cur_pt);
+            int32_t dx = cur_pt.x - s_lang_press_pt.x;
+            int32_t dy = cur_pt.y - s_lang_press_pt.y;
+            s_lang_is_pressing = false;
+
+            if ((dx * dx + dy * dy) > (30 * 30)) {
+                return;
+            }
+        }
+        s_lang_is_pressing = false;
+
+        int selected_idx = (int)(intptr_t)lv_event_get_user_data(e);
+        if (s_edit_cfg.language != selected_idx) {
+            s_edit_cfg.language = (uint8_t)selected_idx;
+            audio_io_play_tone(1100.0f, 25);
+            show_view(SUBVIEW_LANGUAGE);
+        }
+    }
+}
+
+static void create_language_view(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
+
+    lv_obj_t *title = lv_label_create(parent);
+    lv_label_set_text(title, is_ko ? "언어 설정" : "LANGUAGE");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    lv_obj_t *list = lv_list_create(parent);
+    lv_obj_set_size(list, 188, 140);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_set_style_bg_color(list, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(list, 10, 0);
+    lv_obj_set_style_pad_all(list, 2, 0);
+    lv_obj_set_style_pad_row(list, 6, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_style_clip_corner(list, true, 0);
+
+    const char *lang_names[] = {
+        "한국어 (Korean)",
+        "English (영어)"
+    };
+
+    for (int i = 0; i < 2; i++) {
+        char item_txt[64];
+        bool selected = (s_edit_cfg.language == i);
+        snprintf(item_txt, sizeof(item_txt), "%s %s", selected ? "[*]" : "[ ]", lang_names[i]);
+
+        lv_obj_t *btn = lv_list_add_btn(list, NULL, item_txt);
+        lv_obj_set_size(btn, lv_pct(100), 42);
+        if (selected) {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x005588), 0);
+            lv_obj_set_style_text_color(btn, lv_color_hex(0x00FFCC), 0);
+        } else {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
+            lv_obj_set_style_text_color(btn, lv_color_white(), 0);
+        }
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+        lv_obj_add_event_cb(btn, on_lang_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
+    }
+
+    lv_obj_t *apply_btn = lv_btn_create(parent);
+    lv_obj_set_size(apply_btn, 76, 30);
+    lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
+    lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(apply_btn, 6);
+    lv_obj_t *albl = lv_label_create(apply_btn);
+    lv_label_set_text(albl, is_ko ? "적용" : "APPLY");
+    lv_obj_center(albl);
+    lv_obj_add_event_cb(apply_btn, (lv_event_cb_t)[](lv_event_t *e){
+        settings_manager_set_language((app_language_t)s_edit_cfg.language);
+        display_ui_update_clock();
+        audio_io_play_tone(1200.0f, 40);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -14);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        s_edit_cfg.language = settings_manager_get()->language;
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+}
+
+// ----------------------------------------------------------------------------
 // [7] 시스템 정보 화면
 // ----------------------------------------------------------------------------
 static void create_info_view(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
     lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "SYSTEM INFO");
+    lv_label_set_text(title, is_ko ? "시스템 정보" : "SYSTEM INFO");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
@@ -1497,7 +1645,7 @@ static void create_info_view(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 8);
     lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, "BACK");
+    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         audio_io_play_tone(900.0f, 30);

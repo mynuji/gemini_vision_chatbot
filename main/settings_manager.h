@@ -18,6 +18,11 @@ typedef enum {
     LLM_TYPE_COUNT
 } llm_type_t;
 
+typedef enum {
+    APP_LANG_KO = 0, // 한국어
+    APP_LANG_EN = 1  // English
+} app_language_t;
+
 typedef struct {
     uint32_t magic;
     uint8_t  volume;          // 10 ~ 100 (%)
@@ -30,9 +35,12 @@ typedef struct {
     uint8_t  llm_type;        // 0: gemini api, 1: gemini realtime api, 2: chatgpt realtime api, 3: local llm
     uint8_t  ntp_server_idx;  // 0: pool.ntp.org, 1: kr.pool.ntp.org, 2: google, 3: cloudflare, 4: ms, 5: apple
     uint8_t  timezone_idx;    // 0: Seoul (GMT+9), 1: GMT-11, ...
+    uint8_t  language;        // 0: 한국어, 1: English
 } app_settings_t;
 
 const char* settings_manager_get_llm_type_name(uint8_t type);
+app_language_t settings_manager_get_language(void);
+esp_err_t settings_manager_set_language(app_language_t lang);
 
 /**
  * @brief NVS에서 설정을 로드. 저장된 설정이 없으면 기본값으로 초기화하고 저장.

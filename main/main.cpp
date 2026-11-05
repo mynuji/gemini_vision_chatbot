@@ -50,23 +50,24 @@ static void on_ntp_time_synced(void) {
  */
 static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
     ESP_LOGI(TAG, "Network State Changed: %d (%s)", state, info);
+    bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
 
     switch (state) {
     case WIFI_WS_STATE_WIFI_CONNECTING:
-        display_ui_set_status("CONNECTING WIFI...");
+        display_ui_set_status(is_ko ? "와이파이 연결 중..." : "CONNECTING WIFI...");
         break;
 
     case WIFI_WS_STATE_WIFI_CONNECTED:
-        display_ui_set_status("WIFI OK! WS CONN...");
+        display_ui_set_status(is_ko ? "와이파이 연결됨! 서버 접속 중..." : "WIFI OK! WS CONN...");
         break;
 
     case WIFI_WS_STATE_WS_CONNECTING:
-        display_ui_set_status("CONNECTING JETSON...");
+        display_ui_set_status(is_ko ? "서버 접속 중..." : "CONNECTING JETSON...");
         break;
 
     case WIFI_WS_STATE_WS_CONNECTED:
         ESP_LOGI(TAG, "WebSocket Connected to Jetson Xavier! Setting state to IDLE.");
-        display_ui_set_status("JETSON CONNECTED!");
+        display_ui_set_status(is_ko ? "서버 연결 완료!" : "JETSON CONNECTED!");
         audio_io_play_tone(1046.50f, 150); // 연결 성공 맑은 비프음 (C6)
         chat_state_set(CHAT_STATE_IDLE);
         break;
@@ -75,7 +76,7 @@ static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
     default:
         audio_pipeline_clear_audio();
         chat_state_set(CHAT_STATE_IDLE);
-        display_ui_set_status(info ? info : "DISCONNECTED");
+        display_ui_set_status(is_ko ? "연결 끊김" : (info ? info : "DISCONNECTED"));
         break;
     }
 }

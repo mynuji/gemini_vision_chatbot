@@ -47,6 +47,7 @@ static void set_defaults(app_settings_t *cfg) {
     cfg->llm_type = LLM_TYPE_GEMINI_API; // 기본값: gemini api
     cfg->ntp_server_idx = 0; // 기본값: pool.ntp.org
     cfg->timezone_idx = 0;   // 기본값: Seoul (GMT+9)
+    cfg->language = APP_LANG_KO; // 기본값: 한국어
 }
 
 static const char *s_llm_names[] = {
@@ -59,6 +60,21 @@ static const char *s_llm_names[] = {
 const char* settings_manager_get_llm_type_name(uint8_t type) {
     if (type >= LLM_TYPE_COUNT) return s_llm_names[0];
     return s_llm_names[type];
+}
+
+app_language_t settings_manager_get_language(void) {
+    if (!s_initialized) {
+        settings_manager_init();
+    }
+    return (app_language_t)s_settings.language;
+}
+
+esp_err_t settings_manager_set_language(app_language_t lang) {
+    if (!s_initialized) {
+        settings_manager_init();
+    }
+    s_settings.language = (uint8_t)lang;
+    return settings_manager_save(&s_settings);
 }
 
 esp_err_t settings_manager_init(void) {

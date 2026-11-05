@@ -14,5 +14,7 @@ idf_component_register(SRCS "camera_io.cpp" "chat_state.cpp"
                             "eye_listening_100.c"
                             "eye_speaking_100.c"
                             "eye_sleepy_100.c"
+                            "lv_font_nanum_16.c"
+                            "lv_font_nanum_80.c"
                     INCLUDE_DIRS "."
                     REQUIRES esp_timer driver esp_wifi nvs_flash esp_websocket_client esp_lcd esp32-camera esp_lcd_gc9a01 esp_lvgl_port lvgl json esp-sr esp_jpeg lwip)

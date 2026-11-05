@@ -223,11 +223,13 @@ void chat_state_set(chat_state_t new_state) {
         xSemaphoreTake(s_state_mutex, portMAX_DELAY);
     }
 
+    bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+
     if (s_chat_state == new_state) {
         if (new_state == CHAT_STATE_IDLE) {
-            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, "SAY 'ALEXA' OR TOUCH");
+            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' 또는 터치" : "SAY 'ALEXA' OR TOUCH");
         } else if (new_state == CHAT_STATE_LISTENING) {
-            display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, "LISTENING...");
+            display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, is_ko ? "듣고 있어요..." : "LISTENING...");
         }
         if (s_state_mutex != NULL) xSemaphoreGive(s_state_mutex);
         return;
@@ -248,7 +250,7 @@ void chat_state_set(chat_state_t new_state) {
             s_close_session_after_speaking = false;
             audio_pipeline_enable_mic_streaming(false);
             display_ui_pause_auto_blink(false);
-            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, "SAY 'ALEXA' OR TOUCH");
+            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' 또는 터치" : "SAY 'ALEXA' OR TOUCH");
             break;
 
         case CHAT_STATE_LISTENING:
@@ -257,14 +259,14 @@ void chat_state_set(chat_state_t new_state) {
             s_listening_start_ms = now_ms;
             audio_pipeline_enable_mic_streaming(true);
             display_ui_pause_auto_blink(true);
-            display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, "LISTENING...");
+            display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, is_ko ? "듣고 있어요..." : "LISTENING...");
             break;
 
         case CHAT_STATE_THINKING:
             audio_pipeline_enable_mic_streaming(false);
             if (!s_camera_preview_active) {
                 display_ui_pause_auto_blink(true);
-                display_ui_set_emotion(UI_EMOTION_SLEEPY, UI_EMOTION_SLEEPY, "THINKING...");
+                display_ui_set_emotion(UI_EMOTION_SLEEPY, UI_EMOTION_SLEEPY, is_ko ? "생각 중..." : "THINKING...");
             }
             break;
 
@@ -272,7 +274,7 @@ void chat_state_set(chat_state_t new_state) {
             audio_pipeline_enable_mic_streaming(false);
             if (!s_camera_preview_active) {
                 display_ui_pause_auto_blink(true);
-                display_ui_set_emotion(UI_EMOTION_SPEAKING, UI_EMOTION_SPEAKING, "SPEAKING...");
+                display_ui_set_emotion(UI_EMOTION_SPEAKING, UI_EMOTION_SPEAKING, is_ko ? "말하는 중..." : "SPEAKING...");
             }
             break;
     }
