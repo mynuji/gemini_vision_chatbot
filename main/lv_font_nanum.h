@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+LV_FONT_DECLARE(lv_font_nanum_13);
 LV_FONT_DECLARE(lv_font_nanum_16);
 LV_FONT_DECLARE(lv_font_nanum_80);
 
