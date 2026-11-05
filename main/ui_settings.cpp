@@ -392,19 +392,19 @@ static void create_volume_view(lv_obj_t *parent) {
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-// [3] 초경량 가로 스크롤 텍스트 입력기 (메모리 절약 & 크래시 방지)
+// ----------------------------------------------------------------------------
+// [3] 초경량 가로 스크롤 텍스트 입력기 (메인 메뉴와 동일한 물리적 탄성 스와이프 적용)
 // ----------------------------------------------------------------------------
 static const char *s_char_palette = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-!@#$%&*";
-static int s_scroll_offset = 0;
-#define KEY_SLOT_COUNT 6
-static lv_obj_t *s_char_btns[KEY_SLOT_COUNT] = {NULL};
-static lv_obj_t *s_char_lbls[KEY_SLOT_COUNT] = {NULL};
-static lv_obj_t *s_page_indicator_label = NULL;
+#define CHAR_PALETTE_LEN 72
+static lv_obj_t *s_char_list = NULL;
+static lv_obj_t *s_char_btns[CHAR_PALETTE_LEN] = {NULL};
+static lv_obj_t *s_tab_btns[4] = {NULL};
+static lv_obj_t *s_group_indicator_label = NULL;
 
-static lv_point_t s_touch_down_pt = {0, 0};
-static bool s_touch_active = false;
-static bool s_swipe_triggered = false;
-static bool s_suppress_click = false;
+static lv_point_t s_char_press_pt = {0, 0};
+static bool s_char_is_pressing = false;
+static uint32_t s_last_char_click_time = 0;
 
 static void update_text_display(void) {
     if (s_text_display_label) {
@@ -412,154 +412,102 @@ static void update_text_display(void) {
     }
 }
 
-static void update_char_buttons(void) {
-    size_t pal_len = strlen(s_char_palette);
-    for (int i = 0; i < KEY_SLOT_COUNT; i++) {
-        int idx = s_scroll_offset + i;
-        if (idx < pal_len && s_char_btns[i] && s_char_lbls[i]) {
-            char cstr[2] = { s_char_palette[idx], '\0' };
-            lv_label_set_text(s_char_lbls[i], cstr);
-            lv_obj_clear_flag(s_char_btns[i], LV_OBJ_FLAG_HIDDEN);
-        } else if (s_char_btns[i]) {
-            lv_obj_add_flag(s_char_btns[i], LV_OBJ_FLAG_HIDDEN);
+static void update_active_tab_highlight(int active_tab) {
+    for (int t = 0; t < 4; t++) {
+        if (s_tab_btns[t]) {
+            if (t == active_tab) {
+                lv_obj_set_style_bg_color(s_tab_btns[t], lv_color_hex(0x007ACC), 0);
+            } else {
+                lv_obj_set_style_bg_color(s_tab_btns[t], lv_color_hex(0x282828), 0);
+            }
         }
     }
-    if (s_page_indicator_label) {
-        int cur_page = (s_scroll_offset / KEY_SLOT_COUNT) + 1;
-        int total_pages = (pal_len + KEY_SLOT_COUNT - 1) / KEY_SLOT_COUNT;
-        char page_str[32];
-        snprintf(page_str, sizeof(page_str), "<  %d / %d  >", cur_page, total_pages);
-        lv_label_set_text(s_page_indicator_label, page_str);
+}
+
+static void on_char_list_scroll(lv_event_t *e) {
+    lv_obj_t *list = lv_event_get_target(e);
+    lv_coord_t sx = lv_obj_get_scroll_x(list);
+    // 버튼 폭 34 + 간격 6 = 40px 기준
+    int idx = sx / 40;
+    int group = 0;
+    if (idx < 20) group = 0;
+    else if (idx < 46) group = 1;
+    else if (idx < 58) group = 2;
+    else group = 3;
+
+    update_active_tab_highlight(group);
+
+    if (s_group_indicator_label) {
+        const char *group_names[] = {
+            "<   A - Z   >",
+            "<   a - z   >",
+            "<   0 - 9   >",
+            "<   # - *   >"
+        };
+        lv_label_set_text(s_group_indicator_label, group_names[group]);
     }
 }
 
-static void scroll_prev_page(void) {
-    size_t pal_len = strlen(s_char_palette);
-    if (s_scroll_offset >= KEY_SLOT_COUNT) {
-        s_scroll_offset -= KEY_SLOT_COUNT;
-    } else {
-        s_scroll_offset = (pal_len > KEY_SLOT_COUNT) ? (int)(pal_len - KEY_SLOT_COUNT) : 0;
-    }
-    update_char_buttons();
-    audio_io_play_tone(1100.0f, 25);
-}
-
-static void scroll_next_page(void) {
-    size_t pal_len = strlen(s_char_palette);
-    if (s_scroll_offset + KEY_SLOT_COUNT < pal_len) {
-        s_scroll_offset += KEY_SLOT_COUNT;
-    } else {
-        s_scroll_offset = 0;
-    }
-    update_char_buttons();
-    audio_io_play_tone(1250.0f, 25);
-}
-
-static void on_mode_tab_click(lv_event_t *e) {
-    int mode = (int)(intptr_t)lv_event_get_user_data(e);
-    if (mode == 0) s_scroll_offset = 0;       // A-Z
-    else if (mode == 1) s_scroll_offset = 26; // a-z
-    else if (mode == 2) s_scroll_offset = 52; // 0-9
-    else if (mode == 3) s_scroll_offset = 62; // 특수문자
-    update_char_buttons();
-    audio_io_play_tone(1300.0f, 20);
-}
-
-static void on_char_touch_event(lv_event_t *e) {
+static void on_char_btn_event(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
     lv_indev_t *indev = lv_indev_get_act();
 
     if (code == LV_EVENT_PRESSED) {
         if (indev) {
-            lv_indev_get_point(indev, &s_touch_down_pt);
-            s_touch_active = true;
-            s_swipe_triggered = false;
-            s_suppress_click = false;
+            lv_indev_get_point(indev, &s_char_press_pt);
         }
-    } else if (code == LV_EVENT_PRESSING) {
-        if (indev && s_touch_active && !s_swipe_triggered) {
-            lv_point_t cur_pt;
-            lv_indev_get_point(indev, &cur_pt);
-            int dx = cur_pt.x - s_touch_down_pt.x;
-            int dy = cur_pt.y - s_touch_down_pt.y;
-            int abs_dx = (dx < 0) ? -dx : dx;
-            int abs_dy = (dy < 0) ? -dy : dy;
+        s_char_is_pressing = true;
+        return;
+    }
 
-            if (abs_dx >= 22 && abs_dx > abs_dy) {
-                s_swipe_triggered = true;
-                s_suppress_click = true;
-                if (dx < 0) {
-                    scroll_next_page();
-                } else {
-                    scroll_prev_page();
-                }
-            }
-        }
-    } else if (code == LV_EVENT_PRESS_LOST || code == LV_EVENT_RELEASED) {
-        if (indev && s_touch_active && !s_swipe_triggered) {
-            lv_point_t cur_pt;
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+        if (s_char_is_pressing && indev) {
+            lv_point_t cur_pt = {0, 0};
             lv_indev_get_point(indev, &cur_pt);
-            int dx = cur_pt.x - s_touch_down_pt.x;
-            int dy = cur_pt.y - s_touch_down_pt.y;
-            int abs_dx = (dx < 0) ? -dx : dx;
-            int abs_dy = (dy < 0) ? -dy : dy;
+            int32_t dx = cur_pt.x - s_char_press_pt.x;
+            int32_t dy = cur_pt.y - s_char_press_pt.y;
+            s_char_is_pressing = false;
 
-            if (abs_dx >= 18 && abs_dx > abs_dy) {
-                s_swipe_triggered = true;
-                s_suppress_click = true;
-                if (dx < 0) {
-                    scroll_next_page();
-                } else {
-                    scroll_prev_page();
-                }
+            // 터치 시작 지점과 뗀 지점 사이의 거리가 18픽셀을 넘으면 스크롤 제스처이므로 클릭 취소
+            if ((dx * dx + dy * dy) > (18 * 18)) {
+                return;
             }
         }
-        s_touch_active = false;
-    } else if (code == LV_EVENT_GESTURE) {
-        if (!s_swipe_triggered && indev) {
-            lv_dir_t dir = lv_indev_get_gesture_dir(indev);
-            if (dir == LV_DIR_LEFT) {
-                s_swipe_triggered = true;
-                s_suppress_click = true;
-                scroll_next_page();
-            } else if (dir == LV_DIR_RIGHT) {
-                s_swipe_triggered = true;
-                s_suppress_click = true;
-                scroll_prev_page();
-            }
-        }
-    } else if (code == LV_EVENT_CLICKED) {
-        if (s_suppress_click) {
-            s_suppress_click = false;
-            return;
-        }
-        int slot = (int)(intptr_t)lv_event_get_user_data(e);
-        if (slot >= 0 && slot < KEY_SLOT_COUNT) {
-            int idx = s_scroll_offset + slot;
-            size_t pal_len = strlen(s_char_palette);
-            if (idx < pal_len) {
-                char ch = s_char_palette[idx];
-                size_t len = strlen(s_input_target_buf);
-                if (len < s_input_max_len - 1) {
-                    s_input_target_buf[len] = ch;
-                    s_input_target_buf[len + 1] = '\0';
-                    update_text_display();
-                    audio_io_play_tone(1200.0f, 20);
-                }
-            }
-        } else if (slot == -1) {
-            // 페이지 인디케이터 클릭 시 좌/우 분기
-            if (indev) {
-                lv_point_t p;
-                lv_indev_get_point(indev, &p);
-                if (p.x < 120) {
-                    scroll_prev_page();
-                } else {
-                    scroll_next_page();
-                }
+        s_char_is_pressing = false;
+
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        if (now - s_last_char_click_time < 200) return; // 200ms 디바운스
+        s_last_char_click_time = now;
+
+        int idx = (int)(intptr_t)lv_event_get_user_data(e);
+        size_t pal_len = strlen(s_char_palette);
+        if (idx >= 0 && (size_t)idx < pal_len) {
+            char ch = s_char_palette[idx];
+            size_t len = strlen(s_input_target_buf);
+            if (len < s_input_max_len - 1) {
+                s_input_target_buf[len] = ch;
+                s_input_target_buf[len + 1] = '\0';
+                update_text_display();
+                audio_io_play_tone(1200.0f, 20);
             }
         }
     }
+}
+
+static void on_mode_tab_click(lv_event_t *e) {
+    int mode = (int)(intptr_t)lv_event_get_user_data(e);
+    int target_idx = 0;
+    if (mode == 0) target_idx = 0;       // A-Z
+    else if (mode == 1) target_idx = 26; // a-z
+    else if (mode == 2) target_idx = 52; // 0-9
+    else if (mode == 3) target_idx = 62; // 특수문자
+
+    update_active_tab_highlight(mode);
+
+    if (s_char_btns[target_idx]) {
+        lv_obj_scroll_to_view(s_char_btns[target_idx], LV_ANIM_ON);
+    }
+    audio_io_play_tone(1300.0f, 20);
 }
 
 static void on_bs_btn_click(lv_event_t *e) {
@@ -594,8 +542,10 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
     s_input_target_ptr = target_ptr;
     s_input_max_len = max_len;
     strncpy(s_input_target_buf, target_ptr ? target_ptr : "", sizeof(s_input_target_buf) - 1);
-    s_scroll_offset = 0;
-    s_page_indicator_label = NULL;
+    s_group_indicator_label = NULL;
+    s_char_list = NULL;
+    for (int t = 0; t < 4; t++) s_tab_btns[t] = NULL;
+    for (int i = 0; i < CHAR_PALETTE_LEN; i++) s_char_btns[i] = NULL;
 
     lv_obj_clean(parent);
 
@@ -621,55 +571,68 @@ static void open_scroll_keyboard(lv_obj_t *parent, const char *title_str, char *
     // 3. 문자 그룹 빠른 점프 탭 [ABC] [abc] [123] [#@!]
     const char *tab_names[] = {"ABC", "abc", "123", "#@!"};
     for (int t = 0; t < 4; t++) {
-        lv_obj_t *tb = lv_btn_create(parent);
-        lv_obj_set_size(tb, 44, 24);
-        lv_obj_align(tb, LV_ALIGN_TOP_LEFT, 24 + t * 48, 60);
-        lv_obj_set_style_bg_color(tb, lv_color_hex(0x282828), 0);
-        lv_obj_set_style_pad_all(tb, 0, 0);
-        lv_obj_t *tl = lv_label_create(tb);
+        s_tab_btns[t] = lv_btn_create(parent);
+        lv_obj_set_size(s_tab_btns[t], 44, 24);
+        lv_obj_align(s_tab_btns[t], LV_ALIGN_TOP_LEFT, 24 + t * 48, 60);
+        lv_obj_set_style_bg_color(s_tab_btns[t], (t == 0) ? lv_color_hex(0x007ACC) : lv_color_hex(0x282828), 0);
+        lv_obj_set_style_radius(s_tab_btns[t], 6, 0);
+        lv_obj_set_style_pad_all(s_tab_btns[t], 0, 0);
+        lv_obj_t *tl = lv_label_create(s_tab_btns[t]);
         lv_label_set_text(tl, tab_names[t]);
         lv_obj_center(tl);
-        lv_obj_add_event_cb(tb, on_mode_tab_click, LV_EVENT_CLICKED, (void *)(intptr_t)t);
+        lv_obj_add_event_cb(s_tab_btns[t], on_mode_tab_click, LV_EVENT_CLICKED, (void *)(intptr_t)t);
     }
 
-    // 4. 가로 스크롤/스와이프 문자 영역 및 페이지 표시
-    lv_obj_t *char_area = lv_obj_create(parent);
-    lv_obj_set_size(char_area, 224, 78);
-    lv_obj_align(char_area, LV_ALIGN_TOP_MID, 0, 92);
-    lv_obj_set_style_bg_opa(char_area, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_opa(char_area, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_all(char_area, 0, 0);
-    lv_obj_clear_flag(char_area, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(char_area, on_char_touch_event, LV_EVENT_ALL, (void *)(intptr_t)-1);
+    // 4. 가로 실시간 스크롤 리스트 (설정 메인 메뉴와 동일한 물리적 탄성 바운스 스와이프 적용)
+    s_char_list = lv_obj_create(parent);
+    lv_obj_set_size(s_char_list, 214, 52);
+    lv_obj_align(s_char_list, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_bg_color(s_char_list, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_border_color(s_char_list, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(s_char_list, 10, 0);
+    lv_obj_set_style_pad_all(s_char_list, 4, 0);
+    lv_obj_set_style_pad_left(s_char_list, 8, 0);
+    lv_obj_set_style_pad_right(s_char_list, 8, 0);
+    lv_obj_set_scroll_dir(s_char_list, LV_DIR_HOR); // 오직 가로 스크롤만 허용
+    lv_obj_clear_flag(s_char_list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_add_flag(s_char_list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_scrollbar_mode(s_char_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(s_char_list, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_char_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_char_list, 6, 0);
 
-    const int btn_w = 32;
-    const int btn_h = 38;
-    const int gap = 5;
-    for (int i = 0; i < KEY_SLOT_COUNT; i++) {
-        s_char_btns[i] = lv_btn_create(char_area);
-        lv_obj_set_size(s_char_btns[i], btn_w, btn_h);
-        lv_obj_set_pos(s_char_btns[i], 3 + i * (btn_w + gap), 4);
-        lv_obj_set_style_bg_color(s_char_btns[i], lv_color_hex(0x383838), 0);
+    lv_obj_add_event_cb(s_char_list, (lv_event_cb_t)[](lv_event_t *e){
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev) {
+            lv_indev_reset(indev, NULL);
+        }
+    }, LV_EVENT_SCROLL_END, NULL);
+    lv_obj_add_event_cb(s_char_list, on_char_list_scroll, LV_EVENT_SCROLL, NULL);
+
+    const int pal_len = strlen(s_char_palette);
+    for (int i = 0; i < pal_len && i < CHAR_PALETTE_LEN; i++) {
+        s_char_btns[i] = lv_btn_create(s_char_list);
+        lv_obj_set_size(s_char_btns[i], 34, 38);
+        lv_obj_set_style_bg_color(s_char_btns[i], lv_color_hex(0x333333), 0);
         lv_obj_set_style_bg_color(s_char_btns[i], lv_color_hex(0x007ACC), LV_STATE_PRESSED);
         lv_obj_set_style_radius(s_char_btns[i], 6, 0);
         lv_obj_set_style_pad_all(s_char_btns[i], 0, 0);
-        lv_obj_clear_flag(s_char_btns[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(s_char_btns[i], LV_OBJ_FLAG_GESTURE_BUBBLE);
 
-        s_char_lbls[i] = lv_label_create(s_char_btns[i]);
-        lv_obj_center(s_char_lbls[i]);
-        lv_obj_add_event_cb(s_char_btns[i], on_char_touch_event, LV_EVENT_ALL, (void *)(intptr_t)i);
+        lv_obj_t *lbl = lv_label_create(s_char_btns[i]);
+        char cstr[2] = { s_char_palette[i], '\0' };
+        lv_label_set_text(lbl, cstr);
+        lv_obj_center(lbl);
+
+        lv_obj_add_event_cb(s_char_btns[i], on_char_btn_event, LV_EVENT_ALL, (void *)(intptr_t)i);
     }
 
-    s_page_indicator_label = lv_label_create(char_area);
-    lv_obj_set_style_text_color(s_page_indicator_label, lv_color_hex(0x00D1FF), 0);
-    lv_obj_align(s_page_indicator_label, LV_ALIGN_BOTTOM_MID, 0, -2);
-    lv_obj_add_flag(s_page_indicator_label, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_page_indicator_label, on_char_touch_event, LV_EVENT_ALL, (void *)(intptr_t)-1);
+    // 5. 그룹 인디케이터 (현재 영역 표시 및 가이드)
+    s_group_indicator_label = lv_label_create(parent);
+    lv_label_set_text(s_group_indicator_label, "<   A - Z   >");
+    lv_obj_set_style_text_color(s_group_indicator_label, lv_color_hex(0x00D1FF), 0);
+    lv_obj_align(s_group_indicator_label, LV_ALIGN_TOP_MID, 0, 154);
 
-    update_char_buttons();
-
-    // 5. 하단 제어 바: [BS] [Space] [OK]
+    // 6. 하단 제어 바: [BS] [Space] [OK]
     lv_obj_t *bs_btn = lv_btn_create(parent);
     lv_obj_set_size(bs_btn, 48, 30);
     lv_obj_align(bs_btn, LV_ALIGN_BOTTOM_LEFT, 24, -20);
