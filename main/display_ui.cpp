@@ -4,6 +4,7 @@
 #include "ui_settings.h"
 #include "settings_manager.h"
 #include "lv_font_nanum.h"
+#include "time_sync.h"
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -183,8 +184,9 @@ esp_err_t display_ui_init(void) {
 
   // 중앙 메시지 라벨 (초기 부팅 점검용)
   s_center_label = lv_label_create(s_screen);
+  lv_obj_set_style_text_font(s_center_label, &lv_font_nanum_16, 0);
   lv_obj_set_style_text_color(s_center_label, lv_color_white(), 0);
-  lv_label_set_text(s_center_label, "SYSTEM STARTING...");
+  lv_label_set_text(s_center_label, "시스템 시작 중...");
   lv_obj_align(s_center_label, LV_ALIGN_CENTER, 0, 0);
   lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
 
@@ -252,22 +254,24 @@ esp_err_t display_ui_init(void) {
   s_clock_date_lbl = lv_label_create(s_clock_container);
   lv_obj_set_style_text_font(s_clock_date_lbl, &lv_font_nanum_16, 0);
   lv_obj_set_style_text_color(s_clock_date_lbl, lv_color_hex(0x00D1FF), 0);
-  lv_label_set_text(s_clock_date_lbl, "2026. 11. 05 (목)");
-  lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 36);
+  lv_label_set_text(s_clock_date_lbl, "시간 동기화 중...");
+  lv_obj_align(s_clock_date_lbl, LV_ALIGN_CENTER, 0, 0);
 
   // 중앙 시간 영역 라벨 (기존 대비 2배 크기 80px 초대형 나눔고딕 폰트)
   s_clock_time_lbl = lv_label_create(s_clock_container);
   lv_obj_set_style_text_font(s_clock_time_lbl, &lv_font_nanum_80, 0);
   lv_obj_set_style_text_color(s_clock_time_lbl, lv_color_white(), 0);
-  lv_label_set_text(s_clock_time_lbl, "12:00");
+  lv_label_set_text(s_clock_time_lbl, "");
   lv_obj_align(s_clock_time_lbl, LV_ALIGN_CENTER, 16, 12);
+  lv_obj_add_flag(s_clock_time_lbl, LV_OBJ_FLAG_HIDDEN); // 동기화 완료 전 숨김
 
   // AM / PM (오전/오후) 라벨 (16px 나눔고딕 폰트)
   s_clock_ampm_lbl = lv_label_create(s_clock_container);
   lv_obj_set_style_text_font(s_clock_ampm_lbl, &lv_font_nanum_16, 0);
   lv_obj_set_style_text_color(s_clock_ampm_lbl, lv_color_hex(0x00D1FF), 0);
-  lv_label_set_text(s_clock_ampm_lbl, "오전");
+  lv_label_set_text(s_clock_ampm_lbl, "");
   lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
+  lv_obj_add_flag(s_clock_ampm_lbl, LV_OBJ_FLAG_HIDDEN); // 동기화 완료 전 숨김
 
   // 1초 주기로 시계 텍스트 자동 갱신
   s_clock_timer = lv_timer_create([](lv_timer_t *t){
@@ -546,15 +550,30 @@ void display_ui_update_clock(void) {
       localtime_r(&now, &timeinfo);
 
       bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+      bool synced = time_sync_is_synced();
 
-      // 1. 상단 날짜 및 요일
-      static const char *s_days_en[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-      static const char *s_days_ko[] = {"일", "월", "화", "수", "목", "금", "토"};
-      int wday = timeinfo.tm_wday;
-      if (wday < 0 || wday > 6) wday = 0;
+      if (!synced) {
+        // NTP 동기화 완료 전: 잘못된 시간 숫자는 숨기고 '시간 동기화 중...'만 화면 중앙에 표시
+        if (s_clock_time_lbl) lv_obj_add_flag(s_clock_time_lbl, LV_OBJ_FLAG_HIDDEN);
+        if (s_clock_ampm_lbl) lv_obj_add_flag(s_clock_ampm_lbl, LV_OBJ_FLAG_HIDDEN);
 
-      char date_buf[64];
-      if (timeinfo.tm_year > 100) { // 2000년 이후 유효 시간 동기화 완료 상태
+        if (s_clock_date_lbl) {
+          lv_obj_clear_flag(s_clock_date_lbl, LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(s_clock_date_lbl, is_ko ? "시간 동기화 중..." : "SYNCING TIME...");
+          lv_obj_align(s_clock_date_lbl, LV_ALIGN_CENTER, 0, 0);
+        }
+      } else {
+        // NTP 동기화 완료: 시계 및 날짜 정상 표기
+        if (s_clock_time_lbl) lv_obj_clear_flag(s_clock_time_lbl, LV_OBJ_FLAG_HIDDEN);
+        if (s_clock_ampm_lbl) lv_obj_clear_flag(s_clock_ampm_lbl, LV_OBJ_FLAG_HIDDEN);
+
+        // 1. 상단 날짜 및 요일
+        static const char *s_days_en[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+        static const char *s_days_ko[] = {"일", "월", "화", "수", "목", "금", "토"};
+        int wday = timeinfo.tm_wday;
+        if (wday < 0 || wday > 6) wday = 0;
+
+        char date_buf[64];
         if (is_ko) {
           snprintf(date_buf, sizeof(date_buf), "%04d. %02d. %02d (%s)",
                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, s_days_ko[wday]);
@@ -562,36 +581,41 @@ void display_ui_update_clock(void) {
           snprintf(date_buf, sizeof(date_buf), "%04d. %02d. %02d  %s",
                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, s_days_en[wday]);
         }
-      } else {
-        snprintf(date_buf, sizeof(date_buf), is_ko ? "시간 동기화 중..." : "SYNCING TIME...");
-      }
-      lv_label_set_text(s_clock_date_lbl, date_buf);
-      lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 36);
+        if (s_clock_date_lbl) {
+          lv_obj_clear_flag(s_clock_date_lbl, LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(s_clock_date_lbl, date_buf);
+          lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 36);
+        }
 
-      // 2. 12시간제 시간 (1~12 : 00~59)
-      int hour12 = timeinfo.tm_hour % 12;
-      if (hour12 == 0) hour12 = 12;
-      bool is_pm = (timeinfo.tm_hour >= 12);
+        // 2. 12시간제 시간 (1~12 : 00~59)
+        int hour12 = timeinfo.tm_hour % 12;
+        if (hour12 == 0) hour12 = 12;
+        bool is_pm = (timeinfo.tm_hour >= 12);
 
-      char time_buf[16];
-      snprintf(time_buf, sizeof(time_buf), "%d:%02d", hour12, timeinfo.tm_min);
-      lv_label_set_text(s_clock_time_lbl, time_buf);
-      lv_obj_align(s_clock_time_lbl, LV_ALIGN_CENTER, is_ko ? 16 : 14, 12);
-      lv_obj_update_layout(s_clock_time_lbl);
+        char time_buf[16];
+        snprintf(time_buf, sizeof(time_buf), "%d:%02d", hour12, timeinfo.tm_min);
+        if (s_clock_time_lbl) {
+          lv_label_set_text(s_clock_time_lbl, time_buf);
+          lv_obj_align(s_clock_time_lbl, LV_ALIGN_CENTER, is_ko ? 16 : 14, 12);
+          lv_obj_update_layout(s_clock_time_lbl);
+        }
 
-      // 3. AM(윗첨자) / PM(아랫첨자) 설정 (한국어: 오전/오후, 영어: AM/PM)
-      if (is_ko) {
-        lv_label_set_text(s_clock_ampm_lbl, is_pm ? "오후" : "오전");
-      } else {
-        lv_label_set_text(s_clock_ampm_lbl, is_pm ? "PM" : "AM");
-      }
-      lv_obj_update_layout(s_clock_ampm_lbl);
-      if (is_pm) {
-        // PM / 오후: 시간 앞 아랫첨자 위치
-        lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_BOTTOM, -6, -4);
-      } else {
-        // AM / 오전: 시간 앞 윗첨자 위치
-        lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
+        // 3. AM(윗첨자) / PM(아랫첨자) 설정 (한국어: 오전/오후, 영어: AM/PM)
+        if (s_clock_ampm_lbl) {
+          if (is_ko) {
+            lv_label_set_text(s_clock_ampm_lbl, is_pm ? "오후" : "오전");
+          } else {
+            lv_label_set_text(s_clock_ampm_lbl, is_pm ? "PM" : "AM");
+          }
+          lv_obj_update_layout(s_clock_ampm_lbl);
+          if (is_pm) {
+            // PM / 오후: 시간 앞 아랫첨자 위치
+            lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_BOTTOM, -6, -4);
+          } else {
+            // AM / 오전: 시간 앞 윗첨자 위치
+            lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
+          }
+        }
       }
     }
     lvgl_port_unlock();

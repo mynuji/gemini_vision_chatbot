@@ -25,8 +25,11 @@
 static const char *TAG = "MAIN_APP";
 
 // 시계 화면 표시 타이머 상태 변수
-static uint32_t s_boot_clock_end_time = 0;
+static uint32_t s_boot_clock_timeout = 0;   // NTP 동기화 대기 최대 30초 타임아웃
+static uint32_t s_boot_clock_end_time = 0;  // 동기화 완료 후 5초 표시 시간
 static bool s_boot_clock_active = false;
+static bool s_boot_clock_synced_seen = false;
+static uint32_t s_last_ntp_retry_time = 0;  // 1분 주기 재시도 타임스탬프
 
 static uint32_t s_idle_clock_start_time = 0;
 static bool s_idle_clock_active = false;
@@ -39,9 +42,10 @@ static void on_ntp_time_synced(void) {
     display_ui_update_clock();
     if (s_boot_clock_active) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        s_boot_clock_synced_seen = true;
         s_boot_clock_end_time = now + 5000;
         s_idle_clock_start_time = now + 5000;
-        ESP_LOGI(TAG, "Boot clock extended by 5s after NTP sync");
+        ESP_LOGI(TAG, "NTP synced during boot -> Displaying clock for 5 seconds before switching to eyes");
     }
 }
 
@@ -136,22 +140,54 @@ static void chat_monitor_loop_task(void *pvParameters) {
             last_touch_handled_time = now;
         }
 
-        // 1-1. 최초 부팅 5초 시계 관리 (시계 표시 중에도 'Alexa' 발화 감지 시 즉시 눈 및 LISTENING 전환)
+        // 1-1. 부팅 시계 화면 관리
+        // - 동기화 전: 최대 30초 대기 (시간 표시 없이 '동기화 중...' 표시)
+        // - 동기화 완료 시: 5초간 실제 시계 표시 후 눈 화면 전환
+        // - 30초 초과 시: 눈 화면으로 전환 후 백그라운드에서 1분 주기로 동기화 계속 시도
+        // - 시계 표시 중에도 'Alexa' 발화나 터치 시 즉시 전환
         if (s_boot_clock_active) {
             if (chat_state_get() != CHAT_STATE_IDLE) {
                 s_boot_clock_active = false;
                 display_ui_show_clock_mode(false);
                 s_idle_clock_start_time = now;
-            } else if (now >= s_boot_clock_end_time) {
-                s_boot_clock_active = false;
-                display_ui_show_clock_mode(false);
-                display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, NULL);
-                s_idle_clock_start_time = now;
-                ESP_LOGI(TAG, "Boot 5-second clock completed -> Switched to Character Eyes");
+            } else if (s_boot_clock_synced_seen) {
+                // 이미 동기화되어 5초 타이머가 동작 중인 경우
+                if (now >= s_boot_clock_end_time) {
+                    s_boot_clock_active = false;
+                    display_ui_show_clock_mode(false);
+                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, NULL);
+                    s_idle_clock_start_time = now;
+                    ESP_LOGI(TAG, "Boot clock 5-second display completed -> Switched to Character Eyes");
+                }
+            } else {
+                // 아직 동기화되지 않은 상태: 동기화 완료 여부 즉각 확인 또는 30초 타임아웃 검사
+                if (time_sync_is_synced()) {
+                    s_boot_clock_synced_seen = true;
+                    s_boot_clock_end_time = now + 5000;
+                    s_idle_clock_start_time = now + 5000;
+                    display_ui_update_clock();
+                    ESP_LOGI(TAG, "NTP synced detected during boot -> Displaying clock for 5 seconds");
+                } else if (now >= s_boot_clock_timeout) {
+                    // 30초 이상 동기화 지연 시: 다음 화면(눈)으로 넘어가게 한 후, 1분 주기로 NTP 동기화 시도
+                    s_boot_clock_active = false;
+                    display_ui_show_clock_mode(false);
+                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, NULL);
+                    s_idle_clock_start_time = now;
+                    ESP_LOGW(TAG, "NTP sync boot timeout (>30s) -> Switched to Eyes. Retrying NTP every 1 minute.");
+                }
             }
         }
 
-        // 1-2. 5분 대기 초과 시 시계 표시 및 간헐적 눈 애니메이션 관리
+        // 1-2. NTP 미동기화 시 1분(60초) 간격으로 NTP 재시도
+        if (!time_sync_is_synced()) {
+            if (now - s_last_ntp_retry_time >= 60000) {
+                s_last_ntp_retry_time = now;
+                ESP_LOGI(TAG, "NTP not synced yet -> Retrying NTP sync (1-min interval)...");
+                time_sync_start();
+            }
+        }
+
+        // 1-3. 5분 대기 초과 시 시계 표시 및 간헐적 눈 애니메이션 관리
         if (!s_boot_clock_active) {
             chat_state_t cur_state = chat_state_get();
             if (cur_state != CHAT_STATE_IDLE) {
@@ -239,12 +275,20 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(display_ui_init());
     display_ui_set_brightness(cfg->brightness);
 
-    // [1-1] 부팅 즉시 시계 화면 활성화 (부팅 시작부터 5초 이상 표시)
+    // [1-1] 부팅 즉시 시계 화면 활성화 (NTP 동기화 대기 최대 30초, 동기화 완료 시 5초 카운트다운)
     display_ui_show_clock_mode(true);
     s_boot_clock_active = true;
+    s_boot_clock_synced_seen = time_sync_is_synced();
     uint32_t boot_now = (uint32_t)(esp_timer_get_time() / 1000);
-    s_boot_clock_end_time = boot_now + 5000;
-    s_idle_clock_start_time = boot_now + 5000;
+    s_boot_clock_timeout = boot_now + 30000;
+    s_last_ntp_retry_time = boot_now;
+    if (s_boot_clock_synced_seen) {
+        s_boot_clock_end_time = boot_now + 5000;
+        s_idle_clock_start_time = boot_now + 5000;
+    } else {
+        s_boot_clock_end_time = 0;
+        s_idle_clock_start_time = boot_now + 30000;
+    }
 
     // [2] 터치 센서 초기화 및 상단 10회 터치 콜백 등록
     ESP_ERROR_CHECK(touch_input_init());
@@ -297,11 +341,14 @@ extern "C" void app_main(void) {
     snprintf(ws_uri, sizeof(ws_uri), "ws://%s:%u", cfg->server_ip, (unsigned int)cfg->server_port);
     ESP_ERROR_CHECK(wifi_ws_start(cfg->wifi_ssid, cfg->wifi_pass, ws_uri));
 
-    // [10] 모든 시스템 부팅 완료 시점 기준으로 정확히 5초 동안 시계가 유지되도록 카운트다운 시작
+    // [10] 모든 시스템 부팅 완료 시점 기준으로 동기화 상태 갱신
     boot_now = (uint32_t)(esp_timer_get_time() / 1000);
-    s_boot_clock_end_time = boot_now + 5000;
-    s_idle_clock_start_time = boot_now + 5000;
+    if (!s_boot_clock_synced_seen && time_sync_is_synced()) {
+        s_boot_clock_synced_seen = true;
+        s_boot_clock_end_time = boot_now + 5000;
+        s_idle_clock_start_time = boot_now + 5000;
+    }
     display_ui_update_clock();
 
-    ESP_LOGI(TAG, "Initialization complete. Clock is showing for 5 seconds right after boot!");
+    ESP_LOGI(TAG, "Initialization complete. Showing sync status/clock on GC9A01 LCD.");
 }

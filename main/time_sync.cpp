@@ -145,9 +145,7 @@ esp_err_t time_sync_start(void) {
 
 bool time_sync_is_synced(void) {
     if (s_time_synced) return true;
-    time_t now = time(NULL);
-    // 2024년 1월 1일 이후(초 단위 1704067200)의 유효한 UNIX 시간인지 판별
-    if (now > 1704067200) {
+    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
         s_time_synced = true;
         return true;
     }
