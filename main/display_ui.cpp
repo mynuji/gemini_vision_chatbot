@@ -78,9 +78,11 @@ void display_ui_set_brightness(uint8_t percent) {
 esp_err_t display_ui_init(void) {
   ESP_LOGI(TAG, "Initializing GC9A01 LCD & LVGL...");
 
-  // 1. 백라이트 PWM(LEDC) 초기화 (5kHz, 8비트 해상도)
-  // UART0 콘솔 등으로 GPIO43이 묶여있을 수 있으므로 먼저 reset_pin 수행
+  // 1. 백라이트 PWM(LEDC) 초기화 (1kHz, 8비트 해상도)
+  // UART0 콘솔 해제 후 출력 모드를 명시적으로 활성화해야 OutputEn=1로 동작함
   gpio_reset_pin((gpio_num_t)LCD_BL);
+  gpio_set_direction((gpio_num_t)LCD_BL, GPIO_MODE_OUTPUT);
+  gpio_set_pull_mode((gpio_num_t)LCD_BL, GPIO_FLOATING);
 
   ledc_timer_config_t timer_conf = {};
   timer_conf.speed_mode = LEDC_LOW_SPEED_MODE;

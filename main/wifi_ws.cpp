@@ -1,5 +1,6 @@
 #include "wifi_ws.h"
 #include "settings_manager.h"
+#include "time_sync.h"
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -119,6 +120,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                  IP2STR(&event->ip_info.netmask),
                  (unsigned int)(esp_get_free_internal_heap_size() / 1024));
         notify_state(WIFI_WS_STATE_WIFI_CONNECTED, "WIFI OK, WS CONN...");
+
+        // Wi-Fi 연결 및 IP 획득 완료 -> NTP 시간 동기화 시작
+        time_sync_start();
 
         // IP를 받았으므로 WebSocket 접속 시작
         if (s_ws_uri[0] != '\0') {

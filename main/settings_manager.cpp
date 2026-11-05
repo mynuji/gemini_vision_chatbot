@@ -45,6 +45,8 @@ static void set_defaults(app_settings_t *cfg) {
     cfg->brightness = 100; // 100%
     cfg->mic_gain = 35;    // 3.5x
     cfg->llm_type = LLM_TYPE_GEMINI_API; // 기본값: gemini api
+    cfg->ntp_server_idx = 0; // 기본값: pool.ntp.org
+    cfg->timezone_idx = 0;   // 기본값: Seoul (GMT+9)
 }
 
 static const char *s_llm_names[] = {
@@ -86,9 +88,13 @@ esp_err_t settings_manager_init(void) {
         err = nvs_get_blob(nvs_handle, NVS_KEY, &s_settings, &required_size);
         nvs_close(nvs_handle);
 
-        if (err == ESP_OK && s_settings.magic == 0x53455431) {
-            ESP_LOGI(TAG, "Migrating NVS settings from SET1 to SET2 (adding LLM type)...");
-            s_settings.llm_type = LLM_TYPE_GEMINI_API;
+        if (err == ESP_OK && (s_settings.magic == 0x53455432 || s_settings.magic == 0x53455431)) {
+            ESP_LOGI(TAG, "Migrating NVS settings from older version (magic=0x%08lX) to SET3...", (unsigned long)s_settings.magic);
+            if (s_settings.magic == 0x53455431) {
+                s_settings.llm_type = LLM_TYPE_GEMINI_API;
+            }
+            s_settings.ntp_server_idx = 0;
+            s_settings.timezone_idx = 0;
             s_settings.magic = SETTINGS_MAGIC;
             need_save_default = true;
         } else if (err != ESP_OK || s_settings.magic != SETTINGS_MAGIC) {
@@ -97,9 +103,10 @@ esp_err_t settings_manager_init(void) {
             set_defaults(&s_settings);
             need_save_default = true;
         } else {
-            ESP_LOGI(TAG, "Loaded settings from NVS successfully: SSID='%s', Server='%s:%u', Vol=%u%%, Bright=%u%%, LLM='%s'",
+            ESP_LOGI(TAG, "Loaded settings from NVS successfully: SSID='%s', Server='%s:%u', Vol=%u%%, Bright=%u%%, LLM='%s', NTP_idx=%u, TZ_idx=%u",
                      s_settings.wifi_ssid, s_settings.server_ip, (unsigned int)s_settings.server_port,
-                     s_settings.volume, s_settings.brightness, settings_manager_get_llm_type_name(s_settings.llm_type));
+                     s_settings.volume, s_settings.brightness, settings_manager_get_llm_type_name(s_settings.llm_type),
+                     (unsigned int)s_settings.ntp_server_idx, (unsigned int)s_settings.timezone_idx);
         }
     } else {
         ESP_LOGI(TAG, "NVS namespace '%s' not found. Initializing with defaults.", NVS_NAMESPACE);
@@ -187,3 +194,14 @@ esp_err_t settings_manager_set_llm_type(uint8_t llm_type) {
     s_settings.llm_type = llm_type;
     return settings_manager_save(&s_settings);
 }
+
+esp_err_t settings_manager_set_ntp_server(uint8_t ntp_server_idx) {
+    s_settings.ntp_server_idx = ntp_server_idx;
+    return settings_manager_save(&s_settings);
+}
+
+esp_err_t settings_manager_set_timezone(uint8_t timezone_idx) {
+    s_settings.timezone_idx = timezone_idx;
+    return settings_manager_save(&s_settings);
+}
+

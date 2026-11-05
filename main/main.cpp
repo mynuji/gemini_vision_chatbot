@@ -1,5 +1,6 @@
 #include "app_config.h"
 #include "settings_manager.h"
+#include "time_sync.h"
 #include "ui_settings.h"
 #include "bsp_board.h"
 #include "display_ui.h"
@@ -130,6 +131,9 @@ extern "C" void app_main(void) {
     // [0] NVS 영구 설정 로드
     ESP_ERROR_CHECK(settings_manager_init());
     const app_settings_t *cfg = settings_manager_get();
+
+    // [0-1] 타임존 환경 변수 설정
+    time_sync_init();
 
     // [1] 디스플레이 및 LVGL 초기화
     ESP_ERROR_CHECK(display_ui_init());

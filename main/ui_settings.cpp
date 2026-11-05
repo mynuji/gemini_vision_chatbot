@@ -1,5 +1,6 @@
 #include "ui_settings.h"
 #include "settings_manager.h"
+#include "time_sync.h"
 #include "display_ui.h"
 #include "audio_io.h"
 #include "audio_pipeline.h"
@@ -32,6 +33,8 @@ typedef enum {
     SUBVIEW_BRIGHTNESS,
     SUBVIEW_MIC_GAIN,
     SUBVIEW_LLM_TYPE,
+    SUBVIEW_NTP_SERVER,
+    SUBVIEW_TIMEZONE,
     SUBVIEW_INFO
 } subview_t;
 
@@ -55,6 +58,8 @@ static void create_server_view(lv_obj_t *parent);
 static void create_brightness_view(lv_obj_t *parent);
 static void create_mic_gain_view(lv_obj_t *parent);
 static void create_llm_type_view(lv_obj_t *parent);
+static void create_ntp_server_view(lv_obj_t *parent);
+static void create_timezone_view(lv_obj_t *parent);
 static void create_info_view(lv_obj_t *parent);
 
 esp_err_t ui_settings_init(void) {
@@ -142,6 +147,12 @@ static void show_view(subview_t view) {
         case SUBVIEW_LLM_TYPE:
             create_llm_type_view(s_settings_container);
             break;
+        case SUBVIEW_NTP_SERVER:
+            create_ntp_server_view(s_settings_container);
+            break;
+        case SUBVIEW_TIMEZONE:
+            create_timezone_view(s_settings_container);
+            break;
         case SUBVIEW_INFO:
             create_info_view(s_settings_container);
             break;
@@ -195,14 +206,16 @@ static void on_menu_btn_event(lv_event_t *e) {
         else if (id == 4) show_view(SUBVIEW_BRIGHTNESS);
         else if (id == 5) show_view(SUBVIEW_MIC_GAIN);
         else if (id == 6) show_view(SUBVIEW_LLM_TYPE);
-        else if (id == 7) show_view(SUBVIEW_INFO);
-        else if (id == 8) {
+        else if (id == 7) show_view(SUBVIEW_NTP_SERVER);
+        else if (id == 8) show_view(SUBVIEW_TIMEZONE);
+        else if (id == 9) show_view(SUBVIEW_INFO);
+        else if (id == 10) {
             // 저장 후 재부팅
             settings_manager_save(&s_edit_cfg);
             audio_io_play_tone(1600.0f, 150);
             vTaskDelay(pdMS_TO_TICKS(200));
             esp_restart();
-        } else if (id == 9) {
+        } else if (id == 11) {
             // 기본값 복원
             settings_manager_reset_to_default();
             audio_io_play_tone(600.0f, 150);
@@ -262,12 +275,14 @@ static void create_main_menu(lv_obj_t *parent) {
         "4. Display Brightness",
         "5. Mic Sensitivity",
         "6. LLM Type",
-        "7. System Info",
-        "8. Save & Reboot",
-        "9. Factory Reset"
+        "7. NTP Server",
+        "8. Timezone (Region)",
+        "9. System Info",
+        "10. Save & Reboot",
+        "11. Factory Reset"
     };
 
-    for (int i = 0; i < 9; i++) {
+    for (int i = 0; i < 11; i++) {
         lv_obj_t *btn = lv_list_add_btn(list, NULL, items[i]);
         lv_obj_set_size(btn, lv_pct(100), 42); // 38px -> 42px로 확대하여 터치 정확도 대폭 향상
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
@@ -1088,6 +1103,250 @@ static void create_llm_type_view(lv_obj_t *parent) {
     }, LV_EVENT_CLICKED, NULL);
 }
 
+// ----------------------------------------------------------------------------
+// [6-1] NTP 서버 선택 서브화면
+// ----------------------------------------------------------------------------
+static lv_point_t s_ntp_press_pt = {0, 0};
+static bool s_ntp_is_pressing = false;
+
+static void on_ntp_select_event(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_get_act();
+
+    if (code == LV_EVENT_PRESSED) {
+        if (indev) {
+            lv_indev_get_point(indev, &s_ntp_press_pt);
+        }
+        s_ntp_is_pressing = true;
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+        if (s_ntp_is_pressing && indev) {
+            lv_point_t cur_pt = {0, 0};
+            lv_indev_get_point(indev, &cur_pt);
+            int32_t dx = cur_pt.x - s_ntp_press_pt.x;
+            int32_t dy = cur_pt.y - s_ntp_press_pt.y;
+            s_ntp_is_pressing = false;
+            if ((dx * dx + dy * dy) > (35 * 35)) {
+                return;
+            }
+        }
+        s_ntp_is_pressing = false;
+
+        int idx = (int)(intptr_t)lv_event_get_user_data(e);
+        if (idx >= 0 && idx < time_sync_get_ntp_server_count()) {
+            s_edit_cfg.ntp_server_idx = (uint8_t)idx;
+            audio_io_play_tone(1100.0f, 25);
+            show_view(SUBVIEW_NTP_SERVER);
+        }
+    }
+}
+
+static void create_ntp_server_view(lv_obj_t *parent) {
+    lv_obj_t *title = lv_label_create(parent);
+    lv_label_set_text(title, "NTP SERVER");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
+
+    char time_str[32];
+    time_sync_get_time_str(time_str, sizeof(time_str));
+    lv_obj_t *time_lbl = lv_label_create(parent);
+    lv_label_set_text(time_lbl, time_str);
+    lv_obj_set_style_text_color(time_lbl, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_align(time_lbl, LV_ALIGN_TOP_MID, 0, 24);
+
+    lv_obj_t *list = lv_list_create(parent);
+    lv_obj_set_size(list, 188, 144);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 42);
+    lv_obj_set_style_bg_color(list, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(list, 10, 0);
+    lv_obj_set_style_pad_all(list, 2, 0);
+    lv_obj_set_style_pad_row(list, 4, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_style_clip_corner(list, true, 0);
+    lv_obj_add_event_cb(list, (lv_event_cb_t)[](lv_event_t *e){
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev) lv_indev_reset(indev, NULL);
+    }, LV_EVENT_SCROLL_END, NULL);
+
+    uint8_t count = time_sync_get_ntp_server_count();
+    for (uint8_t i = 0; i < count; i++) {
+        char item_txt[64];
+        bool selected = (s_edit_cfg.ntp_server_idx == i);
+        snprintf(item_txt, sizeof(item_txt), "%s %s", selected ? "[*]" : "[ ]", time_sync_get_ntp_server_name(i));
+
+        lv_obj_t *btn = lv_list_add_btn(list, NULL, item_txt);
+        lv_obj_set_size(btn, lv_pct(100), 40);
+        if (selected) {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x005588), 0);
+            lv_obj_set_style_text_color(btn, lv_color_hex(0x00FFCC), 0);
+        } else {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
+            lv_obj_set_style_text_color(btn, lv_color_white(), 0);
+        }
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+        lv_obj_add_event_cb(btn, on_ntp_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
+    }
+
+    lv_obj_t *apply_btn = lv_btn_create(parent);
+    lv_obj_set_size(apply_btn, 76, 30);
+    lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
+    lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(apply_btn, 6);
+    lv_obj_t *albl = lv_label_create(apply_btn);
+    lv_label_set_text(albl, "APPLY");
+    lv_obj_center(albl);
+    lv_obj_add_event_cb(apply_btn, (lv_event_cb_t)[](lv_event_t *e){
+        settings_manager_set_ntp_server(s_edit_cfg.ntp_server_idx);
+        time_sync_apply_settings(s_edit_cfg.ntp_server_idx, s_edit_cfg.timezone_idx);
+        audio_io_play_tone(1200.0f, 40);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -14);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+}
+
+// ----------------------------------------------------------------------------
+// [6-2] 타임존(지역) 선택 서브화면
+// ----------------------------------------------------------------------------
+static lv_point_t s_tz_press_pt = {0, 0};
+static bool s_tz_is_pressing = false;
+
+static void on_tz_select_event(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_get_act();
+
+    if (code == LV_EVENT_PRESSED) {
+        if (indev) {
+            lv_indev_get_point(indev, &s_tz_press_pt);
+        }
+        s_tz_is_pressing = true;
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+        if (s_tz_is_pressing && indev) {
+            lv_point_t cur_pt = {0, 0};
+            lv_indev_get_point(indev, &cur_pt);
+            int32_t dx = cur_pt.x - s_tz_press_pt.x;
+            int32_t dy = cur_pt.y - s_tz_press_pt.y;
+            s_tz_is_pressing = false;
+            if ((dx * dx + dy * dy) > (35 * 35)) {
+                return;
+            }
+        }
+        s_tz_is_pressing = false;
+
+        int idx = (int)(intptr_t)lv_event_get_user_data(e);
+        if (idx >= 0 && idx < time_sync_get_timezone_count()) {
+            s_edit_cfg.timezone_idx = (uint8_t)idx;
+            audio_io_play_tone(1100.0f, 25);
+            show_view(SUBVIEW_TIMEZONE);
+        }
+    }
+}
+
+static void create_timezone_view(lv_obj_t *parent) {
+    lv_obj_t *title = lv_label_create(parent);
+    lv_label_set_text(title, "TIMEZONE");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
+
+    char time_str[32];
+    time_sync_get_time_str(time_str, sizeof(time_str));
+    lv_obj_t *time_lbl = lv_label_create(parent);
+    lv_label_set_text(time_lbl, time_str);
+    lv_obj_set_style_text_color(time_lbl, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_align(time_lbl, LV_ALIGN_TOP_MID, 0, 24);
+
+    lv_obj_t *list = lv_list_create(parent);
+    lv_obj_set_size(list, 188, 144);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 42);
+    lv_obj_set_style_bg_color(list, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_border_color(list, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(list, 10, 0);
+    lv_obj_set_style_pad_all(list, 2, 0);
+    lv_obj_set_style_pad_row(list, 4, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_style_clip_corner(list, true, 0);
+    lv_obj_add_event_cb(list, (lv_event_cb_t)[](lv_event_t *e){
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev) lv_indev_reset(indev, NULL);
+    }, LV_EVENT_SCROLL_END, NULL);
+
+    uint8_t count = time_sync_get_timezone_count();
+    for (uint8_t i = 0; i < count; i++) {
+        char item_txt[64];
+        bool selected = (s_edit_cfg.timezone_idx == i);
+        snprintf(item_txt, sizeof(item_txt), "%s %s", selected ? "[*]" : "[ ]", time_sync_get_timezone_name(i));
+
+        lv_obj_t *btn = lv_list_add_btn(list, NULL, item_txt);
+        lv_obj_set_size(btn, lv_pct(100), 40);
+        if (selected) {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x005588), 0);
+            lv_obj_set_style_text_color(btn, lv_color_hex(0x00FFCC), 0);
+        } else {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
+            lv_obj_set_style_text_color(btn, lv_color_white(), 0);
+        }
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+        lv_obj_add_event_cb(btn, on_tz_select_event, LV_EVENT_ALL, (void *)(intptr_t)i);
+    }
+
+    lv_obj_t *apply_btn = lv_btn_create(parent);
+    lv_obj_set_size(apply_btn, 76, 30);
+    lv_obj_align(apply_btn, LV_ALIGN_BOTTOM_LEFT, 32, -14);
+    lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(apply_btn, lv_color_hex(0x005599), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(apply_btn, 6);
+    lv_obj_t *albl = lv_label_create(apply_btn);
+    lv_label_set_text(albl, "APPLY");
+    lv_obj_center(albl);
+    lv_obj_add_event_cb(apply_btn, (lv_event_cb_t)[](lv_event_t *e){
+        settings_manager_set_timezone(s_edit_cfg.timezone_idx);
+        time_sync_apply_settings(s_edit_cfg.ntp_server_idx, s_edit_cfg.timezone_idx);
+        audio_io_play_tone(1200.0f, 40);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 76, 30);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_RIGHT, -32, -14);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+}
+
 
 // ----------------------------------------------------------------------------
 // [5] 화면 밝기 서브화면
@@ -1213,18 +1472,23 @@ static void create_info_view(lv_obj_t *parent) {
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
     lv_obj_t *info_lbl = lv_label_create(parent);
-    char buf[160];
+    char buf[256];
+    char time_str[32];
+    time_sync_get_date_time_str(time_str, sizeof(time_str));
     uint32_t free_heap_kb = esp_get_free_heap_size() / 1024;
-    snprintf(buf, sizeof(buf), "SSID: %s\nIP: %s\nPORT: %u\nLLM: %s\nHeap: %uKB | WS: %s",
+    snprintf(buf, sizeof(buf), "Time: %s\nSSID: %s\nIP: %s\nPORT: %u\nLLM: %s\nNTP: %s\nTZ: %s\nHeap: %uKB | WS: %s",
+             time_str,
              s_edit_cfg.wifi_ssid,
              wifi_ws_get_ip_str() ? wifi_ws_get_ip_str() : "N/A",
              (unsigned int)s_edit_cfg.server_port,
              settings_manager_get_llm_type_name(s_edit_cfg.llm_type),
+             time_sync_get_ntp_server_name(s_edit_cfg.ntp_server_idx),
+             time_sync_get_timezone_name(s_edit_cfg.timezone_idx),
              (unsigned int)free_heap_kb,
              wifi_ws_is_connected() ? "ON" : "OFF");
     lv_label_set_text(info_lbl, buf);
     lv_obj_set_style_text_color(info_lbl, lv_color_white(), 0);
-    lv_obj_align(info_lbl, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(info_lbl, LV_ALIGN_CENTER, 0, 4);
 
     lv_obj_t *back_btn = lv_btn_create(parent);
     lv_obj_set_size(back_btn, 80, 30);

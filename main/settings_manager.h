@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SETTINGS_MAGIC 0x53455432 // "SET2"
+#define SETTINGS_MAGIC 0x53455433 // "SET3"
 
 typedef enum {
     LLM_TYPE_GEMINI_API = 0,
@@ -28,6 +28,8 @@ typedef struct {
     uint8_t  brightness;      // 10 ~ 100 (%)
     uint8_t  mic_gain;        // 10 ~ 50 (1.0x ~ 5.0x, 기본값: 35)
     uint8_t  llm_type;        // 0: gemini api, 1: gemini realtime api, 2: chatgpt realtime api, 3: local llm
+    uint8_t  ntp_server_idx;  // 0: pool.ntp.org, 1: kr.pool.ntp.org, 2: google, 3: cloudflare, 4: ms, 5: apple
+    uint8_t  timezone_idx;    // 0: Seoul (GMT+9), 1: GMT-11, ...
 } app_settings_t;
 
 const char* settings_manager_get_llm_type_name(uint8_t type);
@@ -76,6 +78,16 @@ esp_err_t settings_manager_set_port(uint16_t port);
  * @brief LLM 타입 변경 및 저장
  */
 esp_err_t settings_manager_set_llm_type(uint8_t llm_type);
+
+/**
+ * @brief NTP 서버 인덱스 변경 및 저장
+ */
+esp_err_t settings_manager_set_ntp_server(uint8_t ntp_server_idx);
+
+/**
+ * @brief 타임존(지역) 인덱스 변경 및 저장
+ */
+esp_err_t settings_manager_set_timezone(uint8_t timezone_idx);
 
 #ifdef __cplusplus
 }
