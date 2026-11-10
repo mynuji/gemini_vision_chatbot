@@ -215,7 +215,14 @@ void chat_state_init(void) {
     s_last_state_change_ms = s_last_activity_ms;
 
     display_ui_pause_auto_blink(false);
-    display_ui_set_status("SAY 'ALEXA' OR TOUCH");
+    bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+    const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
+    if (!wifi_ws_is_wifi_connected()) {
+        idle_status = is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED";
+    } else if (!wifi_ws_is_connected()) {
+        idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
+    }
+    display_ui_set_status(idle_status);
     ESP_LOGI(TAG, "Chat State Machine initialized (Current: IDLE)");
 }
 
@@ -232,7 +239,13 @@ void chat_state_set(chat_state_t new_state) {
 
     if (s_chat_state == new_state) {
         if (new_state == CHAT_STATE_IDLE) {
-            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+            const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
+            if (!wifi_ws_is_wifi_connected()) {
+                idle_status = is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED";
+            } else if (!wifi_ws_is_connected()) {
+                idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
+            }
+            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, idle_status);
         } else if (new_state == CHAT_STATE_LISTENING) {
             display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, is_ko ? "듣고 있어요..." : "LISTENING...");
         }
@@ -255,7 +268,15 @@ void chat_state_set(chat_state_t new_state) {
             s_close_session_after_speaking = false;
             audio_pipeline_enable_mic_streaming(false);
             display_ui_pause_auto_blink(false);
-            display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+            {
+                const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
+                if (!wifi_ws_is_wifi_connected()) {
+                    idle_status = is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED";
+                } else if (!wifi_ws_is_connected()) {
+                    idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
+                }
+                display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, idle_status);
+            }
             break;
 
         case CHAT_STATE_LISTENING:
@@ -368,7 +389,12 @@ void chat_state_handle_touch(void) {
 void chat_state_handle_wake_word(void) {
     if (!wifi_ws_is_connected()) {
         ESP_LOGW(TAG, "Wake word detected but Jetson WebSocket is not connected.");
-        display_ui_set_status("CONNECTING...");
+        bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+        if (!wifi_ws_is_wifi_connected()) {
+            display_ui_set_status(is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED");
+        } else {
+            display_ui_set_status(is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED");
+        }
         return;
     }
 

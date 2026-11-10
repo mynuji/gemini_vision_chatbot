@@ -88,11 +88,17 @@ static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
         chat_state_set(CHAT_STATE_IDLE);
         break;
 
+    case WIFI_WS_STATE_WS_DISCONNECTED:
+        audio_pipeline_clear_audio();
+        chat_state_set(CHAT_STATE_IDLE);
+        display_ui_set_status(is_ko ? "서버 접속 끊김" : (info ? info : "SERVER DISCONNECTED"));
+        break;
+
     case WIFI_WS_STATE_DISCONNECTED:
     default:
         audio_pipeline_clear_audio();
         chat_state_set(CHAT_STATE_IDLE);
-        display_ui_set_status(is_ko ? "WIFI 끊김" : (info ? info : "DISCONNECTED"));
+        display_ui_set_status(is_ko ? "WIFI 끊김" : (info ? info : "WIFI DISCONNECTED"));
         break;
     }
 }
@@ -168,7 +174,13 @@ static void chat_monitor_loop_task(void *pvParameters) {
                     s_boot_clock_active = false;
                     display_ui_show_clock_mode(false);
                     bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
-                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+                    const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
+                    if (!wifi_ws_is_wifi_connected()) {
+                        idle_status = is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED";
+                    } else if (!wifi_ws_is_connected()) {
+                        idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
+                    }
+                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, idle_status);
                     s_idle_clock_start_time = now;
                     ESP_LOGI(TAG, "Boot clock 5-second display completed -> Switched to Character Eyes");
                 }
@@ -185,7 +197,13 @@ static void chat_monitor_loop_task(void *pvParameters) {
                     s_boot_clock_active = false;
                     display_ui_show_clock_mode(false);
                     bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
-                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+                    const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
+                    if (!wifi_ws_is_wifi_connected()) {
+                        idle_status = is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED";
+                    } else if (!wifi_ws_is_connected()) {
+                        idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
+                    }
+                    display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, idle_status);
                     s_idle_clock_start_time = now;
                     ESP_LOGW(TAG, "NTP sync boot timeout (>30s) -> Switched to Eyes. Retrying NTP every 1 minute.");
                 }

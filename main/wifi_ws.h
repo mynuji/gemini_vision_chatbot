@@ -14,7 +14,8 @@ typedef enum {
     WIFI_WS_STATE_WIFI_CONNECTING,
     WIFI_WS_STATE_WIFI_CONNECTED,
     WIFI_WS_STATE_WS_CONNECTING,
-    WIFI_WS_STATE_WS_CONNECTED
+    WIFI_WS_STATE_WS_CONNECTED,
+    WIFI_WS_STATE_WS_DISCONNECTED
 } wifi_ws_state_t;
 
 /**
@@ -36,6 +37,11 @@ esp_err_t wifi_ws_init(void);
  * @brief Wi-Fi 연결 및 WebSocket 클라이언트 접속 시작
  */
 esp_err_t wifi_ws_start(const char *ssid, const char *pass, const char *ws_uri);
+
+/**
+ * @brief Wi-Fi 연결 및 IP 할당 여부 확인
+ */
+bool wifi_ws_is_wifi_connected(void);
 
 /**
  * @brief 젯슨 서버와의 WebSocket 연결 여부 확인

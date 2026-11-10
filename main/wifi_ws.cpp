@@ -17,6 +17,7 @@ static const char *TAG = "WIFI_WS";
 
 static esp_websocket_client_handle_t s_ws_client = NULL;
 static volatile bool s_is_ws_connected = false;
+static volatile bool s_is_wifi_connected = false;
 static SemaphoreHandle_t s_send_mutex = NULL;
 
 static wifi_ws_state_cb_t s_state_cb = NULL;
@@ -45,7 +46,11 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WebSocket Disconnected from %s", s_ws_uri);
         s_is_ws_connected = false;
-        notify_state(WIFI_WS_STATE_DISCONNECTED, "JETSON DISCONNECTED");
+        if (s_is_wifi_connected) {
+            notify_state(WIFI_WS_STATE_WS_DISCONNECTED, "JETSON DISCONNECTED");
+        } else {
+            notify_state(WIFI_WS_STATE_DISCONNECTED, "WIFI DISCONNECTED");
+        }
         break;
 
     case WEBSOCKET_EVENT_DATA:
@@ -64,6 +69,10 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         } else {
             ESP_LOGE(TAG, "WebSocket Error event received (data is null)");
         }
+        s_is_ws_connected = false;
+        if (s_is_wifi_connected) {
+            notify_state(WIFI_WS_STATE_WS_DISCONNECTED, "JETSON DISCONNECTED");
+        }
         break;
 
     default:
@@ -74,6 +83,8 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         ESP_LOGI(TAG, "Wi-Fi Station started, connecting to AP...");
+        s_is_wifi_connected = false;
+        s_is_ws_connected = false;
         notify_state(WIFI_WS_STATE_WIFI_CONNECTING, "CONNECTING WIFI...");
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -81,6 +92,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         int reason = disconn ? disconn->reason : -1;
         ESP_LOGW(TAG, "Wi-Fi Disconnected, reason: %d (%s), retrying...", reason,
                  (reason == 201) ? "NO_AP_FOUND" : (reason == 202 || reason == 15) ? "AUTH_FAIL" : "OTHER");
+        s_is_wifi_connected = false;
         s_is_ws_connected = false;
         notify_state(WIFI_WS_STATE_DISCONNECTED, "WIFI DISCONNECTED");
 
@@ -114,6 +126,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         esp_ip4addr_ntoa(&event->ip_info.ip, s_ip_str, sizeof(s_ip_str));
+        s_is_wifi_connected = true;
         ESP_LOGI(TAG, "Got IP: %s, GW: " IPSTR ", Mask: " IPSTR ", FreeHeap: %uKB",
                  s_ip_str,
                  IP2STR(&event->ip_info.gw),
@@ -213,6 +226,10 @@ esp_err_t wifi_ws_start(const char *ssid, const char *pass, const char *ws_uri) 
 
     ESP_LOGI(TAG, "Wi-Fi STA started for SSID: %s (Power Save: NONE)", ssid);
     return ESP_OK;
+}
+
+bool wifi_ws_is_wifi_connected(void) {
+    return s_is_wifi_connected;
 }
 
 bool wifi_ws_is_connected(void) {
