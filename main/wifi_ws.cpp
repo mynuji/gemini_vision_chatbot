@@ -8,6 +8,7 @@
 #include "esp_system.h"
 #include "esp_websocket_client.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs_flash.h"
@@ -19,6 +20,7 @@ static esp_websocket_client_handle_t s_ws_client = NULL;
 static volatile bool s_is_ws_connected = false;
 static volatile bool s_is_wifi_connected = false;
 static SemaphoreHandle_t s_send_mutex = NULL;
+static esp_timer_handle_t s_wifi_disconn_timer = NULL;
 
 static wifi_ws_state_cb_t s_state_cb = NULL;
 static wifi_ws_rx_cb_t s_rx_cb = NULL;
@@ -29,6 +31,12 @@ static char s_ip_str[24] = "0.0.0.0";
 static void notify_state(wifi_ws_state_t state, const char *info) {
     if (s_state_cb != NULL) {
         s_state_cb(state, info);
+    }
+}
+
+static void wifi_disconn_timer_cb(void *arg) {
+    if (!s_is_wifi_connected) {
+        notify_state(WIFI_WS_STATE_DISCONNECTED, "WIFI DISCONNECTED");
     }
 }
 
@@ -94,7 +102,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                  (reason == 201) ? "NO_AP_FOUND" : (reason == 202 || reason == 15) ? "AUTH_FAIL" : "OTHER");
         s_is_wifi_connected = false;
         s_is_ws_connected = false;
-        notify_state(WIFI_WS_STATE_DISCONNECTED, "WIFI DISCONNECTED");
+
+        // 약전계 환경에서 순간적인 비콘 누락으로 인한 1~2초 재연결 시 화면 깜빡임 방지 (2.5초 디바운스)
+        if (s_wifi_disconn_timer == NULL) {
+            esp_timer_create_args_t t_args = {};
+            t_args.callback = wifi_disconn_timer_cb;
+            t_args.name = "wifi_disconn";
+            esp_timer_create(&t_args, &s_wifi_disconn_timer);
+        }
+        if (!esp_timer_is_active(s_wifi_disconn_timer)) {
+            esp_timer_start_once(s_wifi_disconn_timer, 2500000);
+        }
 
         static bool scanned_once = false;
         if (reason == 201 && !scanned_once) {
@@ -127,6 +145,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         esp_ip4addr_ntoa(&event->ip_info.ip, s_ip_str, sizeof(s_ip_str));
         s_is_wifi_connected = true;
+
+        if (s_wifi_disconn_timer != NULL && esp_timer_is_active(s_wifi_disconn_timer)) {
+            esp_timer_stop(s_wifi_disconn_timer);
+        }
         ESP_LOGI(TAG, "Got IP: %s, GW: " IPSTR ", Mask: " IPSTR ", FreeHeap: %uKB",
                  s_ip_str,
                  IP2STR(&event->ip_info.gw),
@@ -197,6 +219,16 @@ esp_err_t wifi_ws_init(void) {
     cfg.dynamic_rx_buf_num = 16;
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    // 한국 국가 코드(KR) 설정: 채널 1~13 활성화 및 액티브 스캔 허용 (채널 13번 탐색 안정성 대폭 향상)
+    wifi_country_t country = {
+        .cc = "KR",
+        .schan = 1,
+        .nchan = 13,
+        .max_tx_power = 20,
+        .policy = WIFI_COUNTRY_POLICY_MANUAL
+    };
+    esp_wifi_set_country(&country);
+
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
 
@@ -216,6 +248,10 @@ esp_err_t wifi_ws_start(const char *ssid, const char *pass, const char *ws_uri) 
     if (pass != NULL) {
         strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password) - 1);
     }
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wifi_config.sta.threshold.rssi = -95;
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
