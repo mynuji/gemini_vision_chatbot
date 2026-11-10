@@ -718,9 +718,9 @@ void chat_state_tick(uint32_t now_ms) {
             chat_state_set(CHAT_STATE_IDLE);
         }
     } else if (s_chat_state == CHAT_STATE_THINKING) {
-        // 서버 응답 대기 타임아웃 (30초)
-        if (elapsed >= 30000) {
-            ESP_LOGW(TAG, ">>> 30 seconds of THINKING timeout! Returning to IDLE or LISTENING...");
+        // 서버 응답 대기 타임아웃 (12초로 단축하여 무응답 시 신속 복구)
+        if (elapsed >= 12000) {
+            ESP_LOGW(TAG, ">>> 12 seconds of THINKING timeout! Returning to IDLE or LISTENING...");
             if (s_close_session_after_speaking) {
                 s_close_session_after_speaking = false;
                 chat_state_set(CHAT_STATE_IDLE);

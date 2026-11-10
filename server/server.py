@@ -102,7 +102,7 @@ OPENAI_VOICE = os.environ.get("OPENAI_VOICE", "alloy").strip()
 # ------------------------------------------
 # Gemini Realtime (Multimodal Live API) 설정
 # ------------------------------------------
-GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-2.5-flash-native-audio-latest").strip()
+GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-2.0-flash-exp").strip()
 GEMINI_REALTIME_VOICE = os.environ.get("GEMINI_REALTIME_VOICE", "Aoede").strip()
 
 print(f"[시스템] Gemini LLM 준비 완료: {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
@@ -515,9 +515,11 @@ class GeminiLiveSession:
         self.gemini_ws = None
         self.rx_task = None
         self.is_connected = False
+        self.speaking_active = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
+            "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
             "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
             "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
             "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
@@ -613,9 +615,11 @@ class GeminiLiveSession:
                 print("[Gemini Realtime] 세션 Setup 완료 (STT/TTS 없는 직통 음성 스트리밍 준비 완료)")
                 self.rx_task = asyncio.create_task(self._receive_loop())
             else:
-                print(f"[Gemini Realtime] 예기치 않은 Setup 응답: {init_resp}")
-                self.is_connected = True
-                self.rx_task = asyncio.create_task(self._receive_loop())
+                if "error" in init_data:
+                    print(f"[Gemini Realtime] Setup 실패 (API 에러 응답): {init_data.get('error')}")
+                else:
+                    print(f"[Gemini Realtime] 예기치 않은 Setup 응답: {init_resp}")
+                self.is_connected = False
                 
         except websockets.exceptions.ConnectionClosed as cc:
             print(f"[Gemini Realtime] WebSocket 연결 거부 (Code: {cc.code}): {cc.reason}")
@@ -669,6 +673,7 @@ class GeminiLiveSession:
         try:
             first_chunk = True
             speaking_active = False
+            self.speaking_active = False
 
             while self.is_connected and self.gemini_ws:
                 try:
@@ -679,6 +684,7 @@ class GeminiLiveSession:
                     if speaking_active:
                         print("\n[Gemini Realtime] AI 음성 출력 완료 감지 (침묵 1.2초 / turnComplete 누락 자동 보정) -> DONE 전송")
                         speaking_active = False
+                        self.speaking_active = False
                         first_chunk = True
                         await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
                     continue
@@ -686,6 +692,15 @@ class GeminiLiveSession:
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", errors="ignore")
                 data = json.loads(raw)
+                
+                # Gemini API 에러 응답 처리 (예: 할당량 초과, 세션 만료 등)
+                if "error" in data:
+                    print(f"\n[Gemini Realtime API 에러] {data.get('error')}")
+                    self.is_connected = False
+                    self.speaking_active = False
+                    await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
+                    break
+
                 server_content = data.get("serverContent")
                 if not server_content:
                     continue
@@ -763,6 +778,7 @@ class GeminiLiveSession:
                                 pcm24 = base64.b64decode(b64_pcm)
                                 pcm16 = resample_24k_to_16k(pcm24)
                                 speaking_active = True
+                                self.speaking_active = True
                                 if first_chunk:
                                     first_chunk = False
                                     await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
@@ -772,6 +788,7 @@ class GeminiLiveSession:
                     print("\n[Gemini Realtime] turnComplete 수신 -> DONE 전송")
                     first_chunk = True
                     speaking_active = False
+                    self.speaking_active = False
                     await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
 
         except asyncio.CancelledError:
@@ -788,6 +805,7 @@ class GeminiLiveSession:
                 print(f"[Gemini Realtime] 수신 루프 오류: {e}")
         finally:
             self.is_connected = False
+            self.speaking_active = False
 
     async def close(self):
         self.is_connected = False
@@ -819,9 +837,11 @@ class OpenAIRealtimeSession:
         self.openai_ws = None
         self.rx_task = None
         self.is_connected = False
+        self.speaking_active = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 대답해. "
+            "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
             "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
             "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
             "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
@@ -960,6 +980,7 @@ class OpenAIRealtimeSession:
                 # 1. 발화 시작(Barge-in / OpenAI Server VAD 감지)
                 if event_type == "input_audio_buffer.speech_started":
                     print("\n[OpenAI Realtime] 사용자 발화 감지(speech_started) -> 스피커 플러시")
+                    self.speaking_active = False
                     await self.esp_ws.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
                     first_chunk = True
 
@@ -969,6 +990,7 @@ class OpenAIRealtimeSession:
                     if delta_b64:
                         pcm24 = base64.b64decode(delta_b64)
                         pcm16 = resample_24k_to_16k(pcm24)
+                        self.speaking_active = True
                         if first_chunk:
                             first_chunk = False
                             await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
@@ -983,6 +1005,7 @@ class OpenAIRealtimeSession:
                 elif event_type == "response.audio.done":
                     print("\n[OpenAI Realtime] AI 발화 완료")
                     first_chunk = True
+                    self.speaking_active = False
                     await self.esp_ws.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
 
                 # 5. Tool Call (LLM Type 전환 등) 감지
@@ -1033,6 +1056,7 @@ class OpenAIRealtimeSession:
             print(f"[OpenAI Realtime] 수신 루프 오류: {e}")
         finally:
             self.is_connected = False
+            self.speaking_active = False
 
     async def close(self):
         self.is_connected = False
@@ -1945,6 +1969,7 @@ async def handler(websocket, path=None):
 
     active_realtime_session = None
     t_last_rt_retry = 0.0
+    rt_watchdog_task = None
 
     async def adjust_audio_settings(cmd_type, target_val_or_dir, custom_resp=None):
         nonlocal current_volume, current_mic_gain
@@ -2257,6 +2282,14 @@ async def handler(websocket, path=None):
                             await switch_realtime_session(current_llm_type)
                         if active_realtime_session and active_realtime_session.is_connected:
                             await active_realtime_session.send_audio(message)
+
+                        # Realtime 모드에서도 세션 끊김/응답 실패/폴백 등에 대비해 최근 8초 오디오 버퍼링 유지
+                        new_samples = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
+                        audio_buffer.append(new_samples)
+                        total_buffered = sum(len(c) for c in audio_buffer)
+                        while total_buffered > 128000 and len(audio_buffer) > 1:
+                            total_buffered -= len(audio_buffer[0])
+                            audio_buffer.pop(0)
                         continue
 
                     # ★ 일반 모드 (gemini api / local llm): Silero VAD 및 로컬 Whisper STT / Edge-TTS
@@ -2373,6 +2406,11 @@ async def handler(websocket, path=None):
 
                                 # [A] 인터럽트 (Barge-in / 끼어들기) 명령
                                 if msg_type == "interrupt":
+                                    if rt_watchdog_task and not rt_watchdog_task.done():
+                                        rt_watchdog_task.cancel()
+                                    if active_realtime_session:
+                                        active_realtime_session.speaking_active = False
+
                                     reason = ctrl_json.get("reason", "voice")
                                     if reason == "touch":
                                         print("\n[제어 명령] 👆 화면 터치로 즉각 중단 수신 -> AI 발화 완전 중단 (이어말하기 취소)")
@@ -2461,16 +2499,53 @@ async def handler(websocket, path=None):
                                 elif msg_type == "speech_end":
                                     if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
                                         print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 턴 완료 전송)")
-                                        if current_llm_type == "gemini realtime api":
-                                            if active_realtime_session and active_realtime_session.is_connected:
+                                        if active_realtime_session and active_realtime_session.is_connected:
+                                            if current_llm_type == "gemini realtime api":
                                                 # Gemini Multimodal Live API VAD는 발화 직후 500ms(16,000 bytes)의 침묵 구간을 수신해야
                                                 # 사용자 발화 턴이 끝났음을 인지하고 modelTurn AI 음성 생성을 시작합니다.
                                                 silence_chunk = b"\x00" * 16000
                                                 await active_realtime_session.send_audio(silence_chunk)
-                                        elif current_llm_type == "chatgpt realtime api":
-                                            if active_realtime_session and active_realtime_session.is_connected:
+                                            elif current_llm_type == "chatgpt realtime api":
                                                 await active_realtime_session.commit_audio()
-                                        continue
+
+                                            if rt_watchdog_task and not rt_watchdog_task.done():
+                                                rt_watchdog_task.cancel()
+
+                                            target_rt_session = active_realtime_session
+                                            buffered_chunks = list(audio_buffer)
+                                            audio_buffer = []
+
+                                            async def rt_watchdog():
+                                                try:
+                                                    await asyncio.sleep(4.5)
+                                                    if not target_rt_session.speaking_active:
+                                                        print(f"\n[Realtime 경고] ⏱️ 4.5초간 {current_llm_type} 응답 없음 -> Whisper/일반 LLM으로 즉각 폴백 실행!")
+                                                        if buffered_chunks:
+                                                            full_audio = np.concatenate(buffered_chunks)
+                                                            user_text, asr_ms = await run_whisper_cpp(full_audio)
+                                                            print(f"[폴백 음성 인식 완료] {user_text or '(인식 실패)'} ({asr_ms:.0f}ms)")
+                                                            if is_meaningful_speech(user_text):
+                                                                nonlocal ai_task
+                                                                ai_task = asyncio.create_task(
+                                                                    handle_user_turn(user_text, asr_ms)
+                                                                )
+                                                                return
+                                                        # 유효한 발화가 없거나 폴백 실패 시 클라이언트 '생각중' 해제
+                                                        await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
+                                                except asyncio.CancelledError:
+                                                    pass
+                                                except Exception as we:
+                                                    print(f"[Realtime 감시 오류] {we}")
+                                                    try:
+                                                        await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
+                                                    except Exception:
+                                                        pass
+
+                                            rt_watchdog_task = asyncio.create_task(rt_watchdog())
+                                            continue
+                                        else:
+                                            print(f"\n[Realtime 경고] ⚠️ {current_llm_type} 세션 미연결 상태 감지! 로컬 Whisper STT로 자동 폴백합니다.")
+                                            # continue를 실행하지 않고 아래의 Whisper STT / 일반 처리 루틴으로 즉시 진입!
 
                                     is_ai_busy = ai_task and not ai_task.done()
                                     if is_ai_busy:
@@ -2766,6 +2841,8 @@ async def handler(websocket, path=None):
     except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):
         pass
     finally:
+        if rt_watchdog_task and not rt_watchdog_task.done():
+            rt_watchdog_task.cancel()
         if active_realtime_session:
             await active_realtime_session.close()
             active_realtime_session = None
@@ -2773,7 +2850,7 @@ async def handler(websocket, path=None):
 
 async def main():
     print("실시간 음성 비서 서버(ws://0.0.0.0:8765) 시작 중 (PCM 전송 모드)...")
-    server = await websockets.serve(handler, "0.0.0.0", 8765, ping_interval=None, ping_timeout=None, max_size=None)
+    server = await websockets.serve(handler, "0.0.0.0", 8765, ping_interval=20, ping_timeout=20, max_size=None)
     await server.wait_closed()
 
 if __name__ == "__main__":

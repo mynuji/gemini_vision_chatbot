@@ -171,6 +171,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             ws_cfg.uri = s_ws_uri;
             ws_cfg.reconnect_timeout_ms = 2000;
             ws_cfg.network_timeout_ms = 8000;
+            ws_cfg.ping_interval_sec = 15;      // 공유기 NAT 세션 만료 방지용 15초 하트비트 Ping
+            ws_cfg.pingpong_timeout_sec = 10;
             ws_cfg.task_stack = 3584;   // 6144 -> 3584 (내부 SRAM 절약)
             ws_cfg.buffer_size = 2048;  // 4096 -> 2048 (제어 JSON 및 오디오 수신에 충분)
 
