@@ -102,7 +102,7 @@ OPENAI_VOICE = os.environ.get("OPENAI_VOICE", "alloy").strip()
 # ------------------------------------------
 # Gemini Realtime (Multimodal Live API) 설정
 # ------------------------------------------
-GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-2.0-flash").strip()
+GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-3.8-live").strip()
 GEMINI_REALTIME_VOICE = os.environ.get("GEMINI_REALTIME_VOICE", "Aoede").strip()
 
 print(f"[시스템] Gemini LLM 준비 완료: {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
@@ -525,13 +525,42 @@ class GeminiLiveSession:
             "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
         )
 
+    async def _resolve_supported_models(self):
+        """ModelService.ListModels를 호출하여 bidiGenerateContent를 지원하는 실시간 모델 목록을 동적으로 조회"""
+        found = []
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            loop = asyncio.get_running_loop()
+            def _fetch():
+                with urllib.request.urlopen(req, timeout=4.0) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            data = await loop.run_in_executor(None, _fetch)
+            for m in data.get("models", []):
+                methods = m.get("supportedGenerationMethods", [])
+                if "bidiGenerateContent" in methods:
+                    name = m.get("name", "").replace("models/", "")
+                    if name and name not in found:
+                        found.append(name)
+            if found:
+                print(f"[Gemini Realtime] ModelService.ListModels에서 bidiGenerateContent 지원 모델 발견: {found}")
+        except Exception as e:
+            print(f"[Gemini Realtime] ListModels 조회 안내: {e}")
+        return found
+
     async def start(self):
         ws_url = (
             f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
             f"?key={self.api_key}"
         )
-        candidates = [self.model]
-        for alt in ("gemini-2.0-flash", "gemini-2.0-flash-exp"):
+        discovered = await self._resolve_supported_models()
+        candidates = []
+        if self.model and self.model not in candidates:
+            candidates.append(self.model)
+        for m in discovered:
+            if m not in candidates:
+                candidates.append(m)
+        for alt in ("gemini-3.8-live", "gemini-3.8-live-extended-thinking", "gemini-2.5-flash-native-audio", "gemini-2.0-flash-exp", "gemini-2.0-flash"):
             if alt not in candidates:
                 candidates.append(alt)
 
