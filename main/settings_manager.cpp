@@ -11,6 +11,11 @@ static const char *NVS_KEY = "app_cfg";
 
 static app_settings_t s_settings;
 static bool s_initialized = false;
+static settings_change_cb_t s_change_cb = NULL;
+
+void settings_manager_set_change_callback(settings_change_cb_t cb) {
+    s_change_cb = cb;
+}
 
 static void set_defaults(app_settings_t *cfg) {
     memset(cfg, 0, sizeof(app_settings_t));
@@ -164,6 +169,9 @@ esp_err_t settings_manager_save(const app_settings_t *new_settings) {
         err = nvs_commit(nvs_handle);
         ESP_LOGI(TAG, "Saved settings to NVS successfully! (SSID='%s', Server='%s:%u', Vol=%u%%)",
                  s_settings.wifi_ssid, s_settings.server_ip, (unsigned int)s_settings.server_port, s_settings.volume);
+        if (s_change_cb != NULL) {
+            s_change_cb(&s_settings);
+        }
     } else {
         ESP_LOGE(TAG, "nvs_set_blob failed: %s", esp_err_to_name(err));
     }

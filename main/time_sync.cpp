@@ -12,7 +12,6 @@ static const char *TAG = "TIME_SYNC";
 // 유명 NTP 서버 목록 (기본: time.google.com - Anycast 초고속 응답)
 static const ntp_server_info_t s_ntp_servers[] = {
     {"time.google.com (Google)","time.google.com"},
-    {"kr.pool.ntp.org (Korea)", "kr.pool.ntp.org"},
     {"time.cloudflare.com",     "time.cloudflare.com"},
     {"pool.ntp.org (Global)",   "pool.ntp.org"},
     {"time.windows.com (MS)",   "time.windows.com"},

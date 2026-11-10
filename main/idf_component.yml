@@ -6,4 +6,5 @@ dependencies:
   espressif/esp_lvgl_port: '*'
   lvgl/lvgl: ^8.3
   espressif/esp-sr: '*'
+  espressif/esp-dl: "==3.3.14"
   espressif/esp_websocket_client: '*'

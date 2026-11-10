@@ -33,7 +33,7 @@ typedef struct {
     uint8_t  brightness;      // 10 ~ 100 (%)
     uint8_t  mic_gain;        // 10 ~ 50 (1.0x ~ 5.0x, 기본값: 35)
     uint8_t  llm_type;        // 0: gemini api, 1: gemini realtime api, 2: chatgpt realtime api, 3: local llm
-    uint8_t  ntp_server_idx;  // 0: pool.ntp.org, 1: kr.pool.ntp.org, 2: google, 3: cloudflare, 4: ms, 5: apple
+    uint8_t  ntp_server_idx;  // 0: google, 1: cloudflare, 2: pool.ntp.org, 3: ms, 4: apple
     uint8_t  timezone_idx;    // 0: Seoul (GMT+9), 1: GMT-11, ...
     uint8_t  language;        // 0: 한국어, 1: English
 } app_settings_t;
@@ -41,6 +41,13 @@ typedef struct {
 const char* settings_manager_get_llm_type_name(uint8_t type);
 app_language_t settings_manager_get_language(void);
 esp_err_t settings_manager_set_language(app_language_t lang);
+
+typedef void (*settings_change_cb_t)(const app_settings_t *new_settings);
+
+/**
+ * @brief 설정 변경 시 호출될 콜백 등록
+ */
+void settings_manager_set_change_callback(settings_change_cb_t cb);
 
 /**
  * @brief NVS에서 설정을 로드. 저장된 설정이 없으면 기본값으로 초기화하고 저장.

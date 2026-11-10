@@ -347,10 +347,39 @@ esp_err_t wifi_ws_send_client_info(void) {
     }
     const app_settings_t *cfg = settings_manager_get();
     const char *llm_name = settings_manager_get_llm_type_name(cfg->llm_type);
-    char buf[256];
+    const ntp_server_info_t *ntp_info = time_sync_get_ntp_server(cfg->ntp_server_idx);
+    const timezone_info_t *tz_info = time_sync_get_timezone(cfg->timezone_idx);
+    const char *lang_str = (cfg->language == APP_LANG_KO) ? "ko" : "en";
+
+    char buf[512];
     snprintf(buf, sizeof(buf),
-             "{\"type\":\"client_info\",\"llm_type\":\"%s\",\"volume\":%u,\"mic_gain\":%u}",
-             llm_name, (unsigned int)cfg->volume, (unsigned int)cfg->mic_gain);
+             "{\"type\":\"client_info\","
+             "\"volume\":%u,"
+             "\"mic_gain\":%u,"
+             "\"brightness\":%u,"
+             "\"llm_type\":\"%s\","
+             "\"llm_type_idx\":%u,"
+             "\"ntp_server\":\"%s\","
+             "\"ntp_server_host\":\"%s\","
+             "\"ntp_server_idx\":%u,"
+             "\"timezone\":\"%s\","
+             "\"timezone_posix\":\"%s\","
+             "\"timezone_idx\":%u,"
+             "\"language\":\"%s\","
+             "\"language_idx\":%u}",
+             (unsigned int)cfg->volume,
+             (unsigned int)cfg->mic_gain,
+             (unsigned int)cfg->brightness,
+             llm_name ? llm_name : "gemini api",
+             (unsigned int)cfg->llm_type,
+             (ntp_info && ntp_info->name) ? ntp_info->name : "time.google.com",
+             (ntp_info && ntp_info->server) ? ntp_info->server : "time.google.com",
+             (unsigned int)cfg->ntp_server_idx,
+             (tz_info && tz_info->name) ? tz_info->name : "Seoul (GMT+9)",
+             (tz_info && tz_info->tz_posix) ? tz_info->tz_posix : "KST-9",
+             (unsigned int)cfg->timezone_idx,
+             lang_str,
+             (unsigned int)cfg->language);
     ESP_LOGI(TAG, "Sending client info to server: %s", buf);
     return wifi_ws_send_text(buf);
 }

@@ -222,13 +222,13 @@ static void on_menu_btn_event(lv_event_t *e) {
         audio_io_play_tone(1000.0f, 30);
 
         if (id == 1) show_view(SUBVIEW_VOLUME);
-        else if (id == 2) show_view(SUBVIEW_WIFI);
-        else if (id == 3) show_view(SUBVIEW_SERVER);
-        else if (id == 4) show_view(SUBVIEW_BRIGHTNESS);
-        else if (id == 5) show_view(SUBVIEW_MIC_GAIN);
-        else if (id == 6) show_view(SUBVIEW_LLM_TYPE);
-        else if (id == 7) show_view(SUBVIEW_NTP_SERVER);
-        else if (id == 8) show_view(SUBVIEW_TIMEZONE);
+        else if (id == 2) show_view(SUBVIEW_BRIGHTNESS);
+        else if (id == 3) show_view(SUBVIEW_MIC_GAIN);
+        else if (id == 4) show_view(SUBVIEW_WIFI);
+        else if (id == 5) show_view(SUBVIEW_SERVER);
+        else if (id == 6) show_view(SUBVIEW_NTP_SERVER);
+        else if (id == 7) show_view(SUBVIEW_TIMEZONE);
+        else if (id == 8) show_view(SUBVIEW_LLM_TYPE);
         else if (id == 9) show_view(SUBVIEW_LANGUAGE);
         else if (id == 10) show_view(SUBVIEW_INFO);
         else if (id == 11) {
@@ -295,29 +295,29 @@ static void create_main_menu(lv_obj_t *parent) {
 
     const char *items_ko[] = {
         "1. 음량 조절",
-        "2. 와이파이 설정",
-        "3. 서버 주소 설정",
-        "4. 화면 밝기 조절",
-        "5. 마이크 감도",
-        "6. LLM 모델 선택",
-        "7. NTP 서버 설정",
-        "8. 시간대 (타임존)",
-        "9. 언어 설정 (Language)",
+        "2. 화면 밝기 조절",
+        "3. 마이크 감도",
+        "4. 와이파이 설정",
+        "5. 서버 주소 설정",
+        "6. NTP서버 설정",
+        "7. 시간대(타임존)",
+        "8. LLM모델 선택",
+        "9. 언어설정",
         "10. 시스템 정보",
         "11. 재부팅",
-        "12. 공장 초기화"
+        "12. 공장초기화"
     };
 
     const char *items_en[] = {
         "1. Volume Control",
-        "2. Wi-Fi Config",
-        "3. Server Address",
-        "4. Display Brightness",
-        "5. Mic Sensitivity",
-        "6. LLM Type",
-        "7. NTP Server",
-        "8. Timezone (Region)",
-        "9. Language (언어)",
+        "2. Display Brightness",
+        "3. Mic Sensitivity",
+        "4. Wi-Fi Config",
+        "5. Server Address",
+        "6. NTP Server",
+        "7. Timezone",
+        "8. LLM Model Selection",
+        "9. Language",
         "10. System Info",
         "11. Reboot",
         "12. Factory Reset"
@@ -1354,6 +1354,9 @@ static void create_ntp_server_view(lv_obj_t *parent) {
     }, LV_EVENT_SCROLL_END, NULL);
 
     uint8_t count = time_sync_get_ntp_server_count();
+    if (s_edit_cfg.ntp_server_idx >= count) {
+        s_edit_cfg.ntp_server_idx = 0;
+    }
     for (uint8_t i = 0; i < count; i++) {
         char item_txt[64];
         bool selected = (s_edit_cfg.ntp_server_idx == i);

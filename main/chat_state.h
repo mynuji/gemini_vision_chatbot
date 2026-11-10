@@ -71,6 +71,16 @@ void chat_state_activity_occurred(void);
 void chat_state_tick(uint32_t now_ms);
 
 /**
+ * @brief 현재 시간 질의 시 LCD에 일정 시간 동안 시계 화면 표시
+ */
+void chat_state_show_clock_temporary(uint32_t duration_sec);
+
+/**
+ * @brief 임시 시계 표시 모드 활성화 여부
+ */
+bool chat_state_is_temp_clock_active(void);
+
+/**
  * @brief 카메라 실시간 프리뷰 시작 (촬영 상황 발생 시 호출)
  */
 void chat_state_start_camera_preview(void);

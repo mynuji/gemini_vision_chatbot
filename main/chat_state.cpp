@@ -27,6 +27,9 @@ static uint32_t s_last_barge_in_ms = 0;
 static uint32_t s_last_state_change_ms = 0;
 static SemaphoreHandle_t s_state_mutex = NULL;
 
+static bool s_temp_clock_active = false;
+static uint32_t s_temp_clock_end_ms = 0;
+
 static TaskHandle_t s_preview_task_handle = NULL;
 static volatile bool s_camera_preview_active = false;
 
@@ -206,6 +209,8 @@ void chat_state_init(void) {
     s_chat_state = CHAT_STATE_IDLE;
     s_session_active = false;
     s_close_session_after_speaking = false;
+    s_temp_clock_active = false;
+    s_temp_clock_end_ms = 0;
     s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_last_state_change_ms = s_last_activity_ms;
 
@@ -321,6 +326,11 @@ void chat_state_handle_touch(void) {
 
     ESP_LOGI(TAG, "Touch event received! Current state: %d", (int)s_chat_state);
 
+    if (s_temp_clock_active) {
+        s_temp_clock_active = false;
+        display_ui_show_clock_mode(false);
+    }
+
     if (s_chat_state == CHAT_STATE_IDLE) {
         // IDLE 상태에서 터치 -> Alexa 호출과 동일하게 처리 (비프음 + wake_word 전송 + LISTENING 시작)
         ESP_LOGI(TAG, "Touch in IDLE -> Triggering wake session exactly like Alexa!");
@@ -363,6 +373,10 @@ void chat_state_handle_wake_word(void) {
     }
 
     ESP_LOGI(TAG, ">>> Wake word 'Alexa' DETECTED! Current state: %d", (int)s_chat_state);
+    if (s_temp_clock_active) {
+        s_temp_clock_active = false;
+        display_ui_show_clock_mode(false);
+    }
     s_close_session_after_speaking = false; // Alexa 호출 시 일반 대화 모드(60초 침묵 전까지 유지)
 
     if (s_chat_state == CHAT_STATE_SPEAKING || s_chat_state == CHAT_STATE_THINKING) {
@@ -486,6 +500,14 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     ESP_LOGW(TAG, ">>> RECEIVED CAPTURE COMMAND FROM JETSON SERVER! <<<");
                     ESP_LOGW(TAG, "==========================================================");
                     chat_state_start_camera_preview();
+                    handled = true;
+                } else if (strcmp(type->valuestring, "show_clock") == 0) {
+                    cJSON *dur_item = cJSON_GetObjectItem(root, "duration");
+                    uint32_t dur = 12;
+                    if (dur_item && cJSON_IsNumber(dur_item) && dur_item->valueint > 0) {
+                        dur = (uint32_t)dur_item->valueint;
+                    }
+                    chat_state_show_clock_temporary(dur);
                     handled = true;
                 } else if (strcmp(type->valuestring, "preview_stop") == 0) {
                     ESP_LOGI(TAG, "Received preview_stop command from server");
@@ -615,6 +637,18 @@ void chat_state_activity_occurred(void) {
     s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+void chat_state_show_clock_temporary(uint32_t duration_sec) {
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    s_temp_clock_active = true;
+    s_temp_clock_end_ms = now_ms + (duration_sec * 1000);
+    ESP_LOGI(TAG, "Temporary clock display activated for %u seconds", (unsigned int)duration_sec);
+    display_ui_show_clock_mode(true);
+}
+
+bool chat_state_is_temp_clock_active(void) {
+    return s_temp_clock_active;
+}
+
 void chat_state_handle_speaker_finished(void) {
     ESP_LOGI(TAG, "Speaker playback finished. s_close_session=%d, s_session_active=%d, cur_state=%d",
              (int)s_close_session_after_speaking, (int)s_session_active, (int)s_chat_state);
@@ -634,6 +668,16 @@ void chat_state_handle_speaker_finished(void) {
 
 void chat_state_tick(uint32_t now_ms) {
     uint32_t cur_ms = (uint32_t)(esp_timer_get_time() / 1000);
+
+    // [0] 임시 시계 화면 유지 시간 만료 검사
+    if (s_temp_clock_active) {
+        if (cur_ms >= s_temp_clock_end_ms) {
+            ESP_LOGI(TAG, "Temporary clock display expired -> Returning to eye display");
+            s_temp_clock_active = false;
+            display_ui_show_clock_mode(false);
+        }
+    }
+
     // 시간 역전(비프음 재생 등으로 인한 인자 지연) 또는 언더플로우 방어
     if (cur_ms < s_last_activity_ms) {
         return;
@@ -661,14 +705,10 @@ void chat_state_tick(uint32_t now_ms) {
             }
         }
     } else if (s_chat_state == CHAT_STATE_SPEAKING) {
-        // 스피커 버퍼가 비어있고 스피커 출력이 멈췄는데 SPEAKING 상태가 지속될 때 자동 복구 (Realtime 모드 지연/유실 대응)
+        // 스피커 버퍼가 비어있고 스피커 출력이 멈춘 완전 유휴 상태에서 3초 이상 추가 오디오가 없을 때 자동 복구
         bool spk_idle = audio_pipeline_is_spk_buffer_empty() && !audio_pipeline_is_speaker_playing();
-        if (spk_idle && elapsed >= 1500) {
+        if (spk_idle && elapsed >= 3000) {
             ESP_LOGW(TAG, ">>> SPEAKING state idle watchdog timeout (%ums)! Auto-recovering to LISTENING/IDLE", (unsigned int)elapsed);
-            chat_state_handle_speaker_finished();
-        } else if (audio_pipeline_is_spk_buffer_empty() && elapsed >= 2500) {
-            // 버퍼가 비어있는데 SPEAKING 상태가 2.5초 이상 지속된 경우 플래그 상태 불문 강제 복구
-            ESP_LOGW(TAG, ">>> SPEAKING empty buffer watchdog timeout (2.5s)! Forcing recovery to LISTENING/IDLE");
             chat_state_handle_speaker_finished();
         } else if (elapsed >= 60000) {
             // 최대 60초 절대 타임아웃

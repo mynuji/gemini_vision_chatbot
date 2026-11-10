@@ -603,20 +603,11 @@ void display_ui_update_clock(void) {
           lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 36);
         }
 
-        // 2. 12시간제 시간 (1~12 : 00~59)
+        // 2. 12시간제 시간 (1~12 : 00~59) 및 AM/PM 텍스트 갱신
         int hour12 = timeinfo.tm_hour % 12;
         if (hour12 == 0) hour12 = 12;
         bool is_pm = (timeinfo.tm_hour >= 12);
 
-        char time_buf[16];
-        snprintf(time_buf, sizeof(time_buf), "%d:%02d", hour12, timeinfo.tm_min);
-        if (s_clock_time_lbl) {
-          lv_label_set_text(s_clock_time_lbl, time_buf);
-          lv_obj_align(s_clock_time_lbl, LV_ALIGN_CENTER, is_ko ? 16 : 14, 12);
-          lv_obj_update_layout(s_clock_time_lbl);
-        }
-
-        // 3. AM(윗첨자) / PM(아랫첨자) 설정 (한국어: 오전/오후, 영어: AM/PM)
         if (s_clock_ampm_lbl) {
           if (is_ko) {
             lv_label_set_text(s_clock_ampm_lbl, is_pm ? "오후" : "오전");
@@ -624,12 +615,28 @@ void display_ui_update_clock(void) {
             lv_label_set_text(s_clock_ampm_lbl, is_pm ? "PM" : "AM");
           }
           lv_obj_update_layout(s_clock_ampm_lbl);
+        }
+
+        char time_buf[16];
+        snprintf(time_buf, sizeof(time_buf), "%d:%02d", hour12, timeinfo.tm_min);
+        const lv_coord_t ampm_gap = 6;
+        lv_coord_t ampm_w = s_clock_ampm_lbl ? lv_obj_get_width(s_clock_ampm_lbl) : (is_ko ? 30 : 26);
+        lv_coord_t time_x_ofs = (ampm_w + ampm_gap) / 2;
+
+        if (s_clock_time_lbl) {
+          lv_label_set_text(s_clock_time_lbl, time_buf);
+          lv_obj_align(s_clock_time_lbl, LV_ALIGN_CENTER, time_x_ofs, 10);
+          lv_obj_update_layout(s_clock_time_lbl);
+        }
+
+        // 3. AM(윗첨자) / PM(아랫첨자) 배치 (오전/오후 + 시간 전체 묶음 중앙 정렬)
+        if (s_clock_ampm_lbl && s_clock_time_lbl) {
           if (is_pm) {
             // PM / 오후: 시간 앞 아랫첨자 위치
-            lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_BOTTOM, -6, -4);
+            lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_BOTTOM, -ampm_gap, -2);
           } else {
             // AM / 오전: 시간 앞 윗첨자 위치
-            lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
+            lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -ampm_gap, 2);
           }
         }
       }

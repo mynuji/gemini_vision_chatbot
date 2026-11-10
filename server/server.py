@@ -586,6 +586,14 @@ class GeminiLiveSession:
                                             "direction": {"type": "STRING", "enum": ["up", "down", "max", "min"], "description": "마이크 감도 조절 방향"}
                                         }
                                     }
+                                },
+                                {
+                                    "name": "get_current_time",
+                                    "description": "사용자가 현재 시각, 지금 몇 시인지, 날짜 및 시간을 물어볼 때 호출하여 현재 시간 정보를 얻고 화면에 시계를 표시합니다.",
+                                    "parameters": {
+                                        "type": "OBJECT",
+                                        "properties": {}
+                                    }
                                 }
                             ]
                         }
@@ -716,6 +724,26 @@ class GeminiLiveSession:
                                             "functionResponses": [
                                                 {
                                                     "response": {"output": {"status": "success"}},
+                                                    "id": call_id
+                                                }
+                                            ]
+                                        }
+                                    }
+                                    await self.gemini_ws.send(json.dumps(resp))
+                                except Exception:
+                                    pass
+                        elif fc.get("name") == "get_current_time":
+                            print(f"\n[Gemini Realtime Tool Call] get_current_time 호출 감지! (LCD 시계 12초 표시)")
+                            asyncio.create_task(self.esp_ws.send(json.dumps({"type": "show_clock", "duration": 12})))
+                            call_id = fc.get("id")
+                            if call_id and self.gemini_ws:
+                                try:
+                                    time_speech = get_korean_time_speech()
+                                    resp = {
+                                        "toolResponse": {
+                                            "functionResponses": [
+                                                {
+                                                    "response": {"output": {"current_time": time_speech}},
                                                     "id": call_id
                                                 }
                                             ]
@@ -874,6 +902,15 @@ class OpenAIRealtimeSession:
                                     "direction": {"type": "string", "enum": ["up", "down", "max", "min"], "description": "마이크 감도 조절 방향"}
                                 }
                             }
+                        },
+                        {
+                            "type": "function",
+                            "name": "get_current_time",
+                            "description": "사용자가 현재 시각, 지금 몇 시인지, 날짜 및 시간을 물어볼 때 호출하여 현재 시간 정보를 얻고 화면에 시계를 표시합니다.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {}
+                            }
                         }
                     ],
                     "tool_choice": "auto"
@@ -970,6 +1007,25 @@ class OpenAIRealtimeSession:
                                 asyncio.create_task(self.on_adjust_audio(func_name, args_json))
                         except Exception as e:
                             print(f"[OpenAI Realtime Tool Call 파싱 오류] {e}")
+                    elif func_name == "get_current_time":
+                        print(f"\n[OpenAI Realtime Tool Call] get_current_time 감지! (LCD 시계 12초 표시)")
+                        asyncio.create_task(self.esp_ws.send(json.dumps({"type": "show_clock", "duration": 12})))
+                        call_id = event.get("call_id")
+                        time_speech = get_korean_time_speech()
+                        if call_id and self.openai_ws:
+                            try:
+                                resp = {
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "function_call_output",
+                                        "call_id": call_id,
+                                        "output": json.dumps({"current_time": time_speech})
+                                    }
+                                }
+                                asyncio.create_task(self.openai_ws.send(json.dumps(resp)))
+                                asyncio.create_task(self.openai_ws.send(json.dumps({"type": "response.create"})))
+                            except Exception as e:
+                                print(f"[OpenAI Realtime Tool 응답 오류] {e}")
 
         except asyncio.CancelledError:
             pass
@@ -1038,6 +1094,35 @@ def is_session_end_query(text):
         if k in text or k.replace(" ", "") in no_space:
             return True
     return False
+
+TIME_KEYWORDS = (
+    "현재 시간", "현재시간", "지금 몇 시", "지금 몇시", "몇 시야", "몇 시예요",
+    "몇 시인가요", "몇 시인지", "몇시야", "몇시예요", "몇시인가요", "몇시인지",
+    "시간 알려줘", "시간 몇 시", "시간 몇시", "시간이 어떻게", "지금 시간",
+    "지금시간", "현재 시각", "지금 시각", "몇 시니", "몇시니", "시간 좀 알려줘",
+    "시간 말해줘", "시계 보여줘"
+)
+
+def is_time_query(text):
+    """사용자 발화에 현재 시간 질의 키워드가 포함되어 있는지 판정"""
+    if not text:
+        return False
+    no_space = text.replace(" ", "")
+    for k in TIME_KEYWORDS:
+        if k in text or k.replace(" ", "") in no_space:
+            return True
+    return False
+
+def get_korean_time_speech():
+    """현재 시스템 시간을 한국어 음성 대화용 자연스러운 구어체 문장으로 생성"""
+    import datetime
+    now = datetime.datetime.now()
+    ampm = "오전" if now.hour < 12 else "오후"
+    h = now.hour % 12
+    if h == 0:
+        h = 12
+    m = now.minute
+    return f"현재 시간은 {ampm} {h}시 {m}분입니다."
 
 def is_meaningful_speech(text):
     """TV 소음, 비언어 잡음, 괄호 환각, 무의미한 단발성 소리(기침, 헛기침 등)를 필터링하여 유효한 사용자의 발화인지 판정"""
@@ -1359,7 +1444,7 @@ def calculate_remaining_sentences(sentences_info, played_bytes):
         
     return remaining
 
-async def process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms=0.0, close_session_after=False, interrupted_holder=None, image_bytes=None, llm_type="gemini api"):
+async def process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms=0.0, close_session_after=False, interrupted_holder=None, image_bytes=None, llm_type="gemini api", direct_answer=None):
     full_answer = ""
     sentences_info = []  # [{"text": str, "pcm": bytes, "status": "pending"|"sending"|"done"}]
     sentence_buffer = ""
@@ -1386,8 +1471,13 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
         t_first_token = None
         t_first_sentence = None
 
-        # 지정된 LLM Type에 따른 실시간 스트리밍
-        response = stream_llm(recent_messages, image_bytes=image_bytes, llm_type=llm_type)
+        if direct_answer:
+            async def _direct_gen():
+                yield direct_answer
+            response = _direct_gen()
+        else:
+            # 지정된 LLM Type에 따른 실시간 스트리밍
+            response = stream_llm(recent_messages, image_bytes=image_bytes, llm_type=llm_type)
 
         is_first_chunk = True
         pcm_queue = asyncio.Queue()
@@ -1837,6 +1927,21 @@ async def handler(websocket, path=None):
     current_llm_type = "gemini api"
     current_volume = 70
     current_mic_gain = 35
+    current_brightness = 80
+    current_ntp_server = "time.google.com (Google)"
+    current_timezone = "Seoul (GMT+9)"
+    current_timezone_posix = "KST-9"
+    current_language = "ko"
+    client_settings = {
+        "volume": current_volume,
+        "mic_gain": current_mic_gain,
+        "brightness": current_brightness,
+        "llm_type": current_llm_type,
+        "ntp_server": current_ntp_server,
+        "timezone": current_timezone,
+        "timezone_posix": current_timezone_posix,
+        "language": current_language
+    }
 
     active_realtime_session = None
     t_last_rt_retry = 0.0
@@ -1870,6 +1975,7 @@ async def handler(websocket, path=None):
                 new_vol = 10
 
             current_volume = new_vol
+            client_settings["volume"] = current_volume
             print(f"\n[오디오 설정 변경] 볼륨 -> {current_volume}%")
             try:
                 await websocket.send(json.dumps({
@@ -1916,6 +2022,7 @@ async def handler(websocket, path=None):
                 new_gain = 10
 
             current_mic_gain = new_gain
+            client_settings["mic_gain"] = current_mic_gain
             print(f"\n[오디오 설정 변경] 마이크 감도 -> {current_mic_gain} ({current_mic_gain / 10:.1f}x)")
             try:
                 await websocket.send(json.dumps({
@@ -1976,6 +2083,7 @@ async def handler(websocket, path=None):
             active_realtime_session = None
 
         current_llm_type = target_type
+        client_settings["llm_type"] = current_llm_type
         print(f"[LLM Type 전환 완료] 서버 current_llm_type = '{current_llm_type}'")
 
         # 4. 사용자에게 어떤 LLM으로 변경했는지 AI 음성(TTS) 및 화면 안내
@@ -2063,6 +2171,27 @@ async def handler(websocket, path=None):
         should_close = close_session_after or is_session_end_query(user_text)
         if is_session_end_query(user_text):
             print(f"\n[대화 종료 의도 감지] '{user_text}' -> 작별 인사 후 세션 종료(Alexa 대기 상태 전환) 예약")
+
+        # 현재 시간 질의 감지 -> ESP32 LCD 시계 표시 명령 및 정확한 시간 답변
+        if is_time_query(user_text):
+            print(f"\n[시간 질의 감지] '{user_text}' -> ESP32 LCD 시계 표시 명령 전송!")
+            try:
+                await websocket.send(json.dumps({"type": "show_clock", "duration": 12}))
+            except Exception as e:
+                print(f"[경고] show_clock 명령 전송 실패: {e}")
+
+            # 시각 분석이 필요한 복합 질문이 아니고 순수 시간 질의인 경우 즉시 정확한 시간 음성 응답
+            if not is_vision_query(user_text) and len(user_text.strip()) <= 25:
+                time_speech = get_korean_time_speech()
+                print(f"[시간 즉시 응답] {time_speech}")
+                await process_ai_response(
+                    websocket, user_text, chat_history,
+                    time.perf_counter(), asr_ms,
+                    close_session_after=should_close,
+                    interrupted_holder=interrupted_holder,
+                    direct_answer=time_speech
+                )
+                return
 
         image_bytes = None
         if not should_close and is_vision_query(user_text):
@@ -2523,17 +2652,56 @@ async def handler(websocket, path=None):
                                         "message": f"LLM Type set to {current_llm_type}"
                                     }))
 
-                                # [G] 클라이언트 초기 상태 수신 (LLM, Volume, Mic Gain)
-                                elif msg_type == "client_info":
+                                # [G] 클라이언트 전체 설정 동기화 수신 (LLM, Volume, Mic Gain, Brightness, NTP, TZ, Lang 등)
+                                elif msg_type in ("client_info", "settings_update"):
                                     if "volume" in ctrl_json:
                                         current_volume = int(ctrl_json["volume"])
+                                        client_settings["volume"] = current_volume
                                     if "mic_gain" in ctrl_json:
                                         current_mic_gain = int(ctrl_json["mic_gain"])
+                                        client_settings["mic_gain"] = current_mic_gain
+                                    if "brightness" in ctrl_json:
+                                        current_brightness = int(ctrl_json["brightness"])
+                                        client_settings["brightness"] = current_brightness
                                     if "llm_type" in ctrl_json:
-                                        new_type = ctrl_json["llm_type"].strip().lower()
-                                        if new_type != current_llm_type:
-                                            current_llm_type = new_type
-                                    print(f"\n[설정 수신] 클라이언트 정보 동기화: LLM='{current_llm_type}', Vol={current_volume}%, MicGain={current_mic_gain} ({current_mic_gain/10:.1f}x)")
+                                        new_type = str(ctrl_json["llm_type"]).strip().lower()
+                                        need_reinit = (new_type != current_llm_type) or (
+                                            new_type in ("gemini realtime api", "chatgpt realtime api")
+                                            and (not active_realtime_session or not active_realtime_session.is_connected)
+                                        )
+                                        current_llm_type = new_type
+                                        client_settings["llm_type"] = current_llm_type
+                                        if need_reinit:
+                                            asyncio.create_task(switch_realtime_session(current_llm_type))
+                                    if "ntp_server" in ctrl_json:
+                                        current_ntp_server = str(ctrl_json["ntp_server"])
+                                        client_settings["ntp_server"] = current_ntp_server
+                                    if "ntp_server_host" in ctrl_json:
+                                        client_settings["ntp_server_host"] = str(ctrl_json["ntp_server_host"])
+                                    if "timezone" in ctrl_json:
+                                        current_timezone = str(ctrl_json["timezone"])
+                                        client_settings["timezone"] = current_timezone
+                                    if "timezone_posix" in ctrl_json:
+                                        current_timezone_posix = str(ctrl_json["timezone_posix"])
+                                        client_settings["timezone_posix"] = current_timezone_posix
+                                    if "language" in ctrl_json:
+                                        current_language = str(ctrl_json["language"])
+                                        client_settings["language"] = current_language
+                                        if current_language == "en":
+                                            VOICE = "en-US-JennyNeural"
+                                        else:
+                                            VOICE = "ko-KR-SunHiNeural"
+
+                                    print("\n=======================================================")
+                                    print(" [클라이언트 설정 동기화] ESP32 최신 설정값 수신 완료:")
+                                    print(f"  • 볼륨(Volume)        : {client_settings.get('volume')}%")
+                                    print(f"  • 마이크 감도(Gain)   : {client_settings.get('mic_gain')} ({client_settings.get('mic_gain', 35)/10:.1f}x)")
+                                    print(f"  • 화면 밝기(Brightness): {client_settings.get('brightness')}%")
+                                    print(f"  • LLM 타입(LLM Type)  : {client_settings.get('llm_type')}")
+                                    print(f"  • NTP 서버(NTP Server): {client_settings.get('ntp_server')} ({client_settings.get('ntp_server_host', '')})")
+                                    print(f"  • 타임존(Timezone)    : {client_settings.get('timezone')} ({client_settings.get('timezone_posix', '')})")
+                                    print(f"  • 언어 설정(Language) : {client_settings.get('language')} (TTS Voice: {VOICE})")
+                                    print("=======================================================")
 
                         except Exception as parse_err:
                             print(f"[경고] JSON 파싱 실패 ({parse_err}), 일반 텍스트로 처리합니다.")
@@ -2558,6 +2726,20 @@ async def handler(websocket, path=None):
                             print(f"\n[텍스트 명령 감지] 오디오 설정 변경: '{user_text}' -> {aud_cmd}={aud_val}")
                             await adjust_audio_settings(aud_cmd, aud_val, aud_resp)
                             continue
+
+                        # 텍스트 시간 질의 감지
+                        if is_time_query(user_text):
+                            print(f"\n[텍스트 시간 질의] '{user_text}' -> ESP32 LCD 시계 표시 명령(12초) 전송!")
+                            try:
+                                await websocket.send(json.dumps({"type": "show_clock", "duration": 12}))
+                            except Exception:
+                                pass
+                            if len(user_text.strip()) <= 25:
+                                time_speech = get_korean_time_speech()
+                                ai_task = asyncio.create_task(
+                                    process_ai_response(websocket, user_text, chat_history, t_speech_end, 0.0, interrupted_holder=interrupted_holder, direct_answer=time_speech)
+                                )
+                                continue
 
                         interrupted_holder["session"] = None
                         

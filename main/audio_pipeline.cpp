@@ -141,7 +141,9 @@ static void spk_play_task(void *pvParameters) {
                 prebuf_wait_count = 0;
                 if (chat_state_get() == CHAT_STATE_SPEAKING && cur_buffered == 0) {
                     empty_spk_count++;
-                    if (empty_spk_count >= 25) { // 500ms 버퍼 비어있음
+                    // 서버로부터 DONE이 이미 수신된 경우 신속히 완료(40ms), 아직 미수신(문장 간 합성 지연)인 경우 최대 3초(150*20ms) 대기
+                    int max_empty = s_server_done ? 2 : 150;
+                    if (empty_spk_count >= max_empty) {
                         empty_spk_count = 0;
                         s_is_speaker_playing = false;
                         s_server_done = false;
@@ -161,6 +163,7 @@ static void spk_play_task(void *pvParameters) {
 
         if (item != NULL && item_size > 0) {
             empty_spk_count = 0;
+            chat_state_activity_occurred(); // 실제 스피커 출력 재생 중 -> 타임아웃 타이머 리셋!
             memcpy(play_buf, item, item_size);
             vRingbufferReturnItem(s_spk_ringbuf, item);
             s_spk_buffered_bytes = (s_spk_buffered_bytes >= item_size) ? (s_spk_buffered_bytes - item_size) : 0;
@@ -188,8 +191,8 @@ static void spk_play_task(void *pvParameters) {
             s_spk_total_played_bytes += item_size;
         } else {
             // 버퍼가 비어있음
-            if (s_server_done || (chat_state_get() == CHAT_STATE_SPEAKING && empty_spk_count >= 20)) {
-                // 재생 완료 또는 400ms 버퍼 언더런 타임아웃 복구 (무한 대기 방지)
+            // 서버 완료 신호가 왔거나, 서버로부터 3초(150 * 20ms) 동안 후속 패킷이 없으면 재생 종료
+            if (s_server_done || (chat_state_get() == CHAT_STATE_SPEAKING && empty_spk_count >= 150)) {
                 audio_io_spk_write_silence(20);
                 s_is_speaker_playing = false;
                 s_server_done = false;
@@ -568,6 +571,8 @@ void audio_pipeline_feed_tts_audio(const uint8_t *data, size_t len) {
     if (cur_st == CHAT_STATE_LISTENING || cur_st == CHAT_STATE_IDLE) {
         return;
     }
+
+    chat_state_activity_occurred(); // 활성 오디오 수신 -> 타임아웃 타이머 리셋!
 
     BaseType_t sent = xRingbufferSend(s_spk_ringbuf, data, len, pdMS_TO_TICKS(50));
     if (sent == pdTRUE) {

@@ -52,6 +52,11 @@ static void on_ntp_time_synced(void) {
     }
 }
 
+static void on_settings_changed(const app_settings_t *cfg) {
+    ESP_LOGI(TAG, "Settings updated -> synchronizing to server...");
+    wifi_ws_send_client_info();
+}
+
 /**
  * @brief 네트워크(Wi-Fi / WebSocket) 상태 변경 콜백
  */
@@ -87,7 +92,7 @@ static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
     default:
         audio_pipeline_clear_audio();
         chat_state_set(CHAT_STATE_IDLE);
-        display_ui_set_status(is_ko ? "연결 끊김" : (info ? info : "DISCONNECTED"));
+        display_ui_set_status(is_ko ? "WIFI 끊김" : (info ? info : "DISCONNECTED"));
         break;
     }
 }
@@ -134,7 +139,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
         // 1. 터치 감지 처리: 인터럽트 에지 이벤트 기반 1회 즉시 감지 (디바운스 600ms)
         if (has_event && (now - last_touch_handled_time > 600)) {
             ESP_LOGI(TAG, "User Touch Event Handled! Forwarding to chat_state_handle_touch()");
-            if (s_boot_clock_active || s_idle_clock_active) {
+            if (s_boot_clock_active || s_idle_clock_active || chat_state_is_temp_clock_active()) {
                 s_boot_clock_active = false;
                 s_idle_clock_active = false;
                 s_eye_peeking = false;
@@ -212,7 +217,10 @@ static void chat_monitor_loop_task(void *pvParameters) {
         // 1-3. 5분 대기 초과 시 시계 표시 및 간헐적 눈 애니메이션 관리
         if (!s_boot_clock_active) {
             chat_state_t cur_state = chat_state_get();
-            if (cur_state != CHAT_STATE_IDLE) {
+            if (chat_state_is_temp_clock_active()) {
+                // 시간 질의 임시 시계 표시 중: 눈으로 강제 전환하지 않고 유지
+                s_idle_clock_start_time = now;
+            } else if (cur_state != CHAT_STATE_IDLE) {
                 // 대화 진행 중(LISTENING, THINKING, SPEAKING)일 때는 시계 해제 및 대기 시간 리셋
                 s_idle_clock_start_time = now;
                 if (s_idle_clock_active) {
@@ -292,6 +300,9 @@ extern "C" void app_main(void) {
     // [0-1] 타임존 환경 변수 설정 및 NTP 완료 콜백 등록
     time_sync_init();
     time_sync_set_callback(on_ntp_time_synced);
+
+    // [0-2] 설정 변경 시 서버 실시간 동기화 콜백 등록
+    settings_manager_set_change_callback(on_settings_changed);
 
     // [1] 디스플레이 및 LVGL 초기화
     ESP_ERROR_CHECK(display_ui_init());
