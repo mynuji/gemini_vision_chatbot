@@ -102,7 +102,7 @@ OPENAI_VOICE = os.environ.get("OPENAI_VOICE", "alloy").strip()
 # ------------------------------------------
 # Gemini Realtime (Multimodal Live API) 설정
 # ------------------------------------------
-GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-2.0-flash-exp").strip()
+GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-2.0-flash").strip()
 GEMINI_REALTIME_VOICE = os.environ.get("GEMINI_REALTIME_VOICE", "Aoede").strip()
 
 print(f"[시스템] Gemini LLM 준비 완료: {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
@@ -527,106 +527,118 @@ class GeminiLiveSession:
 
     async def start(self):
         ws_url = (
-            f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
+            f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
             f"?key={self.api_key}"
         )
-        print(f"[Gemini Realtime] WebSocket 연결 시도 (model: {self.model}, voice: {self.voice})...")
-        try:
-            self.gemini_ws = await websockets.connect(ws_url, max_size=10 * 1024 * 1024)
-            setup_msg = {
-                "setup": {
-                    "model": f"models/{self.model}",
-                    "generationConfig": {
-                        "responseModalities": ["AUDIO"],
-                        "speechConfig": {
-                            "voiceConfig": {
-                                "prebuiltVoiceConfig": {
-                                    "voiceName": self.voice
+        candidates = [self.model]
+        for alt in ("gemini-2.0-flash", "gemini-2.0-flash-exp"):
+            if alt not in candidates:
+                candidates.append(alt)
+
+        for attempt_model in candidates:
+            print(f"[Gemini Realtime] WebSocket 연결 시도 (endpoint: v1beta, model: {attempt_model}, voice: {self.voice})...")
+            try:
+                self.gemini_ws = await websockets.connect(ws_url, max_size=10 * 1024 * 1024)
+                setup_msg = {
+                    "setup": {
+                        "model": f"models/{attempt_model}",
+                        "generationConfig": {
+                            "responseModalities": ["AUDIO"],
+                            "speechConfig": {
+                                "voiceConfig": {
+                                    "prebuiltVoiceConfig": {
+                                        "voiceName": self.voice
+                                    }
                                 }
                             }
-                        }
-                    },
-                    "systemInstruction": {
-                        "parts": [{"text": self.system_prompt}]
-                    },
-                    "tools": [
-                        {
-                            "functionDeclarations": [
-                                {
-                                    "name": "switch_llm_type",
-                                    "description": "사용자가 LLM 모델이나 타입을 변경/전환해 달라고 요청했을 때 호출합니다.",
-                                    "parameters": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "target_type": {
-                                                "type": "STRING",
-                                                "enum": ["gemini api", "gemini realtime api", "chatgpt realtime api", "local llm"],
-                                                "description": "변경할 대상 LLM 타입"
+                        },
+                        "systemInstruction": {
+                            "parts": [{"text": self.system_prompt}]
+                        },
+                        "tools": [
+                            {
+                                "functionDeclarations": [
+                                    {
+                                        "name": "switch_llm_type",
+                                        "description": "사용자가 LLM 모델이나 타입을 변경/전환해 달라고 요청했을 때 호출합니다.",
+                                        "parameters": {
+                                            "type": "OBJECT",
+                                            "properties": {
+                                                "target_type": {
+                                                    "type": "STRING",
+                                                    "enum": ["gemini api", "gemini realtime api", "chatgpt realtime api", "local llm"],
+                                                    "description": "변경할 대상 LLM 타입"
+                                                }
+                                            },
+                                            "required": ["target_type"]
+                                        }
+                                    },
+                                    {
+                                        "name": "set_volume",
+                                        "description": "스피커 볼륨(소리 크기)을 변경합니다. level(10~100) 또는 direction('up', 'down', 'max', 'min')을 지정합니다.",
+                                        "parameters": {
+                                            "type": "OBJECT",
+                                            "properties": {
+                                                "level": {"type": "INTEGER", "description": "설정할 볼륨 퍼센트(10~100)"},
+                                                "direction": {"type": "STRING", "enum": ["up", "down", "max", "min"], "description": "볼륨 조절 방향"}
                                             }
-                                        },
-                                        "required": ["target_type"]
-                                    }
-                                },
-                                {
-                                    "name": "set_volume",
-                                    "description": "스피커 볼륨(소리 크기)을 변경합니다. level(10~100) 또는 direction('up', 'down', 'max', 'min')을 지정합니다.",
-                                    "parameters": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "level": {"type": "INTEGER", "description": "설정할 볼륨 퍼센트(10~100)"},
-                                            "direction": {"type": "STRING", "enum": ["up", "down", "max", "min"], "description": "볼륨 조절 방향"}
+                                        }
+                                    },
+                                    {
+                                        "name": "set_mic_sensitivity",
+                                        "description": "마이크 감도(민감도/게인)를 변경합니다. level(1~6배율 또는 10~60) 또는 direction('up', 'down', 'max', 'min')을 지정합니다.",
+                                        "parameters": {
+                                            "type": "OBJECT",
+                                            "properties": {
+                                                "level": {"type": "INTEGER", "description": "설정할 마이크 감도(1~6 또는 10~60)"},
+                                                "direction": {"type": "STRING", "enum": ["up", "down", "max", "min"], "description": "마이크 감도 조절 방향"}
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "get_current_time",
+                                        "description": "사용자가 현재 시각, 지금 몇 시인지, 날짜 및 시간을 물어볼 때 호출하여 현재 시간 정보를 얻고 화면에 시계를 표시합니다.",
+                                        "parameters": {
+                                            "type": "OBJECT",
+                                            "properties": {}
                                         }
                                     }
-                                },
-                                {
-                                    "name": "set_mic_sensitivity",
-                                    "description": "마이크 감도(민감도/게인)를 변경합니다. level(1~6배율 또는 10~60) 또는 direction('up', 'down', 'max', 'min')을 지정합니다.",
-                                    "parameters": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "level": {"type": "INTEGER", "description": "설정할 마이크 감도(1~6 또는 10~60)"},
-                                            "direction": {"type": "STRING", "enum": ["up", "down", "max", "min"], "description": "마이크 감도 조절 방향"}
-                                        }
-                                    }
-                                },
-                                {
-                                    "name": "get_current_time",
-                                    "description": "사용자가 현재 시각, 지금 몇 시인지, 날짜 및 시간을 물어볼 때 호출하여 현재 시간 정보를 얻고 화면에 시계를 표시합니다.",
-                                    "parameters": {
-                                        "type": "OBJECT",
-                                        "properties": {}
-                                    }
-                                }
-                            ]
-                        }
-                    ]
+                                ]
+                            }
+                        ]
+                    }
                 }
-            }
-            await self.gemini_ws.send(json.dumps(setup_msg))
-            
-            # 서버의 setupComplete 응답 대기 (초기 핸드셰이크 완료 확인)
-            init_resp = await asyncio.wait_for(self.gemini_ws.recv(), timeout=5.0)
-            if isinstance(init_resp, bytes):
-                init_resp = init_resp.decode("utf-8", errors="ignore")
-            init_data = json.loads(init_resp) if init_resp else {}
-            
-            if "setupComplete" in init_data:
-                self.is_connected = True
-                print("[Gemini Realtime] 세션 Setup 완료 (STT/TTS 없는 직통 음성 스트리밍 준비 완료)")
-                self.rx_task = asyncio.create_task(self._receive_loop())
-            else:
-                if "error" in init_data:
-                    print(f"[Gemini Realtime] Setup 실패 (API 에러 응답): {init_data.get('error')}")
+                await self.gemini_ws.send(json.dumps(setup_msg))
+
+                # 서버의 setupComplete 응답 대기 (초기 핸드셰이크 완료 확인)
+                init_resp = await asyncio.wait_for(self.gemini_ws.recv(), timeout=5.0)
+                if isinstance(init_resp, bytes):
+                    init_resp = init_resp.decode("utf-8", errors="ignore")
+                init_data = json.loads(init_resp) if init_resp else {}
+
+                if "setupComplete" in init_data:
+                    self.model = attempt_model
+                    self.is_connected = True
+                    print(f"[Gemini Realtime] 세션 Setup 완료 (모델: {self.model}, STT/TTS 없는 직통 음성 스트리밍 준비 완료)")
+                    self.rx_task = asyncio.create_task(self._receive_loop())
+                    return
                 else:
-                    print(f"[Gemini Realtime] 예기치 않은 Setup 응답: {init_resp}")
-                self.is_connected = False
-                
-        except websockets.exceptions.ConnectionClosed as cc:
-            print(f"[Gemini Realtime] WebSocket 연결 거부 (Code: {cc.code}): {cc.reason}")
-            self.is_connected = False
-        except Exception as e:
-            print(f"[Gemini Realtime] 연결 실패: {e}")
-            self.is_connected = False
+                    if "error" in init_data:
+                        print(f"[Gemini Realtime] Setup 실패 ({attempt_model} API 에러): {init_data.get('error')}")
+                    else:
+                        print(f"[Gemini Realtime] 예기치 않은 Setup 응답 ({attempt_model}): {init_resp}")
+                    await self.gemini_ws.close()
+                    self.gemini_ws = None
+
+            except websockets.exceptions.ConnectionClosed as cc:
+                print(f"[Gemini Realtime] WebSocket 연결 거부 (모델: {attempt_model}, Code: {cc.code}): {cc.reason}")
+                self.gemini_ws = None
+            except Exception as e:
+                print(f"[Gemini Realtime] 연결 실패 (모델: {attempt_model}): {e}")
+                self.gemini_ws = None
+
+        self.is_connected = False
+        print("[Gemini Realtime] 모든 Realtime 후보 모델 연결 실패 -> 발화 시 Whisper STT로 자동 폴백됩니다.")
 
     async def send_audio(self, pcm_chunk_16k):
         """ESP32의 16kHz PCM 데이터를 Gemini로 즉각 전송"""
