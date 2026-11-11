@@ -337,22 +337,6 @@ extern "C" void app_main(void) {
     display_ui_set_brightness(cfg->brightness);
     display_ui_set_wifi_state(UI_WIFI_DISCONNECTED);
 
-    // [1-0] OV2640/OV3660 카메라 초기화 (내부 SRAM DMA 버퍼 16KB를 단편화 전에 최우선 할당!)
-    esp_err_t cam_err = camera_io_init();
-    if (cam_err == ESP_OK) {
-        uint8_t *jpeg = NULL;
-        size_t jpeg_len = 0;
-        uint16_t w = 0, h = 0;
-        if (camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h) == ESP_OK) {
-            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
-            free(jpeg);
-        } else {
-            ESP_LOGW(TAG, "Camera self-test capture failed");
-        }
-    } else {
-        ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
-    }
-
     // [1-1] 부팅 즉시 시계 화면 활성화 (NTP 동기화 대기 최대 30초, 동기화 완료 시 5초 카운트다운)
     display_ui_show_clock_mode(true);
     s_boot_clock_active = true;
@@ -378,20 +362,37 @@ extern "C" void app_main(void) {
     // 스피커 동작 확인: '도-미-솔' 부팅 멜로디
     audio_io_play_boot_melody();
 
-    // [4] 자동 깜빡임 태스크 시작 (이후 캐릭터 눈으로 전환될 때 동작)
+    // [4] 실시간 오디오 파이프라인 및 esp-sr WakeNet(wn10_alexa) 최우선 초기화
+    // (AES 복호화에 내부 SRAM이 필요하므로 Wi-Fi/카메라 이전 200KB+ 가용 시점에 최우선 로드!)
+    ESP_ERROR_CHECK(audio_pipeline_init());
+
+    // [5] OV2640/OV3660 카메라 초기화 (16KB 연속 DMA 버퍼 할당)
+    esp_err_t cam_err = camera_io_init();
+    if (cam_err == ESP_OK) {
+        uint8_t *jpeg = NULL;
+        size_t jpeg_len = 0;
+        uint16_t w = 0, h = 0;
+        if (camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h) == ESP_OK) {
+            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
+            free(jpeg);
+        } else {
+            ESP_LOGW(TAG, "Camera self-test capture failed");
+        }
+    } else {
+        ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
+    }
+
+    // [6] 자동 깜빡임 태스크 시작 (이후 캐릭터 눈으로 전환될 때 동작)
     display_ui_start_auto_blink();
 
-    // [5] 대화 상태 머신 초기화
+    // [7] 대화 상태 머신 초기화
     chat_state_init();
 
-    // [6] 네트워크 (Wi-Fi + WebSocket) 드라이버 초기화
+    // [8] 네트워크 (Wi-Fi + WebSocket) 드라이버 초기화 (내부 SRAM 잔여 버퍼 사용)
     ESP_LOGI(TAG, "Initializing Wi-Fi & WebSocket driver...");
     wifi_ws_set_state_callback(on_network_state_changed);
     wifi_ws_set_rx_callback(on_websocket_data_received);
     ESP_ERROR_CHECK(wifi_ws_init());
-
-    // [7] 실시간 오디오 파이프라인 (PSRAM RingBuffers, FreeRTOS Tasks, esp-sr AFE) 초기화
-    ESP_ERROR_CHECK(audio_pipeline_init());
 
     // [8] 대화 상태 모니터 및 터치 루프 태스크 시작 (PSRAM 스택)
     xTaskCreatePinnedToCoreWithCaps(chat_monitor_loop_task, "chat_monitor", 4096, NULL, 3, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

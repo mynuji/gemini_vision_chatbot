@@ -748,25 +748,17 @@ class GeminiLiveSession:
             print(f"[Gemini Realtime] 오디오 송신 오류: {e}")
 
     async def commit_audio(self):
-        """클라이언트 발화 완료(speech_end) 시 턴 종료 패킷(침묵 500ms + clientContent turnComplete)을 전송하여 즉각 응답 유도"""
+        """클라이언트 발화 완료(speech_end) 시 침묵 버퍼(500ms)를 스트리밍하여 Gemini Live VAD가 사용자 턴 종료를 감지하도록 유도"""
         if not self.is_connected or not self.gemini_ws:
             return
         self.replied_this_turn = False
         try:
-            # 1. Gemini Live VAD를 위한 500ms(16,000 bytes) 침묵 구간 패킷
+            # Gemini Live VAD는 발화 후 약 500ms의 침묵 구간(16,000 bytes)을 수신하면 자연스럽게 사용자 턴을 완료하고 응답을 생성합니다.
             silence_chunk = b"\x00" * 16000
             await self.send_audio(silence_chunk)
-            # 2. 명시적 clientContent 턴 종료(turnComplete: true) 신호
-            turn_msg = {
-                "clientContent": {
-                    "turns": [],
-                    "turnComplete": True
-                }
-            }
-            await self.gemini_ws.send(json.dumps(turn_msg))
-            print("[Gemini Realtime] ⏱️ 턴 완료 신호(turnComplete: True) 전송 완료")
+            print("[Gemini Realtime] ⏱️ 발화 종료 침묵 패킷(500ms) 전송 완료")
         except Exception as e:
-            print(f"[Gemini Realtime] 턴 완료 신호 전송 오류: {e}")
+            print(f"[Gemini Realtime] 침묵 패킷 전송 오류: {e}")
 
     async def send_image(self, jpeg_bytes):
         """ESP32 카메라 JPEG 이미지를 Gemini Live 세션으로 즉시 전송"""
