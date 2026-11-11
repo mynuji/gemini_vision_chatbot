@@ -557,6 +557,7 @@ class GeminiLiveSession:
         self.is_connected = False
         self.speaking_active = False
         self.tool_call_active = False
+        self.replied_this_turn = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
@@ -750,6 +751,7 @@ class GeminiLiveSession:
         """클라이언트 발화 완료(speech_end) 시 턴 종료 패킷(침묵 500ms + clientContent turnComplete)을 전송하여 즉각 응답 유도"""
         if not self.is_connected or not self.gemini_ws:
             return
+        self.replied_this_turn = False
         try:
             # 1. Gemini Live VAD를 위한 500ms(16,000 bytes) 침묵 구간 패킷
             silence_chunk = b"\x00" * 16000
@@ -888,6 +890,7 @@ class GeminiLiveSession:
                 tool_call = data.get("toolCall") or (server_content.get("toolCall") if server_content else None)
                 if tool_call:
                     self.tool_call_active = True
+                    self.replied_this_turn = True
                     calls = tool_call.get("functionCalls", [])
                     for fc in calls:
                         if fc.get("name") == "switch_llm_type":
@@ -969,6 +972,7 @@ class GeminiLiveSession:
                                 pcm16 = resample_24k_to_16k(pcm24)
                                 speaking_active = True
                                 self.speaking_active = True
+                                self.replied_this_turn = True
                                 if first_chunk:
                                     first_chunk = False
                                     await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
@@ -1030,6 +1034,7 @@ class OpenAIRealtimeSession:
         self.is_connected = False
         self.speaking_active = False
         self.tool_call_active = False
+        self.replied_this_turn = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 대답해. "
@@ -2805,20 +2810,21 @@ async def handler(websocket, path=None):
                                                     if getattr(target_rt_session, "tool_call_active", False):
                                                         print(f"[Realtime 감시] 도구 호출(카메라 캡처 등) 진행 중 -> 대기 시간 8.0초 연장")
                                                         await asyncio.sleep(8.0)
-                                                    if not target_rt_session.speaking_active and not getattr(target_rt_session, "tool_call_active", False):
-                                                        print(f"\n[Realtime 경고] ⏱️ 6.5초간 {current_llm_type} 응답 없음 -> Whisper/일반 LLM으로 즉각 폴백 실행!")
-                                                        if buffered_chunks:
-                                                            full_audio = np.concatenate(buffered_chunks)
-                                                            user_text, asr_ms = await run_whisper_cpp(full_audio)
-                                                            print(f"[폴백 음성 인식 완료] {user_text or '(인식 실패)'} ({asr_ms:.0f}ms)")
-                                                            if is_meaningful_speech(user_text):
-                                                                nonlocal ai_task
-                                                                ai_task = asyncio.create_task(
-                                                                    handle_user_turn(user_text, asr_ms)
-                                                                )
-                                                                return
-                                                        # 유효한 발화가 없거나 폴백 실패 시 클라이언트 '생각중' 해제
-                                                        await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
+                                                    if target_rt_session.speaking_active or getattr(target_rt_session, "tool_call_active", False) or getattr(target_rt_session, "replied_this_turn", False):
+                                                        return  # 이미 Realtime 모델이 도구 호출 또는 음성 생성을 정상 개시했으므로 Whisper 폴백 차단!
+                                                    print(f"\n[Realtime 경고] ⏱️ 6.5초간 {current_llm_type} 응답 없음 -> Whisper/일반 LLM으로 즉각 폴백 실행!")
+                                                    if buffered_chunks:
+                                                        full_audio = np.concatenate(buffered_chunks)
+                                                        user_text, asr_ms = await run_whisper_cpp(full_audio)
+                                                        print(f"[폴백 음성 인식 완료] {user_text or '(인식 실패)'} ({asr_ms:.0f}ms)")
+                                                        if is_meaningful_speech(user_text):
+                                                            nonlocal ai_task
+                                                            ai_task = asyncio.create_task(
+                                                                handle_user_turn(user_text, asr_ms)
+                                                            )
+                                                            return
+                                                    # 유효한 발화가 없거나 폴백 실패 시 클라이언트 '생각중' 해제
+                                                    await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                                 except asyncio.CancelledError:
                                                     pass
                                                 except Exception as we:

@@ -337,6 +337,22 @@ extern "C" void app_main(void) {
     display_ui_set_brightness(cfg->brightness);
     display_ui_set_wifi_state(UI_WIFI_DISCONNECTED);
 
+    // [1-0] OV2640/OV3660 카메라 초기화 (내부 SRAM DMA 버퍼 16KB를 단편화 전에 최우선 할당!)
+    esp_err_t cam_err = camera_io_init();
+    if (cam_err == ESP_OK) {
+        uint8_t *jpeg = NULL;
+        size_t jpeg_len = 0;
+        uint16_t w = 0, h = 0;
+        if (camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h) == ESP_OK) {
+            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
+            free(jpeg);
+        } else {
+            ESP_LOGW(TAG, "Camera self-test capture failed");
+        }
+    } else {
+        ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
+    }
+
     // [1-1] 부팅 즉시 시계 화면 활성화 (NTP 동기화 대기 최대 30초, 동기화 완료 시 5초 카운트다운)
     display_ui_show_clock_mode(true);
     s_boot_clock_active = true;
@@ -376,23 +392,6 @@ extern "C" void app_main(void) {
 
     // [7] 실시간 오디오 파이프라인 (PSRAM RingBuffers, FreeRTOS Tasks, esp-sr AFE) 초기화
     ESP_ERROR_CHECK(audio_pipeline_init());
-
-    // [7-1] OV2640 카메라 초기화 (비전 질문용) - 실패해도 음성 챗봇은 계속 동작
-    esp_err_t cam_err = camera_io_init();
-    if (cam_err == ESP_OK) {
-        // 부팅 시 테스트 촬영 1장으로 센서/프레임 버퍼 동작 확인
-        uint8_t *jpeg = NULL;
-        size_t jpeg_len = 0;
-        uint16_t w = 0, h = 0;
-        if (camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h) == ESP_OK) {
-            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
-            free(jpeg);
-        } else {
-            ESP_LOGW(TAG, "Camera self-test capture failed");
-        }
-    } else {
-        ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
-    }
 
     // [8] 대화 상태 모니터 및 터치 루프 태스크 시작 (PSRAM 스택)
     xTaskCreatePinnedToCoreWithCaps(chat_monitor_loop_task, "chat_monitor", 4096, NULL, 3, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
