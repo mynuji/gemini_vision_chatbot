@@ -59,6 +59,7 @@ static volatile bool s_clock_temp_hidden = false;
 // 상단 상태바 및 Wi-Fi 아이콘 위젯
 static lv_obj_t *s_top_bar = NULL;
 static lv_obj_t *s_wifi_icon = NULL;
+static lv_obj_t *s_wifi_badge = NULL;
 static lv_obj_t *s_settings_hint_dot = NULL;
 static ui_wifi_state_t s_current_wifi_state = UI_WIFI_DISCONNECTED;
 
@@ -224,13 +225,21 @@ esp_err_t display_ui_init(void) {
   lv_obj_clear_flag(s_top_bar, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_clear_flag(s_top_bar, LV_OBJ_FLAG_CLICKABLE);
 
-  // 상단 Wi-Fi 상태 아이콘 (좌측 약간 오프셋: -18, y=9)
+  // 상단 Wi-Fi 상태 베이스 아이콘 (파란색 고정, 좌측 약간 오프셋: -18, y=9)
   s_wifi_icon = lv_label_create(s_top_bar);
   lv_obj_set_style_text_font(s_wifi_icon, &lv_font_montserrat_14, 0);
-  lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI LV_SYMBOL_CLOSE); // 초기: 미연결 (Wi-Fi + X 아이콘)
-  lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_RED), 0); // 초기: 미연결 (빨간색)
+  lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0x00B0FF), 0); // 파란색 Wi-Fi 아이콘 유지
   lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_align(s_wifi_icon, LV_ALIGN_TOP_MID, -18, 9);
+
+  // Wi-Fi 아이콘 위에 겹쳐서 표시되는 상태 오버레이 배지 (빨간색 'X' 또는 '!')
+  s_wifi_badge = lv_label_create(s_top_bar);
+  lv_obj_set_style_text_font(s_wifi_badge, &lv_font_montserrat_14, 0);
+  lv_label_set_text(s_wifi_badge, LV_SYMBOL_CLOSE);
+  lv_obj_set_style_text_color(s_wifi_badge, lv_color_hex(0xFF1744), 0); // 선명한 빨간색 오버레이
+  lv_obj_clear_flag(s_wifi_badge, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_align_to(s_wifi_badge, s_wifi_icon, LV_ALIGN_CENTER, 0, 1);
 
   // 상단 히든 설정 메뉴 터치 위치 안내용 빨간 점 (우측 약간 오프셋: +18, y=12, 지름 8px)
   s_settings_hint_dot = lv_obj_create(s_top_bar);
@@ -761,22 +770,29 @@ void display_ui_set_wifi_state(ui_wifi_state_t state) {
   s_current_wifi_state = state;
   if (lvgl_port_lock(200)) {
     if (s_wifi_icon) {
+      lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+      lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0x00B0FF), 0); // 파란색 Wi-Fi 아이콘 유지
+      lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_wifi_badge) {
       switch (state) {
       case UI_WIFI_CONNECTED:
-        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-        lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0x00E5FF), 0); // 밝은 청록색 (연결 완료)
+        lv_obj_add_flag(s_wifi_badge, LV_OBJ_FLAG_HIDDEN); // 연결 완료 시 오버레이 숨김
         break;
       case UI_WIFI_CONNECTING:
-        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI "!");
-        lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0xFFB300), 0); // 주황/노란색 + ! (연결 시도 중)
+        lv_label_set_text(s_wifi_badge, "!");
+        lv_obj_set_style_text_color(s_wifi_badge, lv_color_hex(0xFF1744), 0); // 파란 Wi-Fi 아이콘 위에 빨간색 '!' 오버레이
+        lv_obj_align_to(s_wifi_badge, s_wifi_icon, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_clear_flag(s_wifi_badge, LV_OBJ_FLAG_HIDDEN);
         break;
       case UI_WIFI_DISCONNECTED:
       default:
-        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI LV_SYMBOL_CLOSE);
-        lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_RED), 0); // 빨간색 + X (연결 끊김)
+        lv_label_set_text(s_wifi_badge, LV_SYMBOL_CLOSE);
+        lv_obj_set_style_text_color(s_wifi_badge, lv_color_hex(0xFF1744), 0); // 파란 Wi-Fi 아이콘 위에 빨간색 'X' 오버레이
+        lv_obj_align_to(s_wifi_badge, s_wifi_icon, LV_ALIGN_CENTER, 0, 1);
+        lv_obj_clear_flag(s_wifi_badge, LV_OBJ_FLAG_HIDDEN);
         break;
       }
-      lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_HIDDEN);
     }
     lvgl_port_unlock();
   }
