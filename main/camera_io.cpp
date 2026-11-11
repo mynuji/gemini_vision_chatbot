@@ -107,21 +107,30 @@ esp_err_t camera_io_init(void) {
 }
 
 void camera_io_set_high_res(bool high_res) {
+    if (!s_ready) return;
+    bool locked = (s_cam_mutex && xSemaphoreTake(s_cam_mutex, pdMS_TO_TICKS(1000)) == pdTRUE);
     sensor_t *s = esp_camera_sensor_get();
-    if (!s) return;
-    if (high_res) {
-        // LLM 전송용: 선명한 VGA(640x480) 및 높은 품질(8)
-        s->set_framesize(s, FRAMESIZE_VGA);
-        s->set_quality(s, 8);
-    } else {
-        // LCD 실시간 프리뷰용: 초고속 30fps QVGA(320x240) 및 품질(12)
-        s->set_framesize(s, FRAMESIZE_QVGA);
-        s->set_quality(s, 12);
+    if (s) {
+        if (high_res) {
+            // LLM 전송용: 선명한 VGA(640x480) 및 높은 품질(8)
+            s->set_framesize(s, FRAMESIZE_VGA);
+            s->set_quality(s, 8);
+        } else {
+            // LCD 실시간 프리뷰용: 초고속 30fps QVGA(320x240) 및 품질(12)
+            s->set_framesize(s, FRAMESIZE_QVGA);
+            s->set_quality(s, 12);
+        }
+        // 센서 FIFO 잔여 프레임 드레인 (해상도 전환 직후 안정된 프레임 확보)
+        int drain_cnt = high_res ? 2 : 1;
+        for (int i = 0; i < drain_cnt; i++) {
+            camera_fb_t *fb = esp_camera_fb_get();
+            if (fb) {
+                esp_camera_fb_return(fb);
+            }
+        }
     }
-    // 센서 FIFO 잔여 프레임 드레인
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (fb) {
-        esp_camera_fb_return(fb);
+    if (locked) {
+        xSemaphoreGive(s_cam_mutex);
     }
 }
 

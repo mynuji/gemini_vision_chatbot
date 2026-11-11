@@ -290,6 +290,35 @@ def build_gemini_payload(messages, image_bytes=None, image_mime="image/jpeg", wi
     return payload
 
 _models_without_thinking_config = set()
+_discovered_gen_models = None
+_working_gen_model = None
+
+async def _resolve_generate_models():
+    """ModelService.ListModels를 호출하여 generateContent를 지원하는 Flash 모델 목록을 동적으로 조회 (1회 캐시)"""
+    global _discovered_gen_models
+    if _discovered_gen_models is not None:
+        return _discovered_gen_models
+    found = []
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        loop = asyncio.get_running_loop()
+        def _fetch():
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        data = await loop.run_in_executor(None, _fetch)
+        for m in data.get("models", []):
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" in methods:
+                name = m.get("name", "").replace("models/", "")
+                if name and "flash" in name.lower() and "tts" not in name.lower() and "image" not in name.lower():
+                    found.append(name)
+        if found:
+            print(f"[Gemini] ListModels에서 generateContent 지원 Flash 모델 확인: {found[:6]}")
+    except Exception as e:
+        print(f"[Gemini] ListModels 조회 안내: {e}")
+    _discovered_gen_models = found
+    return found
 
 async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
     """
@@ -297,9 +326,18 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
     별도의 google-genai SDK 없이 표준 라이브러리(urllib/threading/asyncio)로 동작하여 Python 3.8+ 모든 환경에서 지원됩니다.
     첫 토큰을 받기 전에 실패(503 과부하, 429 할당량, 404 모델 종료 등)하면 대체 모델로 자동 재시도합니다.
     """
+    global _working_gen_model
     last_error = None
 
-    for model in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS:
+    discovered = await _resolve_generate_models()
+    candidates = []
+    if _working_gen_model:
+        candidates.append(_working_gen_model)
+    for m in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS + ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"] + discovered:
+        if m and m not in candidates:
+            candidates.append(m)
+
+    for model in candidates:
         yielded = False
         for attempt in range(2):
             with_thinking = (model not in _models_without_thinking_config)
@@ -344,6 +382,7 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
                     if isinstance(item, Exception):
                         raise item
                     yielded = True
+                    _working_gen_model = model
                     yield item
                 if yielded:
                     return
@@ -505,20 +544,25 @@ async def stream_local_llm(messages, image_bytes=None):
 # ==========================================
 class GeminiLiveSession:
     """Gemini Multimodal Live WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None, on_adjust_audio=None):
+    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None, on_adjust_audio=None, on_capture_image=None):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
         self.voice = voice
         self.on_switch_llm = on_switch_llm
         self.on_adjust_audio = on_adjust_audio
+        self.on_capture_image = on_capture_image
         self.gemini_ws = None
         self.rx_task = None
         self.is_connected = False
         self.speaking_active = False
+        self.tool_call_active = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
+            "너에게는 눈앞을 볼 수 있는 실시간 카메라(capture_camera_image 도구)가 장착되어 있어. "
+            "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '이거 봐봐', '카메라로 봐줘', '사진 찍어봐', '글자 읽어줘' 등 "
+            "현재 보이는 상황이나 사물, 사람, 풍경, 글자에 대해 물어보면 절대 볼 수 없다고 답하지 말고 반드시 capture_camera_image 도구를 호출해줘. "
             "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
             "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
             "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
@@ -631,6 +675,19 @@ class GeminiLiveSession:
                                             "type": "OBJECT",
                                             "properties": {}
                                         }
+                                    },
+                                    {
+                                        "name": "capture_camera_image",
+                                        "description": "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '봐봐', '사진 찍어봐', '글자 읽어줘' 등 카메라로 현재 보이는 실시간 상황이나 사물, 사람, 글자를 확인해야 할 때 호출합니다.",
+                                        "parameters": {
+                                            "type": "OBJECT",
+                                            "properties": {
+                                                "question": {
+                                                    "type": "STRING",
+                                                    "description": "사용자가 카메라 화면에 대해 물어본 질문 내용"
+                                                }
+                                            }
+                                        }
                                     }
                                 ]
                             }
@@ -689,6 +746,27 @@ class GeminiLiveSession:
         except Exception as e:
             print(f"[Gemini Realtime] 오디오 송신 오류: {e}")
 
+    async def send_image(self, jpeg_bytes):
+        """ESP32 카메라 JPEG 이미지를 Gemini Live 세션으로 즉시 전송"""
+        if not self.is_connected or not self.gemini_ws or not jpeg_bytes:
+            return
+        try:
+            b64_img = base64.b64encode(jpeg_bytes).decode("utf-8")
+            msg = {
+                "realtimeInput": {
+                    "mediaChunks": [
+                        {
+                            "mimeType": "image/jpeg",
+                            "data": b64_img
+                        }
+                    ]
+                }
+            }
+            await self.gemini_ws.send(json.dumps(msg))
+            print(f"[Gemini Realtime] 📷 카메라 JPEG 이미지 프레임 전송 완료 ({len(jpeg_bytes)} bytes)")
+        except Exception as e:
+            print(f"[Gemini Realtime] 이미지 송신 오류: {e}")
+
     async def send_text(self, text):
         """텍스트 질문을 Gemini Live 세션으로 전달"""
         if not self.is_connected or not self.gemini_ws:
@@ -708,6 +786,48 @@ class GeminiLiveSession:
             await self.gemini_ws.send(json.dumps(client_content))
         except Exception as e:
             print(f"[Gemini Realtime] 텍스트 송신 오류: {e}")
+
+    async def _handle_capture_tool_call(self, fc):
+        """capture_camera_image 도구 호출 시 ESP32 카메라 촬영 후 이미지 및 시각 분석 결과 전달"""
+        self.tool_call_active = True
+        try:
+            args = fc.get("args", {}) if isinstance(fc.get("args"), dict) else {}
+            question = args.get("question", "지금 카메라에 무엇이 보이는지 자연스럽게 설명해줘.")
+            call_id = fc.get("id")
+            print(f"\n[Gemini Realtime Tool Call] 📷 capture_camera_image 호출 감지! (질문: '{question}')")
+
+            image_bytes = None
+            vision_desc = "카메라 이미지를 불러오지 못했습니다."
+            if self.on_capture_image:
+                image_bytes, vision_desc = await self.on_capture_image(question)
+
+            if image_bytes and self.is_connected and self.gemini_ws:
+                await self.send_image(image_bytes)
+                await asyncio.sleep(0.05)
+
+            if call_id and self.is_connected and self.gemini_ws:
+                resp = {
+                    "toolResponse": {
+                        "functionResponses": [
+                            {
+                                "name": "capture_camera_image",
+                                "id": call_id,
+                                "response": {
+                                    "output": {
+                                        "status": "success" if image_bytes else "failed",
+                                        "camera_view_description": vision_desc
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+                await self.gemini_ws.send(json.dumps(resp))
+                print(f"[Gemini Realtime Tool Call] capture_camera_image 응답 전송 완료: {vision_desc}")
+        except Exception as e:
+            print(f"[Gemini Realtime] capture_camera_image 처리 오류: {e}")
+        finally:
+            self.tool_call_active = False
 
     async def _receive_loop(self):
         """Gemini로부터 오는 24kHz 오디오를 16kHz로 리샘플링하여 ESP32로 즉시 바이너리 전송"""
@@ -743,26 +863,18 @@ class GeminiLiveSession:
                     break
 
                 server_content = data.get("serverContent")
-                if not server_content:
-                    continue
 
-                # 사용자가 끼어들었음을 Gemini 서버가 감지했을 때
-                if server_content.get("interrupted"):
-                    print("\n[Gemini Realtime] 사용자 끼어들기 감지(interrupted) -> 스피커 플러시")
-                    await self.esp_ws.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
-                    first_chunk = True
-                    speaking_active = False
-                    continue
-
-                # Tool Call (LLM Type 전환 등) 감지
-                tool_call = server_content.get("toolCall")
+                # ★ 중요: Gemini BidiGenerateContent에서 toolCall은 최상위(data["toolCall"])로 수신됨!
+                tool_call = data.get("toolCall") or (server_content.get("toolCall") if server_content else None)
                 if tool_call:
+                    self.tool_call_active = True
                     calls = tool_call.get("functionCalls", [])
                     for fc in calls:
                         if fc.get("name") == "switch_llm_type":
                             args = fc.get("args", {})
                             target = args.get("target_type")
                             print(f"\n[Gemini Realtime Tool Call] switch_llm_type 호출 감지 -> target: '{target}'")
+                            self.tool_call_active = False
                             if self.on_switch_llm and target:
                                 asyncio.create_task(self.on_switch_llm(target))
                             return
@@ -779,6 +891,7 @@ class GeminiLiveSession:
                                         "toolResponse": {
                                             "functionResponses": [
                                                 {
+                                                    "name": cmd_name,
                                                     "response": {"output": {"status": "success"}},
                                                     "id": call_id
                                                 }
@@ -788,6 +901,7 @@ class GeminiLiveSession:
                                     await self.gemini_ws.send(json.dumps(resp))
                                 except Exception:
                                     pass
+                            self.tool_call_active = False
                         elif fc.get("name") == "get_current_time":
                             print(f"\n[Gemini Realtime Tool Call] get_current_time 호출 감지! (LCD 시계 12초 표시)")
                             asyncio.create_task(self.esp_ws.send(json.dumps({"type": "show_clock", "duration": 12})))
@@ -799,6 +913,7 @@ class GeminiLiveSession:
                                         "toolResponse": {
                                             "functionResponses": [
                                                 {
+                                                    "name": "get_current_time",
                                                     "response": {"output": {"current_time": time_speech}},
                                                     "id": call_id
                                                 }
@@ -808,6 +923,20 @@ class GeminiLiveSession:
                                     await self.gemini_ws.send(json.dumps(resp))
                                 except Exception:
                                     pass
+                            self.tool_call_active = False
+                        elif fc.get("name") == "capture_camera_image":
+                            asyncio.create_task(self._handle_capture_tool_call(fc))
+
+                if not server_content:
+                    continue
+
+                # 사용자가 끼어들었음을 Gemini 서버가 감지했을 때
+                if server_content.get("interrupted"):
+                    print("\n[Gemini Realtime] 사용자 끼어들기 감지(interrupted) -> 스피커 플러시")
+                    await self.esp_ws.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
+                    first_chunk = True
+                    speaking_active = False
+                    continue
 
                 model_turn = server_content.get("modelTurn")
                 if model_turn:
@@ -868,20 +997,25 @@ class GeminiLiveSession:
 # ==========================================
 class OpenAIRealtimeSession:
     """OpenAI Realtime WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE, on_switch_llm=None, on_adjust_audio=None):
+    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE, on_switch_llm=None, on_adjust_audio=None, on_capture_image=None):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
         self.voice = voice
         self.on_switch_llm = on_switch_llm
         self.on_adjust_audio = on_adjust_audio
+        self.on_capture_image = on_capture_image
         self.openai_ws = None
         self.rx_task = None
         self.is_connected = False
         self.speaking_active = False
+        self.tool_call_active = False
         self.system_prompt = (
             "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 대답해. "
+            "너에게는 눈앞을 볼 수 있는 실시간 카메라(capture_camera_image 도구)가 장착되어 있어. "
+            "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '이거 봐봐', '카메라로 봐줘', '사진 찍어봐', '글자 읽어줘' 등 "
+            "현재 보이는 상황이나 사물, 사람, 풍경, 글자에 대해 물어보면 절대 볼 수 없다고 답하지 말고 반드시 capture_camera_image 도구를 호출해줘. "
             "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
             "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
             "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
@@ -971,6 +1105,20 @@ class OpenAIRealtimeSession:
                             "parameters": {
                                 "type": "object",
                                 "properties": {}
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "name": "capture_camera_image",
+                            "description": "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '봐봐', '사진 찍어봐', '글자 읽어줘' 등 카메라로 현재 보이는 실시간 상황이나 사물, 사람, 글자를 확인해야 할 때 호출합니다.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "question": {
+                                        "type": "string",
+                                        "description": "사용자가 카메라 화면에 대해 물어본 질문 내용"
+                                    }
+                                }
                             }
                         }
                     ],
@@ -1090,6 +1238,37 @@ class OpenAIRealtimeSession:
                                 asyncio.create_task(self.openai_ws.send(json.dumps({"type": "response.create"})))
                             except Exception as e:
                                 print(f"[OpenAI Realtime Tool 응답 오류] {e}")
+                    elif func_name == "capture_camera_image":
+                        args_raw = event.get("arguments", "{}")
+                        call_id = event.get("call_id")
+                        try:
+                            args_json = json.loads(args_raw)
+                        except Exception:
+                            args_json = {}
+                        question = args_json.get("question", "지금 카메라에 무엇이 보이는지 자연스럽게 설명해줘.")
+                        print(f"\n[OpenAI Realtime Tool Call] 📷 capture_camera_image 감지! (질문: '{question}')")
+                        async def _run_openai_capture(q, cid):
+                            self.tool_call_active = True
+                            try:
+                                vision_desc = "카메라 이미지를 불러오지 못했습니다."
+                                if self.on_capture_image:
+                                    _, vision_desc = await self.on_capture_image(q)
+                                if cid and self.openai_ws:
+                                    resp = {
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "function_call_output",
+                                            "call_id": cid,
+                                            "output": json.dumps({"camera_view_description": vision_desc}, ensure_ascii=False)
+                                        }
+                                    }
+                                    await self.openai_ws.send(json.dumps(resp))
+                                    await self.openai_ws.send(json.dumps({"type": "response.create"}))
+                            except Exception as ce:
+                                print(f"[OpenAI Realtime 카메라 응답 오류] {ce}")
+                            finally:
+                                self.tool_call_active = False
+                        asyncio.create_task(_run_openai_capture(question, call_id))
 
         except asyncio.CancelledError:
             pass
@@ -1133,7 +1312,8 @@ VISION_KEYWORDS = (
     "봐봐", "봐줘", "물건", "뭐야", "무엇", "글자", "읽어줘", "어떤",
     "풍경", "모습", "색깔", "색상", "표정", "누구", "사람", "인식", "시각",
     "촬영", "화면", "영상", "비춰", "비춰줘", "보여줘", "봐", "찍어줘",
-    "책", "얼굴", "사물", "앞", "이 물건", "이 책", "이 글", "이 그림"
+    "책", "얼굴", "사물", "앞", "이 물건", "이 책", "이 글", "이 그림",
+    "주변", "상황", "생겼", "있어", "있니"
 )
 
 def is_vision_query(text):
@@ -2166,28 +2346,6 @@ async def handler(websocket, path=None):
         if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
             await switch_realtime_session(current_llm_type)
 
-    async def switch_realtime_session(target_type):
-        nonlocal active_realtime_session, t_last_rt_retry
-        now = time.perf_counter()
-        if now - t_last_rt_retry < 3.0:
-            return  # 3초 이내 중복 재연결 방지
-        t_last_rt_retry = now
-
-        if active_realtime_session:
-            await active_realtime_session.close()
-            active_realtime_session = None
-
-        if target_type == "gemini realtime api":
-            print("[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중...")
-            active_realtime_session = GeminiLiveSession(websocket, GEMINI_API_KEY, on_switch_llm=switch_and_notify_llm, on_adjust_audio=adjust_audio_settings)
-            await active_realtime_session.start()
-        elif target_type == "chatgpt realtime api":
-            print("[세션 전환] ChatGPT Realtime (OpenAI WebSocket) 세션 초기화 중...")
-            active_realtime_session = OpenAIRealtimeSession(websocket, OPENAI_API_KEY, on_switch_llm=switch_and_notify_llm, on_adjust_audio=adjust_audio_settings)
-            await active_realtime_session.start()
-        else:
-            print(f"[세션 전환] 일반 음성 처리 파이프라인(VAD/Whisper/TTS) 모드: {target_type}")
-
     today_str = time.strftime("%Y년 %m월 %d일")
     chat_history = [
         {
@@ -2207,6 +2365,77 @@ async def handler(websocket, path=None):
 
     pending_image_future = None
     t_last_user_request = 0.0
+
+    async def capture_and_analyze_for_realtime(question="지금 카메라 앞에 무엇이 보이는지 한국어로 자연스럽게 설명해 줘."):
+        nonlocal pending_image_future
+        print(f"\n[Realtime 시각 질의] '{question}' -> ESP32 카메라 촬영 요청 전송!")
+        image_bytes = None
+        try:
+            loop = asyncio.get_running_loop()
+            pending_image_future = loop.create_future()
+            await websocket.send(json.dumps({"type": "capture"}))
+            image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=4.0)
+        except asyncio.TimeoutError:
+            print("[Realtime 시각 질의] 카메라 사진 수신 시간 초과(4.0s)")
+        except Exception as e:
+            print(f"[Realtime 시각 질의] 사진 수신 예외: {e}")
+        finally:
+            pending_image_future = None
+
+        if not image_bytes:
+            return None, ""
+
+        print(f"[Realtime 시각 질의] 사진 수신 완료 ({len(image_bytes)} bytes) -> 시각 분석 수행 중...")
+        vision_desc = ""
+        try:
+            vision_messages = [
+                {"role": "system", "content": chat_history[0]["content"]},
+                {"role": "user", "content": question or "지금 카메라 앞에 무엇이 보이는지 두세 문장으로 설명해 줘."}
+            ]
+            chunks = []
+            async for chunk in stream_gemini(vision_messages, image_bytes=image_bytes):
+                chunks.append(chunk)
+            vision_desc = "".join(chunks).strip()
+            if vision_desc:
+                print(f"[Realtime 시각 분석 결과] {vision_desc}")
+        except Exception as e:
+            print(f"[Realtime 시각 분석 오류] {e}")
+
+        return image_bytes, vision_desc
+
+    async def switch_realtime_session(target_type):
+        nonlocal active_realtime_session, t_last_rt_retry
+        now = time.perf_counter()
+        if now - t_last_rt_retry < 3.0:
+            return  # 3초 이내 중복 재연결 방지
+        t_last_rt_retry = now
+
+        if active_realtime_session:
+            await active_realtime_session.close()
+            active_realtime_session = None
+
+        if target_type == "gemini realtime api":
+            print("[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중...")
+            active_realtime_session = GeminiLiveSession(
+                websocket,
+                GEMINI_API_KEY,
+                on_switch_llm=switch_and_notify_llm,
+                on_adjust_audio=adjust_audio_settings,
+                on_capture_image=capture_and_analyze_for_realtime
+            )
+            await active_realtime_session.start()
+        elif target_type == "chatgpt realtime api":
+            print("[세션 전환] ChatGPT Realtime (OpenAI WebSocket) 세션 초기화 중...")
+            active_realtime_session = OpenAIRealtimeSession(
+                websocket,
+                OPENAI_API_KEY,
+                on_switch_llm=switch_and_notify_llm,
+                on_adjust_audio=adjust_audio_settings,
+                on_capture_image=capture_and_analyze_for_realtime
+            )
+            await active_realtime_session.start()
+        else:
+            print(f"[세션 전환] 일반 음성 처리 파이프라인(VAD/Whisper/TTS) 모드: {target_type}")
 
     async def handle_user_turn(user_text, asr_ms=0.0, close_session_after=False):
         nonlocal pending_image_future, t_last_user_request
@@ -2559,7 +2788,10 @@ async def handler(websocket, path=None):
                                             async def rt_watchdog():
                                                 try:
                                                     await asyncio.sleep(4.5)
-                                                    if not target_rt_session.speaking_active:
+                                                    if getattr(target_rt_session, "tool_call_active", False):
+                                                        print(f"[Realtime 감시] 도구 호출(카메라 캡처 등) 진행 중 -> 대기 시간 6.0초 연장")
+                                                        await asyncio.sleep(6.0)
+                                                    if not target_rt_session.speaking_active and not getattr(target_rt_session, "tool_call_active", False):
                                                         print(f"\n[Realtime 경고] ⏱️ 4.5초간 {current_llm_type} 응답 없음 -> Whisper/일반 LLM으로 즉각 폴백 실행!")
                                                         if buffered_chunks:
                                                             full_audio = np.concatenate(buffered_chunks)
@@ -2748,9 +2980,15 @@ async def handler(websocket, path=None):
                                         is_speaking = False
                                         silence_time = 0.0
 
-                                # [E] 기타 상태 알림
+                                # [E] 기타 상태 알림 및 카메라 이미지 전송 상태
                                 elif msg_type == "status":
                                     print(f"[제어 명령] 상태 알림: {ctrl_json.get('message')}")
+                                elif msg_type == "image_start":
+                                    print(f"[카메라 수신] 클라이언트 JPEG 전송 시작 (예상 크기: {ctrl_json.get('size', 0)} bytes)")
+                                elif msg_type == "image_failed":
+                                    print("[카메라 경고] 클라이언트 카메라 캡처 실패 알림(image_failed) 수신!")
+                                    if pending_image_future and not pending_image_future.done():
+                                        pending_image_future.set_result(None)
 
                                 # [F] LLM Type 변경 설정 수신
                                 elif msg_type == "set_llm_type":

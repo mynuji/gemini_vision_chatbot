@@ -271,10 +271,10 @@ esp_err_t display_ui_init(void) {
   lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
 
-  // 상단 일자 및 요일 라벨 (16px 나눔고딕 폰트)
+  // 상단 일자 및 요일 라벨 (16px 나눔고딕 폰트, 시계와 동일한 흰색)
   s_clock_date_lbl = lv_label_create(s_clock_container);
   lv_obj_set_style_text_font(s_clock_date_lbl, &lv_font_nanum_16, 0);
-  lv_obj_set_style_text_color(s_clock_date_lbl, lv_color_hex(0x00D1FF), 0);
+  lv_obj_set_style_text_color(s_clock_date_lbl, lv_color_white(), 0);
   lv_label_set_text(s_clock_date_lbl, "시간 동기화 중...");
   lv_obj_align(s_clock_date_lbl, LV_ALIGN_CENTER, 0, 0);
 
@@ -286,10 +286,10 @@ esp_err_t display_ui_init(void) {
   lv_obj_align(s_clock_time_lbl, LV_ALIGN_CENTER, 16, 12);
   lv_obj_add_flag(s_clock_time_lbl, LV_OBJ_FLAG_HIDDEN); // 동기화 완료 전 숨김
 
-  // AM / PM (오전/오후) 라벨 (16px 나눔고딕 폰트)
+  // AM / PM (오전/오후) 라벨 (16px 나눔고딕 폰트, 시계와 동일한 흰색)
   s_clock_ampm_lbl = lv_label_create(s_clock_container);
   lv_obj_set_style_text_font(s_clock_ampm_lbl, &lv_font_nanum_16, 0);
-  lv_obj_set_style_text_color(s_clock_ampm_lbl, lv_color_hex(0x00D1FF), 0);
+  lv_obj_set_style_text_color(s_clock_ampm_lbl, lv_color_white(), 0);
   lv_label_set_text(s_clock_ampm_lbl, "");
   lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -6, 4);
   lv_obj_add_flag(s_clock_ampm_lbl, LV_OBJ_FLAG_HIDDEN); // 동기화 완료 전 숨김
@@ -523,12 +523,14 @@ void display_ui_start_camera_preview(void) {
   display_ui_pause_auto_blink(true);
 
   if (lvgl_port_lock(1000)) {
+    if (s_clock_container) lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
     if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
     if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
     if (s_cam_img) {
       lv_obj_clear_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(s_cam_img);
       lv_obj_invalidate(s_cam_img);
     }
     // 사용자의 요청에 따라 카메라 영상을 거울처럼 좌우 반전하여 표시

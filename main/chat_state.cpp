@@ -62,6 +62,11 @@ static void camera_preview_task(void *pvParameters) {
     // 1. LLM 전송용 고화질(VGA 640x480, quality=8) 사진 촬영
     camera_io_set_high_res(true);
     camera_fb_t *first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
+    if (first_fb == NULL || first_fb->format != PIXFORMAT_JPEG || first_fb->len == 0) {
+        if (first_fb) camera_io_return_fb(first_fb);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
+    }
     if (first_fb != NULL && first_fb->format == PIXFORMAT_JPEG && first_fb->len > 0) {
         ESP_LOGI(TAG, "High-res first frame captured (%u bytes, %dx%d). Sending to Jetson server...",
                  (unsigned int)first_fb->len, first_fb->width, first_fb->height);
@@ -493,6 +498,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     } else if (strcmp(message->valuestring, "THINKING...") == 0 || strcmp(message->valuestring, "THINKING") == 0) {
                         if (s_chat_state != CHAT_STATE_IDLE) {
                             audio_pipeline_set_discard_tts(false);
+                            s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
                             if (s_chat_state != CHAT_STATE_THINKING) {
                                 ESP_LOGI(TAG, "Server status THINKING received -> Switching state to THINKING");
                                 chat_state_set(CHAT_STATE_THINKING);
@@ -501,6 +507,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     } else if (strcmp(message->valuestring, "SPEAKING...") == 0 || strcmp(message->valuestring, "SPEAKING") == 0) {
                         if (s_chat_state != CHAT_STATE_IDLE) {
                             audio_pipeline_set_discard_tts(false);
+                            s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
                             if (s_chat_state != CHAT_STATE_SPEAKING) {
                                 ESP_LOGI(TAG, "Server status SPEAKING received -> Switching state to SPEAKING");
                                 chat_state_set(CHAT_STATE_SPEAKING);
@@ -525,7 +532,12 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     ESP_LOGW(TAG, "==========================================================");
                     ESP_LOGW(TAG, ">>> RECEIVED CAPTURE COMMAND FROM JETSON SERVER! <<<");
                     ESP_LOGW(TAG, "==========================================================");
+                    s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                    audio_pipeline_enable_mic_streaming(false);
                     chat_state_start_camera_preview();
+                    if (s_chat_state == CHAT_STATE_LISTENING) {
+                        chat_state_set(CHAT_STATE_THINKING);
+                    }
                     handled = true;
                 } else if (strcmp(type->valuestring, "show_clock") == 0) {
                     cJSON *dur_item = cJSON_GetObjectItem(root, "duration");
