@@ -418,8 +418,8 @@ static void audio_fetch_task(void *pvParameters) {
             }
 
             if (s_has_user_spoken) {
-                // 발화 종료: 침묵 1000ms 이상 지속 시 speech_end 전달 (단어 간 자연스러운 호흡/쉼표 보호)
-                bool silence_timeout = (now_ms - s_mic_stream_start_ms > 1500) && (now_ms - s_last_speech_ms > 1000);
+                // 발화 종료: 침묵 650ms 이상 지속 시 speech_end 전달 (단어 간 자연스러운 호흡 보호 + 신속한 턴 전환)
+                bool silence_timeout = (now_ms - s_mic_stream_start_ms > 1000) && (now_ms - s_last_speech_ms > 650);
                 bool max_timeout = (now_ms - s_mic_stream_start_ms > 12000);
 
                 if (silence_timeout || max_timeout) {

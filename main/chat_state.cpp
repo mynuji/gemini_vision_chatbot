@@ -59,23 +59,22 @@ static void camera_preview_task(void *pvParameters) {
         return;
     }
 
-    // 1. LLM 전송용 고화질(VGA 640x480, quality=8) 사진 촬영
-    camera_io_set_high_res(true);
-    camera_fb_t *first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
+    // 1. 카메라 사진(QVGA 320x240, ~10KB)을 지연 없이 즉시 촬영하여 서버로 초고속 전송
+    camera_fb_t *first_fb = camera_io_get_fb(pdMS_TO_TICKS(800));
     if (first_fb == NULL || first_fb->format != PIXFORMAT_JPEG || first_fb->len == 0) {
         if (first_fb) camera_io_return_fb(first_fb);
-        vTaskDelay(pdMS_TO_TICKS(50));
-        first_fb = camera_io_get_fb(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(30));
+        first_fb = camera_io_get_fb(pdMS_TO_TICKS(800));
     }
     if (first_fb != NULL && first_fb->format == PIXFORMAT_JPEG && first_fb->len > 0) {
-        ESP_LOGI(TAG, "High-res first frame captured (%u bytes, %dx%d). Sending to Jetson server...",
+        ESP_LOGI(TAG, "First frame captured (%u bytes, %dx%d). Sending to Jetson server...",
                  (unsigned int)first_fb->len, first_fb->width, first_fb->height);
         char meta[96];
         snprintf(meta, sizeof(meta), "{\"type\":\"image_start\",\"size\":%u}", (unsigned int)first_fb->len);
         wifi_ws_send_text(meta);
         wifi_ws_send_bin(first_fb->buf, first_fb->len);
 
-        // 첫 프레임 디코딩 및 LCD 표시 (first_fb가 640x480이면 1/2 다운스케일하여 320x240으로 디코딩)
+        // 첫 프레임 즉시 디코딩하여 LCD에 표시
         esp_jpeg_image_cfg_t jpeg_cfg = {};
         jpeg_cfg.indata = first_fb->buf;
         jpeg_cfg.indata_size = (uint32_t)first_fb->len;
@@ -107,8 +106,7 @@ static void camera_preview_task(void *pvParameters) {
         wifi_ws_send_text("{\"type\":\"image_failed\"}");
     }
 
-    // 2. LCD 실시간 프리뷰를 위해 초고속 30fps QVGA(320x240, 11ms 디코딩) 모드로 복귀
-    camera_io_set_high_res(false);
+    // 2. 스피커로 AI 음성 답변이 출력되는 동안 LCD 화면에 실시간 카메라 영상(30fps) 지속 출력
     uint32_t frame_count = 0;
     while (s_camera_preview_active) {
         camera_fb_t *fb = camera_io_get_fb(pdMS_TO_TICKS(100));
@@ -150,21 +148,20 @@ static void camera_preview_task(void *pvParameters) {
                         display_ui_draw_preview_frame(crop_buf);
                         frame_count++;
                         if (frame_count % 30 == 0) {
-                            ESP_LOGI(TAG, "Camera live preview: %u frames rendered (direct LCD hardware pipeline)", (unsigned int)frame_count);
+                            ESP_LOGI(TAG, "Camera live preview: %u frames rendered during AI speech output", (unsigned int)frame_count);
                         }
                     }
                 }
             }
             camera_io_return_fb(fb);
         }
-        vTaskDelay(1);
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     ESP_LOGI(TAG, "Exiting camera preview loop (total %u frames rendered), restoring LVGL UI", (unsigned int)frame_count);
     free(dec_buf);
     free(work_buf);
     display_ui_stop_camera_preview();
-    camera_io_set_high_res(false);
 
     s_camera_preview_active = false;
     s_preview_task_handle = NULL;

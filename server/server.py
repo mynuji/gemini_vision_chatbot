@@ -746,6 +746,26 @@ class GeminiLiveSession:
         except Exception as e:
             print(f"[Gemini Realtime] 오디오 송신 오류: {e}")
 
+    async def commit_audio(self):
+        """클라이언트 발화 완료(speech_end) 시 턴 종료 패킷(침묵 500ms + clientContent turnComplete)을 전송하여 즉각 응답 유도"""
+        if not self.is_connected or not self.gemini_ws:
+            return
+        try:
+            # 1. Gemini Live VAD를 위한 500ms(16,000 bytes) 침묵 구간 패킷
+            silence_chunk = b"\x00" * 16000
+            await self.send_audio(silence_chunk)
+            # 2. 명시적 clientContent 턴 종료(turnComplete: true) 신호
+            turn_msg = {
+                "clientContent": {
+                    "turns": [],
+                    "turnComplete": True
+                }
+            }
+            await self.gemini_ws.send(json.dumps(turn_msg))
+            print("[Gemini Realtime] ⏱️ 턴 완료 신호(turnComplete: True) 전송 완료")
+        except Exception as e:
+            print(f"[Gemini Realtime] 턴 완료 신호 전송 오류: {e}")
+
     async def send_image(self, jpeg_bytes):
         """ESP32 카메라 JPEG 이미지를 Gemini Live 세션으로 즉시 전송"""
         if not self.is_connected or not self.gemini_ws or not jpeg_bytes:
@@ -2374,7 +2394,7 @@ async def handler(websocket, path=None):
             loop = asyncio.get_running_loop()
             pending_image_future = loop.create_future()
             await websocket.send(json.dumps({"type": "capture"}))
-            image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=4.0)
+            image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=5.0)
         except asyncio.TimeoutError:
             print("[Realtime 시각 질의] 카메라 사진 수신 시간 초과(4.0s)")
         except Exception as e:
@@ -2495,7 +2515,7 @@ async def handler(websocket, path=None):
                 loop = asyncio.get_running_loop()
                 pending_image_future = loop.create_future()
                 await websocket.send(json.dumps({"type": "capture"}))
-                image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=3.5)
+                image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=5.0)
                 if image_bytes:
                     print(f"[시각 질의 준비 완료] 사진 첨부하여 {current_llm_type} 시각 질의 시작 ({len(image_bytes)} bytes)")
             except asyncio.TimeoutError:
@@ -2770,13 +2790,7 @@ async def handler(websocket, path=None):
                                     if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
                                         print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 턴 완료 전송)")
                                         if active_realtime_session and active_realtime_session.is_connected:
-                                            if current_llm_type == "gemini realtime api":
-                                                # Gemini Multimodal Live API VAD는 발화 직후 500ms(16,000 bytes)의 침묵 구간을 수신해야
-                                                # 사용자 발화 턴이 끝났음을 인지하고 modelTurn AI 음성 생성을 시작합니다.
-                                                silence_chunk = b"\x00" * 16000
-                                                await active_realtime_session.send_audio(silence_chunk)
-                                            elif current_llm_type == "chatgpt realtime api":
-                                                await active_realtime_session.commit_audio()
+                                            await active_realtime_session.commit_audio()
 
                                             if rt_watchdog_task and not rt_watchdog_task.done():
                                                 rt_watchdog_task.cancel()
@@ -2787,12 +2801,12 @@ async def handler(websocket, path=None):
 
                                             async def rt_watchdog():
                                                 try:
-                                                    await asyncio.sleep(4.5)
+                                                    await asyncio.sleep(6.5)
                                                     if getattr(target_rt_session, "tool_call_active", False):
-                                                        print(f"[Realtime 감시] 도구 호출(카메라 캡처 등) 진행 중 -> 대기 시간 6.0초 연장")
-                                                        await asyncio.sleep(6.0)
+                                                        print(f"[Realtime 감시] 도구 호출(카메라 캡처 등) 진행 중 -> 대기 시간 8.0초 연장")
+                                                        await asyncio.sleep(8.0)
                                                     if not target_rt_session.speaking_active and not getattr(target_rt_session, "tool_call_active", False):
-                                                        print(f"\n[Realtime 경고] ⏱️ 4.5초간 {current_llm_type} 응답 없음 -> Whisper/일반 LLM으로 즉각 폴백 실행!")
+                                                        print(f"\n[Realtime 경고] ⏱️ 6.5초간 {current_llm_type} 응답 없음 -> Whisper/일반 LLM으로 즉각 폴백 실행!")
                                                         if buffered_chunks:
                                                             full_audio = np.concatenate(buffered_chunks)
                                                             user_text, asr_ms = await run_whisper_cpp(full_audio)

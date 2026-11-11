@@ -13,10 +13,10 @@
 
 static const char *TAG = "CAMERA_IO";
 
-// 실시간 영상 프리뷰 FPS 극대화 및 고화질 LLM 촬영 지원:
-// 초기화는 최대 해상도인 VGA(640x480)로 수행하여 버퍼 크기 확보, 기본 프리뷰는 QVGA(320x240)
-#define CAMERA_FRAME_SIZE    FRAMESIZE_VGA
-#define CAMERA_JPEG_QUALITY  8         // 0~63 (8=고화질)
+// 실시간 영상 프리뷰 FPS 극대화 및 빠른 저지연 비전 질문 지원:
+// OV2640 센서를 안정적인 고속 QVGA(320x240)로 상시 운용하여 해상도 전환에 따른 센서 멈춤/재동기화 지연 원천 제거
+#define CAMERA_FRAME_SIZE    FRAMESIZE_QVGA
+#define CAMERA_JPEG_QUALITY  10        // 0~63 (10=고화질이면서 약 10KB 크기로 초고속 Wi-Fi 전송 가능)
 #define CAMERA_XCLK_FREQ_HZ  20000000
 
 static bool s_ready = false;
@@ -98,40 +98,15 @@ esp_err_t camera_io_init(void) {
     }
 
     s_ready = true;
-    camera_io_set_high_res(false); // 기본 상태는 초고속 30fps QVGA(320x240) 프리뷰 모드로 설정
 
-    ESP_LOGI(TAG, "Camera driver ready (VGA/QVGA dynamic resolution). Free PSRAM: %u KB, InitTime: %lld ms",
+    ESP_LOGI(TAG, "Camera driver ready (Stable QVGA 320x240 pipeline). Free PSRAM: %u KB, InitTime: %lld ms",
              (unsigned int)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
              (long long)((esp_timer_get_time() - t0) / 1000));
     return ESP_OK;
 }
 
 void camera_io_set_high_res(bool high_res) {
-    if (!s_ready) return;
-    bool locked = (s_cam_mutex && xSemaphoreTake(s_cam_mutex, pdMS_TO_TICKS(1000)) == pdTRUE);
-    sensor_t *s = esp_camera_sensor_get();
-    if (s) {
-        if (high_res) {
-            // LLM 전송용: 선명한 VGA(640x480) 및 높은 품질(8)
-            s->set_framesize(s, FRAMESIZE_VGA);
-            s->set_quality(s, 8);
-        } else {
-            // LCD 실시간 프리뷰용: 초고속 30fps QVGA(320x240) 및 품질(12)
-            s->set_framesize(s, FRAMESIZE_QVGA);
-            s->set_quality(s, 12);
-        }
-        // 센서 FIFO 잔여 프레임 드레인 (해상도 전환 직후 안정된 프레임 확보)
-        int drain_cnt = high_res ? 2 : 1;
-        for (int i = 0; i < drain_cnt; i++) {
-            camera_fb_t *fb = esp_camera_fb_get();
-            if (fb) {
-                esp_camera_fb_return(fb);
-            }
-        }
-    }
-    if (locked) {
-        xSemaphoreGive(s_cam_mutex);
-    }
+    // 안정적인 30fps LCD 프리뷰 및 초고속 사진 촬영을 위해 센서는 상시 QVGA로 고정 유지
 }
 
 bool camera_io_is_ready(void) {
