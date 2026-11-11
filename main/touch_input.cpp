@@ -137,63 +137,78 @@ esp_err_t touch_input_init(void) {
 }
 
 bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) {
+    if (!s_i2c_initialized) {
+        if (out_x) *out_x = s_last_x;
+        if (out_y) *out_y = s_last_y;
+        if (out_pressed) *out_pressed = false;
+        return false;
+    }
+
     bool pressed = false;
     int16_t x = s_last_x;
     int16_t y = s_last_y;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
-    // 하드웨어 INT 핀 상태 확인 (Low면 터치 중)
+    // 하드웨어 INT 핀 상태 확인 (Seeed CHSC6X 공식: Active Low 디바운스 확인)
     bool pin_active = (gpio_get_level((gpio_num_t)TOUCH_INT) == 0);
+    if (!pin_active) {
+        // INT 핀이 HIGH이면 물리적 터치가 없으므로 1ms 대기 후 재확인
+        esp_rom_delay_us(1000);
+        if (gpio_get_level((gpio_num_t)TOUCH_INT) != 0) {
+            pressed = false;
+            goto process_touch_state;
+        }
+    }
 
     if (s_chip_type == TOUCH_CHIP_CST816S) {
         uint8_t data[6] = {0};
         uint8_t reg = 0x01;
         esp_err_t ret = i2c_master_write_read_device(I2C_TOUCH_PORT, s_detected_addr,
                                                      &reg, 1, data, 5, pdMS_TO_TICKS(20));
-        if (ret == ESP_OK) {
-            uint8_t finger_num = data[0];
-            if (finger_num > 0) {
-                x = ((data[1] & 0x0F) << 8) | data[2];
-                y = ((data[3] & 0x0F) << 8) | data[4];
-                pressed = true;
-            }
+        if (ret == ESP_OK && data[0] > 0) {
+            x = ((data[1] & 0x0F) << 8) | data[2];
+            y = ((data[3] & 0x0F) << 8) | data[4];
+            pressed = true;
+        } else {
+            pressed = false;
         }
     } else if (s_chip_type == TOUCH_CHIP_CHSC6X) {
         uint8_t data[5] = {0};
         esp_err_t ret = i2c_master_read_from_device(I2C_TOUCH_PORT, s_detected_addr,
                                                    data, 5, pdMS_TO_TICKS(20));
         if (ret == ESP_OK) {
-            // Seeed 공식 CHSC6X 프로토콜: data[0] == 0x01 (Touch Down / Active), 0x00 (Released)
-            if (data[0] == 0x01 || data[0] == 0x02 || data[0] == 0x03) {
+            // Seeed 공식 CHSC6X 프로토콜: data[0] == 0x01 (Touch Down), 0x03 (Contact/Move)
+            // 0x02(Lift/Release) 및 0x00(None)은 pressed = false 처리
+            if (data[0] == 0x01 || data[0] == 0x03) {
                 x = (int16_t)data[2]; // 정방향 (오른쪽으로 밀면 증가)
                 y = (int16_t)data[4];
                 pressed = true;
             } else {
-                pressed = false; // 손을 떼었을 때 확실하게 릴리즈 처리 (직후 터치 좌표 점프 방지)
+                pressed = false;
             }
         } else {
-            pressed = pin_active;
+            pressed = false; // I2C 통신 타임아웃/오류 발생 시 절대 거짓 터치로 처리하지 않음!
         }
     } else if (s_chip_type == TOUCH_CHIP_FT6236) {
         uint8_t data[5] = {0};
         uint8_t reg = 0x02; // TD_STATUS
         esp_err_t ret = i2c_master_write_read_device(I2C_TOUCH_PORT, s_detected_addr,
                                                      &reg, 1, data, 5, pdMS_TO_TICKS(20));
-        if (ret == ESP_OK) {
-            uint8_t touches = data[0] & 0x0F;
-            if (touches > 0) {
-                x = ((data[1] & 0x0F) << 8) | data[2];
-                y = ((data[3] & 0x0F) << 8) | data[4];
-                pressed = true;
-            }
+        if (ret == ESP_OK && (data[0] & 0x0F) > 0) {
+            x = ((data[1] & 0x0F) << 8) | data[2];
+            y = ((data[3] & 0x0F) << 8) | data[4];
+            pressed = true;
+        } else {
+            pressed = false;
         }
     } else {
-        // I2C 칩이 없는 경우: GPIO INT 핀으로 터치 판정
-        pressed = pin_active || (now - s_last_touch_isr_time < 250);
-        // 기본 중앙 좌표
+        // I2C 칩이 없는 경우에만 INT 핀 타임스탬프 폴백
+        pressed = (now - s_last_touch_isr_time < 200) && (gpio_get_level((gpio_num_t)TOUCH_INT) == 0);
         x = 120;
         y = 120;
     }
+
+process_touch_state:
 
     // 좌표 경계 클램프 (240x240)
     if (x < 0) x = 0;
@@ -322,7 +337,7 @@ bool touch_input_has_event(void) {
 }
 
 bool touch_input_is_active(void) {
-    return s_is_pressed || (gpio_get_level((gpio_num_t)TOUCH_INT) == 0);
+    return s_is_pressed;
 }
 
 void touch_input_set_settings_trigger_cb(touch_settings_trigger_cb_t cb) {
