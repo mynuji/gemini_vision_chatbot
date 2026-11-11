@@ -98,6 +98,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         if (s_ws_client != NULL) {
             ESP_LOGI(TAG, "Wi-Fi disconnected -> stopping WebSocket client connection attempts");
             esp_websocket_client_stop(s_ws_client);
+            esp_websocket_client_destroy(s_ws_client);
+            s_ws_client = NULL;
         }
         notify_state(WIFI_WS_STATE_WIFI_CONNECTING, "CONNECTING WIFI...");
         esp_wifi_connect();
@@ -113,6 +115,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         if (s_ws_client != NULL) {
             ESP_LOGI(TAG, "Wi-Fi disconnected -> stopping WebSocket client connection attempts");
             esp_websocket_client_stop(s_ws_client);
+            esp_websocket_client_destroy(s_ws_client);
+            s_ws_client = NULL;
         }
 
         // 약전계 환경에서 순간적인 비콘 누락으로 인한 1~2초 재연결 시 화면 깜빡임 방지 (2.5초 디바운스)

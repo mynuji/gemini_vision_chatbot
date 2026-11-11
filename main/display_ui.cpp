@@ -227,7 +227,7 @@ esp_err_t display_ui_init(void) {
   // 상단 Wi-Fi 상태 아이콘 (좌측 약간 오프셋: -18, y=9)
   s_wifi_icon = lv_label_create(s_top_bar);
   lv_obj_set_style_text_font(s_wifi_icon, &lv_font_montserrat_14, 0);
-  lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+  lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI LV_SYMBOL_CLOSE); // 초기: 미연결 (Wi-Fi + X 아이콘)
   lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_RED), 0); // 초기: 미연결 (빨간색)
   lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_align(s_wifi_icon, LV_ALIGN_TOP_MID, -18, 9);
@@ -699,9 +699,15 @@ void display_ui_show_clock_mode(bool enable) {
       if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_status_label) {
         bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+        const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
+        if (!wifi_ws_is_wifi_connected()) {
+          idle_status = is_ko ? "WIFI 연결 필요" : "WIFI CONNECTION REQUIRED";
+        } else if (!wifi_ws_is_connected()) {
+          idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
+        }
         lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(s_status_label, is_ko ? &lv_font_nanum_16 : &lv_font_nanum_13, 0);
-        lv_label_set_text(s_status_label, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+        lv_label_set_text(s_status_label, idle_status);
         lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -28);
       }
     }
@@ -725,9 +731,15 @@ void display_ui_temp_hide_clock(bool hide) {
       if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_status_label) {
         bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+        const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
+        if (!wifi_ws_is_wifi_connected()) {
+          idle_status = is_ko ? "WIFI 연결 필요" : "WIFI CONNECTION REQUIRED";
+        } else if (!wifi_ws_is_connected()) {
+          idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
+        }
         lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(s_status_label, is_ko ? &lv_font_nanum_16 : &lv_font_nanum_13, 0);
-        lv_label_set_text(s_status_label, is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH");
+        lv_label_set_text(s_status_label, idle_status);
         lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -28);
       }
     } else {
@@ -755,13 +767,13 @@ void display_ui_set_wifi_state(ui_wifi_state_t state) {
         lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0x00E5FF), 0); // 밝은 청록색 (연결 완료)
         break;
       case UI_WIFI_CONNECTING:
-        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-        lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0xFFB300), 0); // 주황/노란색 (연결 시도 중)
+        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI "!");
+        lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0xFFB300), 0); // 주황/노란색 + ! (연결 시도 중)
         break;
       case UI_WIFI_DISCONNECTED:
       default:
-        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-        lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_RED), 0); // 빨간색 (연결 끊김)
+        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI LV_SYMBOL_CLOSE);
+        lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_RED), 0); // 빨간색 + X (연결 끊김)
         break;
       }
       lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_HIDDEN);
