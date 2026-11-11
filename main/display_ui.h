@@ -99,6 +99,25 @@ void display_ui_temp_hide_clock(bool hide);
  */
 void display_ui_update_clock(void);
 
+typedef enum {
+    UI_WIFI_DISCONNECTED = 0,
+    UI_WIFI_CONNECTING,
+    UI_WIFI_CONNECTED
+} ui_wifi_state_t;
+
+/**
+ * @brief LCD 상단 Wi-Fi 아이콘 상태 설정
+ * - UI_WIFI_CONNECTED: 밝은 청록색 (0x00E5FF)
+ * - UI_WIFI_CONNECTING: 주황/노란색 (0xFFB300)
+ * - UI_WIFI_DISCONNECTED: 빨간색 (0xFF3333)
+ */
+void display_ui_set_wifi_state(ui_wifi_state_t state);
+
+/**
+ * @brief 상단 상태바(Wi-Fi 아이콘 및 설정 힌트 점) 표시/숨김 (설정 메뉴 등에서 활용)
+ */
+void display_ui_show_top_bar(bool show);
+
 #ifdef __cplusplus
 }
 #endif

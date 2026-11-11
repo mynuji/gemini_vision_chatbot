@@ -98,6 +98,7 @@ void ui_settings_open(void) {
     lv_obj_set_style_text_font(s_settings_container, &lv_font_nanum_16, 0);
 
     show_view(SUBVIEW_MAIN);
+    display_ui_show_top_bar(false);
     lvgl_port_unlock();
 }
 
@@ -108,6 +109,7 @@ void ui_settings_close(void) {
     s_is_open = false;
 
     lvgl_port_lock(-1);
+    display_ui_show_top_bar(true);
     if (s_settings_container != NULL) {
         lv_obj_del(s_settings_container);
         s_settings_container = NULL;

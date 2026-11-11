@@ -66,11 +66,15 @@ static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
 
     switch (state) {
     case WIFI_WS_STATE_WIFI_CONNECTING:
+        display_ui_set_wifi_state(UI_WIFI_CONNECTING);
         display_ui_set_status(is_ko ? "와이파이 연결 중..." : "CONNECTING WIFI...");
+        display_ui_update_clock();
         break;
 
     case WIFI_WS_STATE_WIFI_CONNECTED:
+        display_ui_set_wifi_state(UI_WIFI_CONNECTED);
         display_ui_set_status(is_ko ? "와이파이 연결됨! 시간 동기화 중..." : "WIFI OK! SYNCING TIME...");
+        display_ui_update_clock();
         if (s_boot_clock_active && !s_boot_clock_synced_seen) {
             uint32_t net_now = (uint32_t)(esp_timer_get_time() / 1000);
             s_boot_clock_timeout = net_now + 15000; // Wi-Fi 연결 시점부터 15초 카운트
@@ -78,10 +82,12 @@ static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
         break;
 
     case WIFI_WS_STATE_WS_CONNECTING:
+        display_ui_set_wifi_state(UI_WIFI_CONNECTED);
         display_ui_set_status(is_ko ? "서버 접속 중..." : "CONNECTING JETSON...");
         break;
 
     case WIFI_WS_STATE_WS_CONNECTED:
+        display_ui_set_wifi_state(UI_WIFI_CONNECTED);
         ESP_LOGI(TAG, "WebSocket Connected to Jetson Xavier! Setting state to IDLE.");
         display_ui_set_status(is_ko ? "서버 연결 완료!" : "JETSON CONNECTED!");
         audio_io_play_tone(1046.50f, 150); // 연결 성공 맑은 비프음 (C6)
@@ -89,6 +95,7 @@ static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
         break;
 
     case WIFI_WS_STATE_WS_DISCONNECTED:
+        display_ui_set_wifi_state(wifi_ws_is_wifi_connected() ? UI_WIFI_CONNECTED : UI_WIFI_DISCONNECTED);
         audio_pipeline_clear_audio();
         chat_state_set(CHAT_STATE_IDLE);
         display_ui_set_status(is_ko ? "서버 접속 끊김" : (info ? info : "SERVER DISCONNECTED"));
@@ -96,9 +103,11 @@ static void on_network_state_changed(wifi_ws_state_t state, const char *info) {
 
     case WIFI_WS_STATE_DISCONNECTED:
     default:
+        display_ui_set_wifi_state(UI_WIFI_DISCONNECTED);
         audio_pipeline_clear_audio();
         chat_state_set(CHAT_STATE_IDLE);
-        display_ui_set_status(is_ko ? "WIFI 끊김" : (info ? info : "WIFI DISCONNECTED"));
+        display_ui_set_status(is_ko ? "WIFI 연결 필요" : (info ? info : "WIFI CONNECTION REQUIRED"));
+        display_ui_update_clock();
         break;
     }
 }
@@ -176,7 +185,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
                     bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
                     const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
                     if (!wifi_ws_is_wifi_connected()) {
-                        idle_status = is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED";
+                        idle_status = is_ko ? "WIFI 연결 필요" : "WIFI CONNECTION REQUIRED";
                     } else if (!wifi_ws_is_connected()) {
                         idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
                     }
@@ -199,7 +208,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
                     bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
                     const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
                     if (!wifi_ws_is_wifi_connected()) {
-                        idle_status = is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED";
+                        idle_status = is_ko ? "WIFI 연결 필요" : "WIFI CONNECTION REQUIRED";
                     } else if (!wifi_ws_is_connected()) {
                         idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
                     }
@@ -211,24 +220,25 @@ static void chat_monitor_loop_task(void *pvParameters) {
         }
 
         // 1-2. NTP 시간 동기화 주기 관리
-        // (A) 최초 동기화 전: 1분(60초) 간격으로 NTP 재시도
-        // (B) 동기화 성공 후: 24시간(86400초) 주기로 1회씩 정기 동기화 수행
-        //     - 실패하더라도 반복 재시도하지 않고 다음 24시간 주기에 수행
-        if (!time_sync_is_synced()) {
-            if (now - s_last_ntp_retry_time >= 60000) {
-                s_last_ntp_retry_time = now;
-                ESP_LOGI(TAG, "NTP not synced yet -> Retrying NTP sync (1-min interval)...");
-                time_sync_start();
-            }
-        } else {
-            time_t cur_sec = time(NULL);
-            if (s_last_24h_sync_sec == 0) {
-                s_last_24h_sync_sec = cur_sec;
-            } else if (cur_sec >= s_last_24h_sync_sec + (24 * 3600)) {
-                // 24시간 주기 도달: 타임스탬프를 먼저 갱신하여 실패하더라도 즉시 반복 재시도하지 않고 다음 주기에 수행
-                s_last_24h_sync_sec = cur_sec;
-                ESP_LOGI(TAG, "24-hour periodic NTP sync initiated (next sync in 24 hours)");
-                time_sync_start();
+        // (A) Wi-Fi가 연결된 경우에만 시간 동기화 시도 (Wi-Fi 미연결 시 시도 금지)
+        // (B) 최초 동기화 전: 1분(60초) 간격으로 NTP 재시도
+        // (C) 동기화 성공 후: 24시간(86400초) 주기로 1회씩 정기 동기화 수행
+        if (wifi_ws_is_wifi_connected()) {
+            if (!time_sync_is_synced()) {
+                if (now - s_last_ntp_retry_time >= 60000) {
+                    s_last_ntp_retry_time = now;
+                    ESP_LOGI(TAG, "NTP not synced yet -> Retrying NTP sync (1-min interval)...");
+                    time_sync_start();
+                }
+            } else {
+                time_t cur_sec = time(NULL);
+                if (s_last_24h_sync_sec == 0) {
+                    s_last_24h_sync_sec = cur_sec;
+                } else if (cur_sec >= s_last_24h_sync_sec + (24 * 3600)) {
+                    s_last_24h_sync_sec = cur_sec;
+                    ESP_LOGI(TAG, "24-hour periodic NTP sync initiated (next sync in 24 hours)");
+                    time_sync_start();
+                }
             }
         }
 
@@ -325,6 +335,7 @@ extern "C" void app_main(void) {
     // [1] 디스플레이 및 LVGL 초기화
     ESP_ERROR_CHECK(display_ui_init());
     display_ui_set_brightness(cfg->brightness);
+    display_ui_set_wifi_state(UI_WIFI_DISCONNECTED);
 
     // [1-1] 부팅 즉시 시계 화면 활성화 (NTP 동기화 대기 최대 30초, 동기화 완료 시 5초 카운트다운)
     display_ui_show_clock_mode(true);

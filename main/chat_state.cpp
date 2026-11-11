@@ -271,7 +271,7 @@ void chat_state_set(chat_state_t new_state) {
             {
                 const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
                 if (!wifi_ws_is_wifi_connected()) {
-                    idle_status = is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED";
+                    idle_status = is_ko ? "WIFI 연결 필요" : "WIFI CONNECTION REQUIRED";
                 } else if (!wifi_ws_is_connected()) {
                     idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
                 }
@@ -391,7 +391,7 @@ void chat_state_handle_wake_word(void) {
         ESP_LOGW(TAG, "Wake word detected but Jetson WebSocket is not connected.");
         bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
         if (!wifi_ws_is_wifi_connected()) {
-            display_ui_set_status(is_ko ? "WIFI 끊김" : "WIFI DISCONNECTED");
+            display_ui_set_status(is_ko ? "WIFI 연결 필요" : "WIFI CONNECTION REQUIRED");
         } else {
             display_ui_set_status(is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED");
         }

@@ -5,6 +5,7 @@
 #include "settings_manager.h"
 #include "lv_font_nanum.h"
 #include "time_sync.h"
+#include "wifi_ws.h"
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -54,6 +55,12 @@ static lv_obj_t *s_clock_ampm_lbl = NULL;
 static lv_timer_t *s_clock_timer = NULL;
 static volatile bool s_is_clock_mode = false;
 static volatile bool s_clock_temp_hidden = false;
+
+// 상단 상태바 및 Wi-Fi 아이콘 위젯
+static lv_obj_t *s_top_bar = NULL;
+static lv_obj_t *s_wifi_icon = NULL;
+static lv_obj_t *s_settings_hint_dot = NULL;
+static ui_wifi_state_t s_current_wifi_state = UI_WIFI_DISCONNECTED;
 
 static ui_emotion_t s_current_left_emotion = (ui_emotion_t)-1;
 static ui_emotion_t s_current_right_emotion = (ui_emotion_t)-1;
@@ -207,9 +214,27 @@ esp_err_t display_ui_init(void) {
   lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -5);
   lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
 
-  // 상단 히든 설정 메뉴 터치 위치 안내용 빨간 점 (지름 14px 원형)
-  lv_obj_t *s_settings_hint_dot = lv_obj_create(s_screen);
-  lv_obj_set_size(s_settings_hint_dot, 14, 14);
+  // 상단 상태바 컨테이너 (lv_layer_top에 배치하여 시계/눈/카메라 등 모든 화면 위에서 상시 노출)
+  s_top_bar = lv_obj_create(lv_layer_top());
+  lv_obj_set_size(s_top_bar, 240, 36);
+  lv_obj_align(s_top_bar, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_bg_opa(s_top_bar, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(s_top_bar, 0, 0);
+  lv_obj_set_style_pad_all(s_top_bar, 0, 0);
+  lv_obj_clear_flag(s_top_bar, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(s_top_bar, LV_OBJ_FLAG_CLICKABLE);
+
+  // 상단 Wi-Fi 상태 아이콘 (좌측 약간 오프셋: -18, y=9)
+  s_wifi_icon = lv_label_create(s_top_bar);
+  lv_obj_set_style_text_font(s_wifi_icon, &lv_font_montserrat_14, 0);
+  lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_RED), 0); // 초기: 미연결 (빨간색)
+  lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_align(s_wifi_icon, LV_ALIGN_TOP_MID, -18, 9);
+
+  // 상단 히든 설정 메뉴 터치 위치 안내용 빨간 점 (우측 약간 오프셋: +18, y=12, 지름 8px)
+  s_settings_hint_dot = lv_obj_create(s_top_bar);
+  lv_obj_set_size(s_settings_hint_dot, 8, 8);
   lv_obj_set_style_radius(s_settings_hint_dot, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(s_settings_hint_dot, lv_palette_main(LV_PALETTE_RED), 0);
   lv_obj_set_style_bg_opa(s_settings_hint_dot, LV_OPA_COVER, 0);
@@ -217,7 +242,7 @@ esp_err_t display_ui_init(void) {
   lv_obj_set_style_pad_all(s_settings_hint_dot, 0, 0);
   lv_obj_clear_flag(s_settings_hint_dot, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_clear_flag(s_settings_hint_dot, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_align(s_settings_hint_dot, LV_ALIGN_TOP_MID, 0, 12);
+  lv_obj_align(s_settings_hint_dot, LV_ALIGN_TOP_MID, 18, 12);
 
   // 카메라 실시간 프리뷰용 64바이트 정렬 PSRAM 버퍼 준비 (SPI DMA 직결 최적화)
   s_crop_buf = (uint16_t *)heap_caps_aligned_alloc(64, 240 * 240 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -569,13 +594,17 @@ void display_ui_update_clock(void) {
       bool synced = time_sync_is_synced();
 
       if (!synced) {
-        // NTP 동기화 완료 전: 잘못된 시간 숫자는 숨기고 '시간 동기화 중...'만 화면 중앙에 표시
+        // NTP 동기화 완료 전: 잘못된 시간 숫자는 숨기고 상태 메시지만 화면 중앙에 표시
         if (s_clock_time_lbl) lv_obj_add_flag(s_clock_time_lbl, LV_OBJ_FLAG_HIDDEN);
         if (s_clock_ampm_lbl) lv_obj_add_flag(s_clock_ampm_lbl, LV_OBJ_FLAG_HIDDEN);
 
         if (s_clock_date_lbl) {
           lv_obj_clear_flag(s_clock_date_lbl, LV_OBJ_FLAG_HIDDEN);
-          lv_label_set_text(s_clock_date_lbl, is_ko ? "시간 동기화 중..." : "SYNCING TIME...");
+          if (!wifi_ws_is_wifi_connected()) {
+            lv_label_set_text(s_clock_date_lbl, is_ko ? "WIFI 연결 필요" : "WIFI CONNECTION REQUIRED");
+          } else {
+            lv_label_set_text(s_clock_date_lbl, is_ko ? "시간 동기화 중..." : "SYNCING TIME...");
+          }
           lv_obj_align(s_clock_date_lbl, LV_ALIGN_CENTER, 0, 0);
         }
       } else {
@@ -712,6 +741,44 @@ void display_ui_temp_hide_clock(bool hide) {
       }
     }
     if (lv_scr_act()) lv_obj_invalidate(lv_scr_act());
+    lvgl_port_unlock();
+  }
+}
+
+void display_ui_set_wifi_state(ui_wifi_state_t state) {
+  s_current_wifi_state = state;
+  if (lvgl_port_lock(200)) {
+    if (s_wifi_icon) {
+      switch (state) {
+      case UI_WIFI_CONNECTED:
+        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0x00E5FF), 0); // 밝은 청록색 (연결 완료)
+        break;
+      case UI_WIFI_CONNECTING:
+        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_color(s_wifi_icon, lv_color_hex(0xFFB300), 0); // 주황/노란색 (연결 시도 중)
+        break;
+      case UI_WIFI_DISCONNECTED:
+      default:
+        lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_RED), 0); // 빨간색 (연결 끊김)
+        break;
+      }
+      lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_HIDDEN);
+    }
+    lvgl_port_unlock();
+  }
+}
+
+void display_ui_show_top_bar(bool show) {
+  if (lvgl_port_lock(200)) {
+    if (s_top_bar) {
+      if (show) {
+        lv_obj_clear_flag(s_top_bar, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_add_flag(s_top_bar, LV_OBJ_FLAG_HIDDEN);
+      }
+    }
     lvgl_port_unlock();
   }
 }

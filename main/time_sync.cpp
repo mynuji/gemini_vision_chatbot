@@ -1,5 +1,6 @@
 #include "time_sync.h"
 #include "settings_manager.h"
+#include "wifi_ws.h"
 #include "esp_sntp.h"
 #include "esp_log.h"
 #include <time.h>
@@ -118,6 +119,12 @@ esp_err_t time_sync_init(void) {
 }
 
 esp_err_t time_sync_start(void) {
+    // Wi-Fi 연결 여부 확인: 연결되어 있지 않으면 시간 동기화 시도 중단
+    if (!wifi_ws_is_wifi_connected()) {
+        ESP_LOGW(TAG, "Wi-Fi not connected -> skipping SNTP time sync");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     const app_settings_t *cfg = settings_manager_get();
     uint8_t s_idx = cfg ? cfg->ntp_server_idx : 0;
     uint8_t tz_idx = cfg ? cfg->timezone_idx : 0;

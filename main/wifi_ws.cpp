@@ -93,6 +93,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         ESP_LOGI(TAG, "Wi-Fi Station started, connecting to AP...");
         s_is_wifi_connected = false;
         s_is_ws_connected = false;
+
+        // Wi-Fi 연결 해제 시 서버(WebSocket) 접속 시도 즉시 중단
+        if (s_ws_client != NULL) {
+            ESP_LOGI(TAG, "Wi-Fi disconnected -> stopping WebSocket client connection attempts");
+            esp_websocket_client_stop(s_ws_client);
+        }
         notify_state(WIFI_WS_STATE_WIFI_CONNECTING, "CONNECTING WIFI...");
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -102,6 +108,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                  (reason == 201) ? "NO_AP_FOUND" : (reason == 202 || reason == 15) ? "AUTH_FAIL" : "OTHER");
         s_is_wifi_connected = false;
         s_is_ws_connected = false;
+
+        // Wi-Fi 연결 해제 시 서버(WebSocket) 접속 시도 즉시 중단
+        if (s_ws_client != NULL) {
+            ESP_LOGI(TAG, "Wi-Fi disconnected -> stopping WebSocket client connection attempts");
+            esp_websocket_client_stop(s_ws_client);
+        }
 
         // 약전계 환경에서 순간적인 비콘 누락으로 인한 1~2초 재연결 시 화면 깜빡임 방지 (2.5초 디바운스)
         if (s_wifi_disconn_timer == NULL) {
