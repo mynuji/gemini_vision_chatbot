@@ -572,7 +572,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                         }
                         ESP_LOGI(TAG, "Server commanded LLM Type change to: %u (%s)",
                                  (unsigned int)target_type, settings_manager_get_llm_type_name(target_type));
-                        settings_manager_set_llm_type(target_type);
+                        settings_manager_set_llm_type_no_notify(target_type);
                         char st_buf[32];
                         snprintf(st_buf, sizeof(st_buf), "LLM: %s", settings_manager_get_llm_type_name(target_type));
                         display_ui_set_status(st_buf);
@@ -584,7 +584,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                         int vol = vol_item->valueint;
                         if (vol < 10) vol = 10;
                         if (vol > 100) vol = 100;
-                        settings_manager_set_volume((uint8_t)vol);
+                        settings_manager_set_volume_no_notify((uint8_t)vol);
                         ESP_LOGI(TAG, "Server commanded volume change to: %d%%", vol);
                         char st_buf[32];
                         snprintf(st_buf, sizeof(st_buf), "VOL: %d%%", vol);
@@ -600,7 +600,7 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                         int gain = gain_item->valueint;
                         if (gain < 10) gain = 10;
                         if (gain > 60) gain = 60;
-                        settings_manager_set_mic_gain((uint8_t)gain);
+                        settings_manager_set_mic_gain_no_notify((uint8_t)gain);
                         audio_pipeline_set_mic_gain((uint8_t)gain);
                         ESP_LOGI(TAG, "Server commanded mic gain change to: %d (%.1fx)", gain, gain / 10.0f);
                         char st_buf[32];

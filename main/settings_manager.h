@@ -95,6 +95,21 @@ esp_err_t settings_manager_set_port(uint16_t port);
 esp_err_t settings_manager_set_llm_type(uint8_t llm_type);
 
 /**
+ * @brief LLM 타입 변경 및 저장 (콜백 미호출 - 서버로부터 수신 시 재귀 전송 방지용)
+ */
+esp_err_t settings_manager_set_llm_type_no_notify(uint8_t llm_type);
+
+/**
+ * @brief 볼륨 설정만 빠르게 변경 및 저장 (콜백 미호출)
+ */
+esp_err_t settings_manager_set_volume_no_notify(uint8_t volume);
+
+/**
+ * @brief 마이크 감도 설정만 빠르게 변경 및 저장 (콜백 미호출)
+ */
+esp_err_t settings_manager_set_mic_gain_no_notify(uint8_t mic_gain);
+
+/**
  * @brief NTP 서버 인덱스 변경 및 저장
  */
 esp_err_t settings_manager_set_ntp_server(uint8_t ntp_server_idx);

@@ -1655,6 +1655,37 @@ async def synthesize_tts_pcm(text, max_retries=2):
                 print(f"\n[경고] TTS 합성 최종 실패 ('{text}'): {e}")
     return None
 
+async def play_tts_announcement(websocket, text, close_session=False):
+    """
+    설정 변경 및 시스템 안내 멘트용 TTS 음성 재생 (잡음 및 패킷 드롭 방지)
+    1. 안내 음성을 먼저 합성하여 합성 대기 시간 동안 ESP32가 무음/잡음 상태로 빠지는 것 방지
+    2. 합성 완료 후 SPEAKING 상태 전송
+    3. 2048바이트 단위로 58ms 간격 스트리밍 (ESP32 스피커 DMA 버퍼 페이싱)
+    4. 재생 완료 버퍼 대기 후 DONE 전송
+    """
+    try:
+        pcm = await synthesize_tts_pcm(text, max_retries=2)
+        if not pcm:
+            print(f"[안내 음성] TTS 합성 실패: '{text}'")
+            return
+
+        await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+
+        chunk_len = 2048
+        total_chunks = (len(pcm) + chunk_len - 1) // chunk_len
+        for idx in range(total_chunks):
+            start = idx * chunk_len
+            chunk = pcm[start:start + chunk_len]
+            await websocket.send(chunk)
+            if idx >= 4:
+                await asyncio.sleep(0.058)
+
+        # ESP32 링버퍼 및 I2S DMA에서 오디오가 끝까지 자연스럽게 출력되도록 여유 시간 대기
+        await asyncio.sleep(0.4)
+        await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": close_session}))
+    except Exception as e:
+        print(f"[안내 음성 전송 오류] {e}")
+
 def calculate_remaining_sentences(sentences_info, played_bytes):
     """
     ESP32 스피커에서 실제 재생된 바이트 수(played_bytes)를 기준으로,
@@ -2300,14 +2331,7 @@ async def handler(websocket, path=None):
             return
 
         # AI 음성 안내(TTS) 및 완료 상태 전송
-        try:
-            await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
-            pcm = await synthesize_tts_pcm(resp_msg)
-            if pcm:
-                await websocket.send(pcm)
-            await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
-        except Exception as e:
-            print(f"[안내 음성 오류] {e}")
+        await play_tts_announcement(websocket, resp_msg, close_session=False)
 
     async def switch_and_notify_llm(target_type, display_name=None, response_text=None):
         nonlocal current_llm_type, active_realtime_session
@@ -2350,14 +2374,7 @@ async def handler(websocket, path=None):
         print(f"[LLM Type 전환 완료] 서버 current_llm_type = '{current_llm_type}'")
 
         # 4. 사용자에게 어떤 LLM으로 변경했는지 AI 음성(TTS) 및 화면 안내
-        try:
-            await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
-            pcm = await synthesize_tts_pcm(resp_msg)
-            if pcm:
-                await websocket.send(pcm)
-            await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": False}))
-        except Exception as tts_err:
-            print(f"[안내 음성 합성 오류] {tts_err}")
+        await play_tts_announcement(websocket, resp_msg, close_session=False)
 
         # 5. 새 타입이 Realtime인 경우 실시간 세션 즉시 연결
         if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):

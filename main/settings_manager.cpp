@@ -151,7 +151,7 @@ const app_settings_t* settings_manager_get(void) {
     return &s_settings;
 }
 
-esp_err_t settings_manager_save(const app_settings_t *new_settings) {
+static esp_err_t settings_manager_save_internal(const app_settings_t *new_settings, bool notify) {
     if (!new_settings) return ESP_ERR_INVALID_ARG;
 
     nvs_handle_t nvs_handle;
@@ -167,9 +167,9 @@ esp_err_t settings_manager_save(const app_settings_t *new_settings) {
     err = nvs_set_blob(nvs_handle, NVS_KEY, &s_settings, sizeof(app_settings_t));
     if (err == ESP_OK) {
         err = nvs_commit(nvs_handle);
-        ESP_LOGI(TAG, "Saved settings to NVS successfully! (SSID='%s', Server='%s:%u', Vol=%u%%)",
-                 s_settings.wifi_ssid, s_settings.server_ip, (unsigned int)s_settings.server_port, s_settings.volume);
-        if (s_change_cb != NULL) {
+        ESP_LOGI(TAG, "Saved settings to NVS successfully! (SSID='%s', Server='%s:%u', Vol=%u%%, Notify=%d)",
+                 s_settings.wifi_ssid, s_settings.server_ip, (unsigned int)s_settings.server_port, s_settings.volume, (int)notify);
+        if (notify && s_change_cb != NULL) {
             s_change_cb(&s_settings);
         }
     } else {
@@ -178,6 +178,10 @@ esp_err_t settings_manager_save(const app_settings_t *new_settings) {
 
     nvs_close(nvs_handle);
     return err;
+}
+
+esp_err_t settings_manager_save(const app_settings_t *new_settings) {
+    return settings_manager_save_internal(new_settings, true);
 }
 
 esp_err_t settings_manager_reset_to_default(void) {
@@ -191,6 +195,13 @@ esp_err_t settings_manager_set_volume(uint8_t volume) {
     if (volume > 100) volume = 100;
     s_settings.volume = volume;
     return settings_manager_save(&s_settings);
+}
+
+esp_err_t settings_manager_set_volume_no_notify(uint8_t volume) {
+    if (volume < 10) volume = 10;
+    if (volume > 100) volume = 100;
+    s_settings.volume = volume;
+    return settings_manager_save_internal(&s_settings, false);
 }
 
 esp_err_t settings_manager_set_brightness(uint8_t brightness) {
@@ -207,6 +218,13 @@ esp_err_t settings_manager_set_mic_gain(uint8_t mic_gain) {
     return settings_manager_save(&s_settings);
 }
 
+esp_err_t settings_manager_set_mic_gain_no_notify(uint8_t mic_gain) {
+    if (mic_gain < 10) mic_gain = 10;
+    if (mic_gain > 60) mic_gain = 60;
+    s_settings.mic_gain = mic_gain;
+    return settings_manager_save_internal(&s_settings, false);
+}
+
 esp_err_t settings_manager_set_port(uint16_t port) {
     if (port == 0) port = 8765;
     s_settings.server_port = port;
@@ -217,6 +235,12 @@ esp_err_t settings_manager_set_llm_type(uint8_t llm_type) {
     if (llm_type >= LLM_TYPE_COUNT) llm_type = 0;
     s_settings.llm_type = llm_type;
     return settings_manager_save(&s_settings);
+}
+
+esp_err_t settings_manager_set_llm_type_no_notify(uint8_t llm_type) {
+    if (llm_type >= LLM_TYPE_COUNT) llm_type = 0;
+    s_settings.llm_type = llm_type;
+    return settings_manager_save_internal(&s_settings, false);
 }
 
 esp_err_t settings_manager_set_ntp_server(uint8_t ntp_server_idx) {
