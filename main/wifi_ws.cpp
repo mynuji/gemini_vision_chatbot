@@ -234,8 +234,22 @@ esp_err_t wifi_ws_init(void) {
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.static_rx_buf_num = 4;
-    cfg.dynamic_rx_buf_num = 16;
+    cfg.dynamic_rx_buf_num = 8;
+    cfg.static_tx_buf_num = 4;
+    cfg.dynamic_tx_buf_num = 8;
+    cfg.cache_tx_buf_num = 16;
+    cfg.mgmt_sbuf_num = 6;
+    cfg.rx_mgmt_buf_num = 2;
+
+    ESP_LOGI(TAG, "Pre-WiFi Free Internal Heap: %u bytes, Largest block: %u bytes",
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_LOGI(TAG, "Post-WiFi Free Internal Heap: %u bytes, Largest block: %u bytes",
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 
     // 한국 국가 코드(KR) 설정: 채널 1~13 활성화 및 액티브 스캔 허용 (채널 13번 탐색 안정성 대폭 향상)
     wifi_country_t country = {

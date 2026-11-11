@@ -162,12 +162,13 @@ esp_err_t display_ui_init(void) {
   // 5. LVGL 포트 초기화
   lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
   port_cfg.task_max_sleep_ms = 10; // 지연 없는 초고속 실시간 화면 갱신 (기본 500ms -> 10ms 단축)
+  port_cfg.task_stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT; // LVGL 태스크 스택을 PSRAM에 배치하여 내부 SRAM 절약
   lvgl_port_init(&port_cfg);
 
   lvgl_port_display_cfg_t disp_cfg = {};
   disp_cfg.io_handle = io_handle;
   disp_cfg.panel_handle = s_panel_handle;
-  disp_cfg.buffer_size = 240 * 40;
+  disp_cfg.buffer_size = 240 * 20; // 240x20 더블 버퍼(19.2KB)로 내부 DMA SRAM 19.2KB 대폭 절약
   disp_cfg.double_buffer = true;
   disp_cfg.hres = 240;
   disp_cfg.vres = 240;
