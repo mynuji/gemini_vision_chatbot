@@ -71,6 +71,8 @@ static ui_emotion_t s_current_right_emotion = (ui_emotion_t)-1;
 static volatile bool s_is_animating = false;
 static volatile bool s_auto_blink_paused = false;
 static volatile bool s_camera_preview_mode = false;
+static TaskHandle_t s_auto_blink_task_handle = NULL;
+static volatile bool s_trigger_wake_animation = false;
 
 static const void *get_image_for_emotion(ui_emotion_t emotion) {
   switch (emotion) {
@@ -444,85 +446,168 @@ void display_ui_set_status(const char *status_text) {
 
 void display_ui_pause_auto_blink(bool pause) { s_auto_blink_paused = pause; }
 
+void display_ui_trigger_wake_anim(void) {
+  s_trigger_wake_animation = true;
+  if (s_auto_blink_task_handle) {
+    xTaskNotifyGive(s_auto_blink_task_handle);
+  }
+}
+
 static void auto_blink_task(void *pvParameters) {
   while (1) {
-    vTaskDelay(pdMS_TO_TICKS(1000 + (esp_random() % 2000)));
+    // 1.2 ~ 3.0초 주기로 대기하거나, 즉시 눈 뜨기(Wake-up) 알림 수신 시 대기 해제
+    uint32_t wait_ms = 1200 + (esp_random() % 1800);
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
 
-    if (!s_is_animating && !s_auto_blink_paused && !s_is_clock_mode &&
-        s_current_left_emotion == UI_EMOTION_IDLE &&
-        s_current_right_emotion == UI_EMOTION_IDLE) {
+    bool eyes_visible = (!s_is_clock_mode) || (s_is_clock_mode && s_clock_temp_hidden);
+    if (!eyes_visible || s_auto_blink_paused ||
+        s_current_left_emotion != UI_EMOTION_IDLE ||
+        s_current_right_emotion != UI_EMOTION_IDLE) {
+      continue;
+    }
 
+    // [1] 시계에서 눈 화면으로 전환 시 '눈 뜨기(Wake-up) 인트로 애니메이션'
+    if (s_trigger_wake_animation) {
+      s_trigger_wake_animation = false;
       s_is_animating = true;
 
-      // 15% 확률로 윙크
-      bool do_wink = (esp_random() % 100) < 15;
-      bool wink_left = (esp_random() % 2) == 0;
-
-      // 1단계: 반쯤 감기
+      // 1-1. 감은 눈 유지 (80ms)
       lvgl_port_lock(-1);
-      lv_img_set_src(s_left_eye,
-                     do_wink ? (wink_left ? &eye_blink_100 : &eye_idle_100)
-                             : &eye_half_blink_100);
-      lv_img_set_src(s_right_eye,
-                     do_wink ? (wink_left ? &eye_idle_100 : &eye_blink_100)
-                             : &eye_half_blink_100);
+      lv_img_set_src(s_left_eye, &eye_blink_100);
+      lv_img_set_src(s_right_eye, &eye_blink_100);
+      lvgl_port_unlock();
+      vTaskDelay(pdMS_TO_TICKS(80));
+
+      eyes_visible = (!s_is_clock_mode) || (s_is_clock_mode && s_clock_temp_hidden);
+      if (!eyes_visible || s_auto_blink_paused || s_current_left_emotion != UI_EMOTION_IDLE) {
+        s_is_animating = false;
+        continue;
+      }
+
+      // 1-2. 반쯤 뜨기 (70ms)
+      lvgl_port_lock(-1);
+      lv_img_set_src(s_left_eye, &eye_half_blink_100);
+      lv_img_set_src(s_right_eye, &eye_half_blink_100);
+      lvgl_port_unlock();
+      vTaskDelay(pdMS_TO_TICKS(70));
+
+      eyes_visible = (!s_is_clock_mode) || (s_is_clock_mode && s_clock_temp_hidden);
+      if (!eyes_visible || s_auto_blink_paused || s_current_left_emotion != UI_EMOTION_IDLE) {
+        s_is_animating = false;
+        continue;
+      }
+
+      // 1-3. 완전히 뜨기 (120ms)
+      lvgl_port_lock(-1);
+      lv_img_set_src(s_left_eye, &eye_idle_100);
+      lv_img_set_src(s_right_eye, &eye_idle_100);
+      lvgl_port_unlock();
+      vTaskDelay(pdMS_TO_TICKS(120));
+
+      // 1-4. 자연스러운 인사 깜빡임 (반감기 -> 완감기 -> 반뜨기 -> 원상복귀)
+      lvgl_port_lock(-1);
+      lv_img_set_src(s_left_eye, &eye_half_blink_100);
+      lv_img_set_src(s_right_eye, &eye_half_blink_100);
       lvgl_port_unlock();
       vTaskDelay(pdMS_TO_TICKS(40));
 
-      if (s_auto_blink_paused || s_current_left_emotion != UI_EMOTION_IDLE) {
-        s_is_animating = false;
-        continue;
-      }
-
-      // 2단계: 완전히 감기
       lvgl_port_lock(-1);
-      lv_img_set_src(s_left_eye,
-                     do_wink ? (wink_left ? &eye_blink_100 : &eye_idle_100)
-                             : &eye_blink_100);
-      lv_img_set_src(s_right_eye,
-                     do_wink ? (wink_left ? &eye_idle_100 : &eye_blink_100)
-                             : &eye_blink_100);
+      lv_img_set_src(s_left_eye, &eye_blink_100);
+      lv_img_set_src(s_right_eye, &eye_blink_100);
       lvgl_port_unlock();
-      vTaskDelay(pdMS_TO_TICKS(140));
+      vTaskDelay(pdMS_TO_TICKS(120));
 
-      if (s_auto_blink_paused || s_current_left_emotion != UI_EMOTION_IDLE) {
-        s_is_animating = false;
-        continue;
-      }
-
-      // 3단계: 반쯤 뜨기
       lvgl_port_lock(-1);
-      lv_img_set_src(s_left_eye,
-                     do_wink ? (wink_left ? &eye_blink_100 : &eye_idle_100)
-                             : &eye_half_blink_100);
-      lv_img_set_src(s_right_eye,
-                     do_wink ? (wink_left ? &eye_idle_100 : &eye_blink_100)
-                             : &eye_half_blink_100);
+      lv_img_set_src(s_left_eye, &eye_half_blink_100);
+      lv_img_set_src(s_right_eye, &eye_half_blink_100);
       lvgl_port_unlock();
       vTaskDelay(pdMS_TO_TICKS(40));
 
-      if (s_auto_blink_paused || s_current_left_emotion != UI_EMOTION_IDLE) {
-        s_is_animating = false;
-        continue;
-      }
+      lvgl_port_lock(-1);
+      lv_img_set_src(s_left_eye, &eye_idle_100);
+      lv_img_set_src(s_right_eye, &eye_idle_100);
+      lvgl_port_unlock();
 
-      // 4단계: 원래대로 복귀 (단, IDLE 상태일 때만 눈을 IDLE로 복귀)
-      if (!s_auto_blink_paused && s_current_left_emotion == UI_EMOTION_IDLE) {
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_idle_100);
-        lv_img_set_src(s_right_eye, &eye_idle_100);
-        lvgl_port_unlock();
-
-        s_current_left_emotion = UI_EMOTION_IDLE;
-        s_current_right_emotion = UI_EMOTION_IDLE;
-      }
+      s_current_left_emotion = UI_EMOTION_IDLE;
+      s_current_right_emotion = UI_EMOTION_IDLE;
       s_is_animating = false;
+      continue;
     }
+
+    // [2] 통상 대기 상태의 자연스러운 자동 눈 깜빡임 / 윙크 애니메이션
+    s_is_animating = true;
+
+    // 15% 확률로 윙크
+    bool do_wink = (esp_random() % 100) < 15;
+    bool wink_left = (esp_random() % 2) == 0;
+
+    // 1단계: 반쯤 감기
+    lvgl_port_lock(-1);
+    lv_img_set_src(s_left_eye,
+                   do_wink ? (wink_left ? &eye_blink_100 : &eye_idle_100)
+                           : &eye_half_blink_100);
+    lv_img_set_src(s_right_eye,
+                   do_wink ? (wink_left ? &eye_idle_100 : &eye_blink_100)
+                           : &eye_half_blink_100);
+    lvgl_port_unlock();
+    vTaskDelay(pdMS_TO_TICKS(40));
+
+    eyes_visible = (!s_is_clock_mode) || (s_is_clock_mode && s_clock_temp_hidden);
+    if (!eyes_visible || s_auto_blink_paused || s_current_left_emotion != UI_EMOTION_IDLE) {
+      s_is_animating = false;
+      continue;
+    }
+
+    // 2단계: 완전히 감기
+    lvgl_port_lock(-1);
+    lv_img_set_src(s_left_eye,
+                   do_wink ? (wink_left ? &eye_blink_100 : &eye_idle_100)
+                           : &eye_blink_100);
+    lv_img_set_src(s_right_eye,
+                   do_wink ? (wink_left ? &eye_idle_100 : &eye_blink_100)
+                           : &eye_blink_100);
+    lvgl_port_unlock();
+    vTaskDelay(pdMS_TO_TICKS(140));
+
+    eyes_visible = (!s_is_clock_mode) || (s_is_clock_mode && s_clock_temp_hidden);
+    if (!eyes_visible || s_auto_blink_paused || s_current_left_emotion != UI_EMOTION_IDLE) {
+      s_is_animating = false;
+      continue;
+    }
+
+    // 3단계: 반쯤 뜨기
+    lvgl_port_lock(-1);
+    lv_img_set_src(s_left_eye,
+                   do_wink ? (wink_left ? &eye_blink_100 : &eye_idle_100)
+                           : &eye_half_blink_100);
+    lv_img_set_src(s_right_eye,
+                   do_wink ? (wink_left ? &eye_idle_100 : &eye_blink_100)
+                           : &eye_half_blink_100);
+    lvgl_port_unlock();
+    vTaskDelay(pdMS_TO_TICKS(40));
+
+    eyes_visible = (!s_is_clock_mode) || (s_is_clock_mode && s_clock_temp_hidden);
+    if (!eyes_visible || s_auto_blink_paused || s_current_left_emotion != UI_EMOTION_IDLE) {
+      s_is_animating = false;
+      continue;
+    }
+
+    // 4단계: 원래대로 복귀
+    if (!s_auto_blink_paused && s_current_left_emotion == UI_EMOTION_IDLE) {
+      lvgl_port_lock(-1);
+      lv_img_set_src(s_left_eye, &eye_idle_100);
+      lv_img_set_src(s_right_eye, &eye_idle_100);
+      lvgl_port_unlock();
+
+      s_current_left_emotion = UI_EMOTION_IDLE;
+      s_current_right_emotion = UI_EMOTION_IDLE;
+    }
+    s_is_animating = false;
   }
 }
 
 void display_ui_start_auto_blink(void) {
-  xTaskCreatePinnedToCoreWithCaps(auto_blink_task, "auto_blink", 3072, NULL, 2, NULL,
+  xTaskCreatePinnedToCoreWithCaps(auto_blink_task, "auto_blink", 3072, NULL, 2, &s_auto_blink_task_handle,
                                   0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
 
@@ -733,11 +818,20 @@ void display_ui_show_clock_mode(bool enable) {
         lv_obj_move_foreground(s_clock_container);
       }
     } else {
+      s_current_left_emotion = UI_EMOTION_IDLE;
+      s_current_right_emotion = UI_EMOTION_IDLE;
+
       if (s_clock_container) {
         lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
       }
-      if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
-      if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_left_eye) {
+        lv_img_set_src(s_left_eye, &eye_blink_100);
+        lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+      }
+      if (s_right_eye) {
+        lv_img_set_src(s_right_eye, &eye_blink_100);
+        lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      }
       if (s_status_label) {
         bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
         const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
@@ -757,6 +851,10 @@ void display_ui_show_clock_mode(bool enable) {
   }
 
   display_ui_update_clock();
+
+  if (!enable) {
+    display_ui_trigger_wake_anim();
+  }
 }
 
 bool display_ui_is_clock_mode(void) {
@@ -768,10 +866,19 @@ void display_ui_temp_hide_clock(bool hide) {
   s_clock_temp_hidden = hide;
   if (lvgl_port_lock(500)) {
     if (hide) {
+      s_current_left_emotion = UI_EMOTION_IDLE;
+      s_current_right_emotion = UI_EMOTION_IDLE;
+
       // 대기 중 눈 표정 표시 + 하단 발화/터치 유도 텍스트 표시
       if (s_clock_container) lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
-      if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
-      if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      if (s_left_eye) {
+        lv_img_set_src(s_left_eye, &eye_blink_100);
+        lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+      }
+      if (s_right_eye) {
+        lv_img_set_src(s_right_eye, &eye_blink_100);
+        lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+      }
       if (s_status_label) {
         bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
         const char *idle_status = is_ko ? "'알렉사' or 터치" : "SAY 'ALEXA' OR TOUCH";
@@ -800,6 +907,10 @@ void display_ui_temp_hide_clock(bool hide) {
   }
 
   display_ui_update_clock();
+
+  if (hide) {
+    display_ui_trigger_wake_anim();
+  }
 }
 
 void display_ui_set_wifi_state(ui_wifi_state_t state) {

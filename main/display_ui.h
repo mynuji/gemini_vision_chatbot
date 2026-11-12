@@ -95,6 +95,11 @@ bool display_ui_is_clock_mode(void);
 void display_ui_temp_hide_clock(bool hide);
 
 /**
+ * @brief 눈 뜨기(Wake-up) 인트로 애니메이션 즉시 트리거
+ */
+void display_ui_trigger_wake_anim(void);
+
+/**
  * @brief 시계 화면 텍스트 즉시 갱신
  */
 void display_ui_update_clock(void);
