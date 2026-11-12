@@ -600,12 +600,14 @@ class GeminiLiveSession:
         )
         discovered = await self._resolve_supported_models()
         known_live_models = [
+            "gemini-3.8-live",
+            "gemini-3.8-live-extended-thinking",
             "gemini-2.0-flash-exp",
             "gemini-2.0-flash",
             "gemini-2.5-flash-native-audio-preview-12-2025"
         ]
         candidates = []
-        if self.model and "3.8" not in self.model and self.model not in candidates:
+        if self.model and self.model not in candidates:
             candidates.append(self.model)
         for klm in known_live_models:
             if klm not in candidates:
