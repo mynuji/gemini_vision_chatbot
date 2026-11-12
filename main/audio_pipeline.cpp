@@ -274,17 +274,14 @@ static void audio_feed_task(void *pvParameters) {
             memset(ref_buf, 0, chunk_bytes);
         }
 
-        // [호출어 오탐 방지 및 마이크 감도 최적화]
-        // 1) IDLE 상태 (호출어 'Alexa' 대기 중):
-        //    바스락거리는 주변 생활 소음, 옷깃 스침 등이 인위적으로 증폭되어 WakeNet이 오탐(False Wakeup)하는 것을
-        //    원천 방지하기 위해 디지털 게인을 절대 적용하지 않습니다 (1.0x 원음 유지).
-        // 2) 스피커 출력 중: 자체 스피커 소리가 마이크로 피드백되어 AEC 왜곡이 발생하는 것을 방지하기 위해 1.0x 원음 유지.
-        // 3) 대화 청취(LISTENING) 중: 작은 목소리를 잘 수음하도록 설정된 마이크 게인 적용 (최대 4.5배로 안전 제한).
-        chat_state_t cur_st = chat_state_get();
+        // [마이크 감도 유지]
+        // 스피커가 출력 중일 때는 자체 스피커 소리가 마이크로 피드백되어 AEC 왜곡이 발생하는 것을 방지하기 위해 1.0배(원음) 유지
+        // 스피커가 조용할 때 사용자 설정 디지털 게인(1.0x ~ 6.0x, 기본 3.5x)을 일관되게 적용하여 AFE로 전달
         bool is_playing = s_is_speaker_playing || (s_spk_buffered_bytes > 0);
-        if (!is_playing && cur_st == CHAT_STATE_LISTENING && s_mic_gain > 10) {
+        if (!is_playing) {
             uint8_t gain = s_mic_gain;
-            if (gain > 45) gain = 45; // 과도한 왜곡 방지 (최대 4.5배)
+            if (gain < 10) gain = 10;
+            if (gain > 60) gain = 60;
             for (int i = 0; i < feed_chunksize; i++) {
                 int32_t val = (int32_t)mic_buf[i] * (int32_t)gain / 10;
                 if (val > 32767) val = 32767;
@@ -403,35 +400,15 @@ static void audio_fetch_task(void *pvParameters) {
         // [3] 사용자 발화 청취 중 (LISTENING) 실시간 스트리밍 & VAD 감지
         // --------------------------------------------------------------------
         if (cur_state == CHAT_STATE_LISTENING && s_mic_streaming_enabled) {
-            int16_t tx_boosted[512];
-            int tx_cnt = res->data_size / sizeof(int16_t);
-            if (tx_cnt > 512) tx_cnt = 512;
-            int16_t *src_pcm = (int16_t *)res->data;
-            int32_t chk_peak = 0;
-
-            if (tx_cnt > 0 && src_pcm != NULL) {
-                // AI 모델이 명확하게 음성을 인식할 수 있도록 4배(4.0x) 디지털 부스트 및 클리핑 방지
-                for (int s = 0; s < tx_cnt; s++) {
-                    int32_t b = (int32_t)src_pcm[s] * 4;
-                    if (b > 32767) b = 32767;
-                    else if (b < -32768) b = -32768;
-                    tx_boosted[s] = (int16_t)b;
-                    int32_t v = abs(tx_boosted[s]);
-                    if (v > chk_peak) chk_peak = v;
-                }
-
-                if (s_tx_ringbuf != NULL) {
-                    xRingbufferSend(s_tx_ringbuf, tx_boosted, tx_cnt * sizeof(int16_t), 0); // 논블로킹
-                }
+            if (res->data_size > 0 && res->data != NULL && s_tx_ringbuf != NULL) {
+                xRingbufferSend(s_tx_ringbuf, res->data, res->data_size, 0); // 논블로킹
             }
 
-            // 비프음 및 단발성 주변 소음 방지:
-            // 비프음 종료 후(350ms) 안정화 후 실제 음성 에너지(피크 250 이상)를 갖는 연속 4프레임(약 128ms) 발화 시 실제 발화로 판정
-            // (미세한 바스락거림이나 단발성 클릭 소음은 거르고 실제 사람의 목소리는 신속하게 감지)
-            if (now_ms - s_mic_stream_start_ms > 350) {
-                if (res->vad_state == VAD_SPEECH && chk_peak >= 250) {
+            // 비프음 및 단발성 주변 소음 방지: 500ms 안정화 후 3프레임(약 96ms) 연속 음성 신호 시 실제 발화로 판정
+            if (now_ms - s_mic_stream_start_ms > 500) {
+                if (res->vad_state == VAD_SPEECH) {
                     s_vad_speech_frames++;
-                    if (s_vad_speech_frames >= 4) {
+                    if (s_vad_speech_frames >= 3) {
                         s_last_speech_ms = now_ms;
                         if (!s_has_user_spoken) {
                             s_has_user_spoken = true;
@@ -446,9 +423,9 @@ static void audio_fetch_task(void *pvParameters) {
 
             if (s_has_user_spoken) {
                 // 발화 종료 판정:
-                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 800ms) 침묵이 700ms 이상 지속될 때
+                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 800ms) 침묵이 650ms 이상 지속될 때
                 // 2) 최대 발화 제한: 사용자가 말을 시작한 시점(s_speech_start_ms)으로부터 15초 초과 시 (대기 시간과 무관!)
-                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 800) && (now_ms - s_last_speech_ms > 700);
+                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 800) && (now_ms - s_last_speech_ms > 650);
                 bool max_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 15000);
 
                 if (silence_timeout || max_timeout) {
@@ -550,9 +527,9 @@ esp_err_t audio_pipeline_init(void) {
         afe_config->ns_init = true;
         afe_config->wakenet_init = true;
         afe_config->wakenet_model_name = esp_srmodel_filter(models, ESP_WN_PREFIX, NULL);
-        afe_config->wakenet_mode = DET_MODE_90;
+        afe_config->wakenet_mode = DET_MODE_95; // Alexa 호출어 95% 이상 확신 시에만 트리거 (주변 생활 소음 오탐 방지)
         afe_config->vad_init = true;
-        afe_config->vad_mode = VAD_MODE_2; // 실시간 음성 대화에 최적화된 균형 VAD 모드 (MODE_3의 과도한 음성 차단 방지)
+        afe_config->vad_mode = VAD_MODE_1;     // 오늘 아침 정상 동작하던 고감도 음성 VAD 모드로 완벽 복원
         afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
         afe_config = afe_config_check(afe_config);
 

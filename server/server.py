@@ -769,15 +769,6 @@ class GeminiLiveSession:
         if not self.is_connected or not self.gemini_ws:
             return
         try:
-            # 안전한 음량 확보: 수신된 16bit PCM이 너무 작으면 AI가 인식할 수 있도록 최대 3배까지 추가 보정
-            if len(pcm_chunk_16k) >= 2:
-                samples = np.frombuffer(pcm_chunk_16k, dtype=np.int16).astype(np.float32)
-                peak = np.max(np.abs(samples)) if len(samples) > 0 else 0.0
-                if 0 < peak < 12000:
-                    boost = min(3.0, 15000.0 / peak)
-                    samples = np.clip(samples * boost, -32768, 32767).astype(np.int16)
-                    pcm_chunk_16k = samples.tobytes()
-
             b64_pcm = base64.b64encode(pcm_chunk_16k).decode("utf-8")
             blob = {
                 "mimeType": "audio/pcm;rate=16000",
@@ -2932,16 +2923,6 @@ async def handler(websocket, path=None):
                                     if current_llm_type in REALTIME_LLM_TYPES:
                                         print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 턴 완료 전송)")
                                         if active_realtime_session and active_realtime_session.is_connected:
-                                            # 무음 또는 미세 주변 잡음(바스락거림) 필터링: 유효 발화 길이 및 음향 에너지 검사
-                                            total_buffered_len = sum(len(c) for c in audio_buffer)
-                                            max_peak = max((float(np.max(np.abs(c))) for c in audio_buffer), default=0.0) if audio_buffer else 0.0
-                                            if total_buffered_len < 3200 or max_peak < 0.003:
-                                                print(f"[Realtime 무음 차단] 수신된 오디오가 무음 또는 미세 소음({total_buffered_len/16000:.2f}s, peak={max_peak:.3f})이므로 AI 질의를 생략하고 대기 상태(DONE)로 복귀합니다.")
-                                                audio_buffer = []
-                                                await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": True}))
-                                                continue
-
-                                            print(f"[Realtime 음성 유효] 수신 오디오 감지: {total_buffered_len/16000:.2f}s, peak={max_peak:.3f} -> Gemini 세션 커밋")
                                             await active_realtime_session.commit_audio()
 
                                             if rt_watchdog_task and not rt_watchdog_task.done():
