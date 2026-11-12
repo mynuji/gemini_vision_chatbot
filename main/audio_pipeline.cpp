@@ -403,23 +403,33 @@ static void audio_fetch_task(void *pvParameters) {
         // [3] 사용자 발화 청취 중 (LISTENING) 실시간 스트리밍 & VAD 감지
         // --------------------------------------------------------------------
         if (cur_state == CHAT_STATE_LISTENING && s_mic_streaming_enabled) {
-            if (res->data_size > 0 && res->data != NULL && s_tx_ringbuf != NULL) {
-                xRingbufferSend(s_tx_ringbuf, res->data, res->data_size, 0); // 논블로킹
-            }
+            int16_t tx_boosted[512];
+            int tx_cnt = res->data_size / sizeof(int16_t);
+            if (tx_cnt > 512) tx_cnt = 512;
+            int16_t *src_pcm = (int16_t *)res->data;
+            int32_t chk_peak = 0;
 
-            // 비프음 및 단발성 주변 소음 방지:
-            // 비프음 종료 후(350ms) 안정화 후 실제 음성 에너지(피크 80 이상)를 갖는 연속 4프레임(약 128ms) 발화 시 실제 발화로 판정
-            // (미세한 바스락거림이나 단발성 클릭 소음은 거르고 실제 사람의 목소리는 신속하게 감지)
-            if (now_ms - s_mic_stream_start_ms > 350) {
-                int16_t *chk_samples = (int16_t *)res->data;
-                int chk_cnt = res->data_size / sizeof(int16_t);
-                int32_t chk_peak = 0;
-                for (int p = 0; p < chk_cnt; p++) {
-                    int32_t v = abs(chk_samples[p]);
+            if (tx_cnt > 0 && src_pcm != NULL) {
+                // AI 모델이 명확하게 음성을 인식할 수 있도록 4배(4.0x) 디지털 부스트 및 클리핑 방지
+                for (int s = 0; s < tx_cnt; s++) {
+                    int32_t b = (int32_t)src_pcm[s] * 4;
+                    if (b > 32767) b = 32767;
+                    else if (b < -32768) b = -32768;
+                    tx_boosted[s] = (int16_t)b;
+                    int32_t v = abs(tx_boosted[s]);
                     if (v > chk_peak) chk_peak = v;
                 }
 
-                if (res->vad_state == VAD_SPEECH && chk_peak >= 80) {
+                if (s_tx_ringbuf != NULL) {
+                    xRingbufferSend(s_tx_ringbuf, tx_boosted, tx_cnt * sizeof(int16_t), 0); // 논블로킹
+                }
+            }
+
+            // 비프음 및 단발성 주변 소음 방지:
+            // 비프음 종료 후(350ms) 안정화 후 실제 음성 에너지(피크 250 이상)를 갖는 연속 4프레임(약 128ms) 발화 시 실제 발화로 판정
+            // (미세한 바스락거림이나 단발성 클릭 소음은 거르고 실제 사람의 목소리는 신속하게 감지)
+            if (now_ms - s_mic_stream_start_ms > 350) {
+                if (res->vad_state == VAD_SPEECH && chk_peak >= 250) {
                     s_vad_speech_frames++;
                     if (s_vad_speech_frames >= 4) {
                         s_last_speech_ms = now_ms;

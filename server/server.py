@@ -573,10 +573,11 @@ class GeminiLiveSession:
         now_dt = datetime.datetime.now()
         time_str = now_dt.strftime("%Y년 %m월 %d일 %p %I시 %M분")
         time_rule = (
-            f"현재 시각/날짜 정보: {time_str}. "
-            "사용자가 '몇 시야?', '지금 몇 시?', '오늘 며칠이야?'처럼 시간이나 날짜를 물어봤을 때만 이를 바탕으로 답변해. "
-            "사용자가 시간을 묻지 않았는데 먼저 시간을 말하거나, 아무 소리가 들리지 않을 때 혼자 말을 시작하면 절대 안 돼. "
-            "사용자의 음성이 들리지 않거나 바스락거리는 잡음, 침묵인 경우 아무 말도 하지 마. "
+            f"참고용 현재 시각/날짜 정보: {time_str}. "
+            "중요 규칙: 사용자가 '몇 시야?', '지금 몇 시?', '오늘 며칠이야?'처럼 시간이나 날짜를 구체적으로 질문했을 때만 위 정보를 바탕으로 답변해. "
+            "사용자가 시간이나 날짜를 묻지 않았는데 먼저 시간/날짜를 말하거나 혼자 날짜를 읊으면 절대 안 돼. "
+            "사용자의 음성이 잘 들리지 않거나 불명확한 경우 절대로 날짜나 시간을 말하지 말고 '잘 못 들었어요, 다시 한 번 말씀해 주시겠어요?'라고 정중하게 물어봐. "
+            "주변 잡음이나 침묵인 경우에는 절대 아무 말도 하지 마."
         )
         if allow_camera:
             self.system_prompt = (
@@ -764,19 +765,28 @@ class GeminiLiveSession:
         print("[Gemini Realtime] 모든 Realtime 후보 모델 연결 실패 -> 발화 시 Whisper STT로 자동 폴백됩니다.")
 
     async def send_audio(self, pcm_chunk_16k):
-        """ESP32의 16kHz PCM 데이터를 Gemini로 즉각 전송"""
+        """ESP32의 16kHz PCM 데이터를 Gemini로 즉각 전송 (최신 audio 스키마 및 mediaChunks 동시 지원)"""
         if not self.is_connected or not self.gemini_ws:
             return
         try:
+            # 안전한 음량 확보: 수신된 16bit PCM이 너무 작으면 AI가 인식할 수 있도록 최대 3배까지 추가 보정
+            if len(pcm_chunk_16k) >= 2:
+                samples = np.frombuffer(pcm_chunk_16k, dtype=np.int16).astype(np.float32)
+                peak = np.max(np.abs(samples)) if len(samples) > 0 else 0.0
+                if 0 < peak < 12000:
+                    boost = min(3.0, 15000.0 / peak)
+                    samples = np.clip(samples * boost, -32768, 32767).astype(np.int16)
+                    pcm_chunk_16k = samples.tobytes()
+
             b64_pcm = base64.b64encode(pcm_chunk_16k).decode("utf-8")
+            blob = {
+                "mimeType": "audio/pcm;rate=16000",
+                "data": b64_pcm
+            }
             msg = {
                 "realtimeInput": {
-                    "mediaChunks": [
-                        {
-                            "mimeType": "audio/pcm;rate=16000",
-                            "data": b64_pcm
-                        }
-                    ]
+                    "audio": blob,
+                    "mediaChunks": [blob]
                 }
             }
             await self.gemini_ws.send(json.dumps(msg))
@@ -784,16 +794,16 @@ class GeminiLiveSession:
             print(f"[Gemini Realtime] 오디오 송신 오류: {e}")
 
     async def commit_audio(self):
-        """클라이언트 발화 완료(speech_end) 시 침묵 버퍼를 스트리밍하고 Gemini Live 턴 완료 유도"""
+        """클라이언트 발화 완료(speech_end) 시 턴 종료(turnComplete) 신호 명시적 전송"""
         if not self.is_connected or not self.gemini_ws:
             return
         self.replied_this_turn = False
         try:
-            # 1. 50ms 간격으로 침묵 버퍼를 점진적 스트리밍 (Gemini Live 서버 VAD의 안정적인 발화 종료 판정 유도)
+            # 1. 미세 무음(100ms)으로 끝맺음 후 명시적 턴 완료 전송
             silence_chunk = b"\x00" * 1600  # 50ms @ 16kHz 16-bit Mono (1600 bytes)
-            for _ in range(6):  # 총 300ms 스트리밍
+            for _ in range(2):
                 await self.send_audio(silence_chunk)
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.04)
 
             # 2. Gemini Live BidiGenerateContent 클라이언트 턴 종료(turnComplete) 신호 명시적 전송
             turn_complete_msg = {
@@ -802,7 +812,7 @@ class GeminiLiveSession:
                 }
             }
             await self.gemini_ws.send(json.dumps(turn_complete_msg))
-            print("[Gemini Realtime] ⏱️ 발화 종료 침묵 스트리밍(300ms) 및 turnComplete 전송 완료")
+            print("[Gemini Realtime] ⏱️ 사용자 발화 완료 신호(turnComplete) 전송 완료")
         except Exception as e:
             print(f"[Gemini Realtime] commit_audio 전송 오류: {e}")
 
@@ -812,14 +822,14 @@ class GeminiLiveSession:
             return
         try:
             b64_img = base64.b64encode(jpeg_bytes).decode("utf-8")
+            blob = {
+                "mimeType": "image/jpeg",
+                "data": b64_img
+            }
             msg = {
                 "realtimeInput": {
-                    "mediaChunks": [
-                        {
-                            "mimeType": "image/jpeg",
-                            "data": b64_img
-                        }
-                    ]
+                    "video": blob,
+                    "mediaChunks": [blob]
                 }
             }
             await self.gemini_ws.send(json.dumps(msg))
