@@ -504,13 +504,12 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                             }
                         }
                     } else if (strcmp(message->valuestring, "SPEAKING...") == 0 || strcmp(message->valuestring, "SPEAKING") == 0) {
-                        if (s_chat_state != CHAT_STATE_IDLE) {
-                            audio_pipeline_set_discard_tts(false);
-                            s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
-                            if (s_chat_state != CHAT_STATE_SPEAKING) {
-                                ESP_LOGI(TAG, "Server status SPEAKING received -> Switching state to SPEAKING");
-                                chat_state_set(CHAT_STATE_SPEAKING);
-                            }
+                        // 서버에서 음성 출력 시작(SPEAKING)을 알리면 IDLE 상태 여부와 관계없이 스피커 수신 준비
+                        audio_pipeline_set_discard_tts(false);
+                        s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                        if (s_chat_state != CHAT_STATE_SPEAKING) {
+                            ESP_LOGI(TAG, "Server status SPEAKING received -> Switching state to SPEAKING");
+                            chat_state_set(CHAT_STATE_SPEAKING);
                         }
                     } else if (strcmp(message->valuestring, "LISTENING...") == 0 || strcmp(message->valuestring, "LISTENING") == 0) {
                         if (s_chat_state != CHAT_STATE_IDLE) {

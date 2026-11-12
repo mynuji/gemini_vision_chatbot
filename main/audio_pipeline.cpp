@@ -51,6 +51,7 @@ static volatile bool s_ref_flush_requested = false;
 // 발화 감지(VAD) 타이밍 제어용
 static volatile uint8_t s_mic_gain = 35; // 10 ~ 60 (1.0x ~ 6.0x)
 static uint32_t s_mic_stream_start_ms = 0;
+static uint32_t s_speech_start_ms = 0;
 static uint32_t s_last_speech_ms = 0;
 static bool s_has_user_spoken = false;
 static int s_vad_speech_frames = 0;
@@ -409,7 +410,10 @@ static void audio_fetch_task(void *pvParameters) {
                     s_vad_speech_frames++;
                     if (s_vad_speech_frames >= 3) {
                         s_last_speech_ms = now_ms;
-                        s_has_user_spoken = true;
+                        if (!s_has_user_spoken) {
+                            s_has_user_spoken = true;
+                            s_speech_start_ms = now_ms;
+                        }
                         chat_state_activity_occurred(); // 60초 침묵 타이머 리셋
                     }
                 } else {
@@ -418,13 +422,16 @@ static void audio_fetch_task(void *pvParameters) {
             }
 
             if (s_has_user_spoken) {
-                // 발화 종료: 침묵 650ms 이상 지속 시 speech_end 전달 (단어 간 자연스러운 호흡 보호 + 신속한 턴 전환)
-                bool silence_timeout = (now_ms - s_mic_stream_start_ms > 1000) && (now_ms - s_last_speech_ms > 650);
-                bool max_timeout = (now_ms - s_mic_stream_start_ms > 12000);
+                // 발화 종료 판정:
+                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 800ms) 침묵이 650ms 이상 지속될 때
+                // 2) 최대 발화 제한: 사용자가 말을 시작한 시점(s_speech_start_ms)으로부터 15초 초과 시 (대기 시간과 무관!)
+                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 800) && (now_ms - s_last_speech_ms > 650);
+                bool max_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 15000);
 
                 if (silence_timeout || max_timeout) {
                     s_has_user_spoken = false;
                     s_vad_speech_frames = 0;
+                    s_speech_start_ms = 0;
                     chat_state_handle_speech_end();
                 }
             }
@@ -567,9 +574,14 @@ void audio_pipeline_feed_tts_audio(const uint8_t *data, size_t len) {
     }
 
     chat_state_t cur_st = chat_state_get();
-    // 클라이언트가 사용자 발화를 듣는 중(LISTENING)이거나 대기(IDLE) 중일 때는 오디오를 스피커에 넣지 않음
-    if (cur_st == CHAT_STATE_LISTENING || cur_st == CHAT_STATE_IDLE) {
+    // 클라이언트가 사용자 발화를 듣는 중(LISTENING)일 때만 오디오를 스피커에 넣지 않음
+    if (cur_st == CHAT_STATE_LISTENING) {
         return;
+    }
+
+    // IDLE 상태에서 서버 TTS 오디오가 유입되는 경우 (LLM 변경 안내 등) SPEAKING 상태로 자동 진입
+    if (cur_st == CHAT_STATE_IDLE) {
+        chat_state_set(CHAT_STATE_SPEAKING);
     }
 
     chat_state_activity_occurred(); // 활성 오디오 수신 -> 타임아웃 타이머 리셋!
@@ -608,8 +620,10 @@ void audio_pipeline_enable_mic_streaming(bool enable) {
         s_last_speech_ms = s_mic_stream_start_ms;
         s_has_user_spoken = false;
         s_vad_speech_frames = 0;
+        s_speech_start_ms = 0;
         ESP_LOGI(TAG, "Mic streaming enabled.");
     } else {
+        s_speech_start_ms = 0;
         ESP_LOGI(TAG, "Mic streaming disabled.");
     }
 }

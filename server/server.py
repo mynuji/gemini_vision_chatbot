@@ -599,13 +599,21 @@ class GeminiLiveSession:
             f"?key={self.api_key}"
         )
         discovered = await self._resolve_supported_models()
+        known_live_models = [
+            "gemini-2.0-flash-exp",
+            "gemini-2.0-flash",
+            "gemini-2.5-flash-native-audio-preview-12-2025"
+        ]
         candidates = []
-        if self.model and self.model not in candidates:
+        if self.model and "3.8" not in self.model and self.model not in candidates:
             candidates.append(self.model)
+        for klm in known_live_models:
+            if klm not in candidates:
+                candidates.append(klm)
         for m in discovered:
             if m not in candidates:
                 candidates.append(m)
-        for alt in ("gemini-3.8-live", "gemini-3.8-live-extended-thinking", "gemini-2.5-flash-native-audio", "gemini-2.0-flash-exp", "gemini-2.0-flash"):
+        for alt in ("gemini-2.5-flash-native-audio", "gemini-2.0-flash-realtime-exp"):
             if alt not in candidates:
                 candidates.append(alt)
 
@@ -748,17 +756,27 @@ class GeminiLiveSession:
             print(f"[Gemini Realtime] 오디오 송신 오류: {e}")
 
     async def commit_audio(self):
-        """클라이언트 발화 완료(speech_end) 시 침묵 버퍼(500ms)를 스트리밍하여 Gemini Live VAD가 사용자 턴 종료를 감지하도록 유도"""
+        """클라이언트 발화 완료(speech_end) 시 침묵 버퍼를 스트리밍하고 Gemini Live 턴 완료 유도"""
         if not self.is_connected or not self.gemini_ws:
             return
         self.replied_this_turn = False
         try:
-            # Gemini Live VAD는 발화 후 약 500ms의 침묵 구간(16,000 bytes)을 수신하면 자연스럽게 사용자 턴을 완료하고 응답을 생성합니다.
-            silence_chunk = b"\x00" * 16000
-            await self.send_audio(silence_chunk)
-            print("[Gemini Realtime] ⏱️ 발화 종료 침묵 패킷(500ms) 전송 완료")
+            # 1. 50ms 간격으로 침묵 버퍼를 점진적 스트리밍 (Gemini Live 서버 VAD의 안정적인 발화 종료 판정 유도)
+            silence_chunk = b"\x00" * 1600  # 50ms @ 16kHz 16-bit Mono (1600 bytes)
+            for _ in range(6):  # 총 300ms 스트리밍
+                await self.send_audio(silence_chunk)
+                await asyncio.sleep(0.05)
+
+            # 2. Gemini Live BidiGenerateContent 클라이언트 턴 종료(turnComplete) 신호 명시적 전송
+            turn_complete_msg = {
+                "clientContent": {
+                    "turnComplete": True
+                }
+            }
+            await self.gemini_ws.send(json.dumps(turn_complete_msg))
+            print("[Gemini Realtime] ⏱️ 발화 종료 침묵 스트리밍(300ms) 및 turnComplete 전송 완료")
         except Exception as e:
-            print(f"[Gemini Realtime] 침묵 패킷 전송 오류: {e}")
+            print(f"[Gemini Realtime] commit_audio 전송 오류: {e}")
 
     async def send_image(self, jpeg_bytes):
         """ESP32 카메라 JPEG 이미지를 Gemini Live 세션으로 즉시 전송"""
@@ -1487,7 +1505,10 @@ def parse_llm_switch_command(user_text):
         any(k in no_space_text for k in ["realtime", "리얼타임", "실시간", "live", "라이브"])
     )
     is_chatgpt = any(k in clean_text or k in no_space_text for k in ["chatgpt", "챗지피티", "챗gpt", "지피티", "gpt", "오픈ai", "openai"])
-    is_local = any(k in clean_text or k in no_space_text for k in ["local", "로컬", "라마", "llama", "오프라인", "내부모델", "로컬서버"])
+    is_local = any(k in clean_text or k in no_space_text for k in [
+        "local", "로컬", "로칼", "로클", "로콜", "라마", "llama", "오프라인", "내부모델", "내부llm",
+        "로컬서버", "로칼서버", "로컬모델", "로칼모델", "로컬llm", "로칼llm", "localllm", "내부"
+    ]) or bool(re.search(r'로[컬칼콜클]', clean_text))
 
     # [1] 기본 LLM / Gemini 일반 API
     # "기본 LLM으로 전환", "기본 모델로 변경", "기본으로", "gemini 일반 api", "제미나이 일반", "일반 api" 등
@@ -1691,11 +1712,13 @@ async def play_tts_announcement(websocket, text, close_session=False):
     4. 재생 완료 버퍼 대기 후 DONE 전송
     """
     try:
+        print(f"[안내 음성] TTS 음성 합성 시작: '{text}'")
         pcm = await synthesize_tts_pcm(text, max_retries=2)
         if not pcm:
             print(f"[안내 음성] TTS 합성 실패: '{text}'")
             return
 
+        print(f"[안내 음성] TTS 합성 완료 ({len(pcm)} bytes) -> ESP32로 안내 음성 전송 개시")
         await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
 
         chunk_len = 2048
@@ -1710,6 +1733,7 @@ async def play_tts_announcement(websocket, text, close_session=False):
         # ESP32 링버퍼 및 I2S DMA에서 오디오가 끝까지 자연스럽게 출력되도록 여유 시간 대기
         await asyncio.sleep(0.4)
         await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": close_session}))
+        print("[안내 음성] TTS 안내 음성 스트리밍 완료 (DONE 전송)")
     except Exception as e:
         print(f"[안내 음성 전송 오류] {e}")
 
