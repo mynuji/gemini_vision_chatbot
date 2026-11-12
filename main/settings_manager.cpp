@@ -101,6 +101,7 @@ static void set_defaults(app_settings_t *cfg) {
 static const char *s_llm_names[] = {
     "gemini api",
     "gemini realtime api",
+    "gemini native audio",
     "chatgpt realtime api",
     "local llm"
 };

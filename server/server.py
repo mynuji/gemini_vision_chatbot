@@ -104,10 +104,20 @@ OPENAI_VOICE = os.environ.get("OPENAI_VOICE", "alloy").strip()
 # ------------------------------------------
 GEMINI_REALTIME_MODEL = os.environ.get("GEMINI_REALTIME_MODEL", "gemini-3.8-live").strip()
 GEMINI_REALTIME_VOICE = os.environ.get("GEMINI_REALTIME_VOICE", "Aoede").strip()
+GEMINI_NATIVE_AUDIO_MODEL = os.environ.get("GEMINI_NATIVE_AUDIO_MODEL", "gemini-live-2.5-flash-native-audio").strip()
+
+# 실시간 WebSocket(STT/TTS 생략 직통) 스트리밍을 사용하는 LLM 타입 목록
+REALTIME_LLM_TYPES = (
+    "gemini realtime api",
+    "gemini native audio",
+    "gemini-live-2.5-flash-native-audio",
+    "chatgpt realtime api"
+)
 
 print(f"[시스템] Gemini LLM 준비 완료: {GEMINI_MODEL} (대체: {', '.join(GEMINI_FALLBACK_MODELS) or '없음'})")
 print(f"[시스템] Local LLM 설정: {LOCAL_LLM_URL} (모델: {LOCAL_LLM_MODEL})")
 print(f"[시스템] Gemini Realtime 모델: {GEMINI_REALTIME_MODEL} (음성: {GEMINI_REALTIME_VOICE})")
+print(f"[시스템] Gemini Native Audio 모델: {GEMINI_NATIVE_AUDIO_MODEL} (음성 전용, 카메라 비활성화)")
 print(f"[시스템] OpenAI Realtime 모델: {OPENAI_REALTIME_MODEL} (키 등록 여부: {'등록됨' if OPENAI_API_KEY else '미등록(환경변수 필요)'})")
 
 VOICE = "ko-KR-SunHiNeural"
@@ -544,7 +554,7 @@ async def stream_local_llm(messages, image_bytes=None):
 # ==========================================
 class GeminiLiveSession:
     """Gemini Multimodal Live WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None, on_adjust_audio=None, on_capture_image=None):
+    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None, on_adjust_audio=None, on_capture_image=None, allow_camera=True):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
@@ -552,23 +562,36 @@ class GeminiLiveSession:
         self.on_switch_llm = on_switch_llm
         self.on_adjust_audio = on_adjust_audio
         self.on_capture_image = on_capture_image
+        self.allow_camera = allow_camera
         self.gemini_ws = None
         self.rx_task = None
         self.is_connected = False
         self.speaking_active = False
         self.tool_call_active = False
         self.replied_this_turn = False
-        self.system_prompt = (
-            "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
-            "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
-            "너에게는 눈앞을 볼 수 있는 실시간 카메라(capture_camera_image 도구)가 장착되어 있어. "
-            "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '이거 봐봐', '카메라로 봐줘', '사진 찍어봐', '글자 읽어줘' 등 "
-            "현재 보이는 상황이나 사물, 사람, 풍경, 글자에 대해 물어보면 절대 볼 수 없다고 답하지 말고 반드시 capture_camera_image 도구를 호출해줘. "
-            "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
-            "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
-            "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
-            "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
-        )
+        if allow_camera:
+            self.system_prompt = (
+                "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
+                "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
+                "너에게는 눈앞을 볼 수 있는 실시간 카메라(capture_camera_image 도구)가 장착되어 있어. "
+                "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '이거 봐봐', '카메라로 봐줘', '사진 찍어봐', '글자 읽어줘' 등 "
+                "현재 보이는 상황이나 사물, 사람, 풍경, 글자에 대해 물어보면 절대 볼 수 없다고 답하지 말고 반드시 capture_camera_image 도구를 호출해줘. "
+                "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
+                "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
+                "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
+                "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
+            )
+        else:
+            self.system_prompt = (
+                "너의 이름은 '친구'야. 너는 음성으로 대화하는 고품질 네이티브 오디오 한국어 AI 비서야. "
+                "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
+                "현재 너는 '음성 전용(Native Audio)' 모드로 동작 중이며 카메라는 지원하지 않아. "
+                "사용자가 사물이나 사진, 카메라를 봐달라고 하거나 무엇이 보이는지 물어보면 '현재는 음성 전용 모드라 카메라를 볼 수 없어요. 카메라를 보시려면 Gemini Realtime으로 변경해 주세요'라고 친절히 안내해줘. "
+                "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
+                "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
+                "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
+                "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
+            )
 
     async def _resolve_supported_models(self):
         """ModelService.ListModels를 호출하여 bidiGenerateContent를 지원하는 실시간 모델 목록을 동적으로 조회"""
@@ -650,7 +673,7 @@ class GeminiLiveSession:
                                             "properties": {
                                                 "target_type": {
                                                     "type": "STRING",
-                                                    "enum": ["gemini api", "gemini realtime api", "chatgpt realtime api", "local llm"],
+                                                    "enum": ["gemini api", "gemini realtime api", "gemini native audio", "chatgpt realtime api", "local llm"],
                                                     "description": "변경할 대상 LLM 타입"
                                                 }
                                             },
@@ -686,7 +709,8 @@ class GeminiLiveSession:
                                             "type": "OBJECT",
                                             "properties": {}
                                         }
-                                    },
+                                    }
+                                ] + ([
                                     {
                                         "name": "capture_camera_image",
                                         "description": "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '봐봐', '사진 찍어봐', '글자 읽어줘' 등 카메라로 현재 보이는 실시간 상황이나 사물, 사람, 글자를 확인해야 할 때 호출합니다.",
@@ -700,7 +724,7 @@ class GeminiLiveSession:
                                             }
                                         }
                                     }
-                                ]
+                                ] if self.allow_camera else [])
                             }
                         ]
                     }
@@ -1104,8 +1128,8 @@ class OpenAIRealtimeSession:
                                 "properties": {
                                     "target_type": {
                                         "type": "string",
-                                        "description": "변경할 LLM 종류 ('gemini api', 'gemini realtime api', 'chatgpt realtime api', 'local llm')",
-                                        "enum": ["gemini api", "gemini realtime api", "chatgpt realtime api", "local llm"]
+                                        "description": "변경할 LLM 종류 ('gemini api', 'gemini realtime api', 'gemini native audio', 'chatgpt realtime api', 'local llm')",
+                                        "enum": ["gemini api", "gemini realtime api", "gemini native audio", "chatgpt realtime api", "local llm"]
                                     }
                                 },
                                 "required": ["target_type"]
@@ -1340,8 +1364,9 @@ async def stream_llm(messages, image_bytes=None, llm_type="gemini api"):
     if clean_type == "local llm":
         async for chunk in stream_local_llm(messages, image_bytes=image_bytes):
             yield chunk
-    else:  # "gemini api", "gemini realtime api", "chatgpt realtime api" 등 텍스트 fallback
-        async for chunk in stream_gemini(messages, image_bytes=image_bytes):
+    else:  # "gemini api", "gemini realtime api", "gemini native audio", "chatgpt realtime api" 등 텍스트 fallback
+        effective_img = None if clean_type in ("gemini native audio", "gemini-live-2.5-flash-native-audio") else image_bytes
+        async for chunk in stream_gemini(messages, image_bytes=effective_img):
             yield chunk
 
 # 명시적으로 카메라/시각 행위를 요구하는 키워드 및 표현
@@ -1539,6 +1564,20 @@ def parse_llm_switch_command(user_text):
                 "chatgpt realtime api",
                 "ChatGPT Realtime API",
                 "LLM을 ChatGPT Realtime API로 변경했습니다. 이제 ChatGPT 실시간 음성으로 대화해요."
+            )
+
+    # [2-1] Gemini Native Audio (음성 전용, 카메라 비활성화)
+    is_native_audio = any(k in clean_text or k in no_space_text for k in [
+        "nativeaudio", "native", "네이티브", "네이티브오디오", "오디오전용", "음성전용", "내이티브", "2.5flash", "2.5플래시"
+    ]) or (
+        "오디오" in clean_text and any(k in clean_text for k in ["전용", "모델", "타입", "라이브", "스트리밍"])
+    )
+    if is_native_audio:
+        if has_switch_syntax or has_action or is_gemini:
+            return (
+                "gemini native audio",
+                "Gemini Native Audio (음성전용)",
+                "LLM을 Gemini Native Audio 음성 전용 모델로 변경했습니다. 카메라는 비활성화되고 자연스러운 음성 대화에 집중합니다."
             )
 
     # [3] Gemini Realtime API (Gemini+Realtime 이거나, ChatGPT/Local 언급 없는 단독 실시간/리얼타임 전환 요청)
@@ -2391,6 +2430,8 @@ async def handler(websocket, path=None):
         name_map = {
             "gemini api": "Gemini API",
             "gemini realtime api": "Gemini Realtime API",
+            "gemini native audio": "Gemini Native Audio",
+            "gemini-live-2.5-flash-native-audio": "Gemini Native Audio",
             "chatgpt realtime api": "ChatGPT Realtime API",
             "local llm": "Local LLM"
         }
@@ -2430,7 +2471,7 @@ async def handler(websocket, path=None):
         await play_tts_announcement(websocket, resp_msg, close_session=False)
 
         # 5. 새 타입이 Realtime인 경우 실시간 세션 즉시 연결
-        if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
+        if current_llm_type in REALTIME_LLM_TYPES:
             await switch_realtime_session(current_llm_type)
 
     today_str = time.strftime("%Y년 %m월 %d일")
@@ -2502,13 +2543,27 @@ async def handler(websocket, path=None):
             active_realtime_session = None
 
         if target_type == "gemini realtime api":
-            print("[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중...")
+            print(f"[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중... (모델: {GEMINI_REALTIME_MODEL}, 카메라 지원)")
             active_realtime_session = GeminiLiveSession(
                 websocket,
                 GEMINI_API_KEY,
+                model=GEMINI_REALTIME_MODEL,
                 on_switch_llm=switch_and_notify_llm,
                 on_adjust_audio=adjust_audio_settings,
-                on_capture_image=capture_and_analyze_for_realtime
+                on_capture_image=capture_and_analyze_for_realtime,
+                allow_camera=True
+            )
+            await active_realtime_session.start()
+        elif target_type in ("gemini native audio", "gemini-live-2.5-flash-native-audio"):
+            print(f"[세션 전환] Gemini Native Audio (Live WebSocket) 세션 초기화 중... (모델: {GEMINI_NATIVE_AUDIO_MODEL}, 음성 전용/카메라 미사용)")
+            active_realtime_session = GeminiLiveSession(
+                websocket,
+                GEMINI_API_KEY,
+                model=GEMINI_NATIVE_AUDIO_MODEL,
+                on_switch_llm=switch_and_notify_llm,
+                on_adjust_audio=adjust_audio_settings,
+                on_capture_image=None,
+                allow_camera=False
             )
             await active_realtime_session.start()
         elif target_type == "chatgpt realtime api":
@@ -2577,20 +2632,32 @@ async def handler(websocket, path=None):
 
         image_bytes = None
         if not should_close and is_vision_query(user_text):
-            print(f"\n[시각 질의 감지] '{user_text}' -> ESP32 카메라 촬영 요청 전송!")
-            try:
-                loop = asyncio.get_running_loop()
-                pending_image_future = loop.create_future()
-                await websocket.send(json.dumps({"type": "capture"}))
-                image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=5.0)
-                if image_bytes:
-                    print(f"[시각 질의 준비 완료] 사진 첨부하여 {current_llm_type} 시각 질의 시작 ({len(image_bytes)} bytes)")
-            except asyncio.TimeoutError:
-                print("[시각 질의] 카메라 사진 수신 시간 초과 -> 텍스트만으로 질의 진행")
-            except Exception as e:
-                print(f"[시각 질의] 사진 수신 예외: {e}")
-            finally:
-                pending_image_future = None
+            if current_llm_type in ("gemini native audio", "gemini-live-2.5-flash-native-audio"):
+                print(f"[시각 질의 차단] 현재 LLM이 '{current_llm_type}'(음성 전용)이므로 카메라 촬영을 하지 않고 안내 음성을 전송합니다.")
+                native_warn = "현재는 음성 전용 모델인 Gemini Native Audio 모드라 카메라를 사용할 수 없어요. 사물이나 사진을 보시려면 Gemini Realtime으로 변경해 주세요."
+                await process_ai_response(
+                    websocket, user_text, chat_history,
+                    time.perf_counter(), asr_ms,
+                    close_session_after=should_close,
+                    interrupted_holder=interrupted_holder,
+                    direct_answer=native_warn
+                )
+                return
+            else:
+                print(f"\n[시각 질의 감지] '{user_text}' -> ESP32 카메라 촬영 요청 전송!")
+                try:
+                    loop = asyncio.get_running_loop()
+                    pending_image_future = loop.create_future()
+                    await websocket.send(json.dumps({"type": "capture"}))
+                    image_bytes = await asyncio.wait_for(asyncio.shield(pending_image_future), timeout=5.0)
+                    if image_bytes:
+                        print(f"[시각 질의 준비 완료] 사진 첨부하여 {current_llm_type} 시각 질의 시작 ({len(image_bytes)} bytes)")
+                except asyncio.TimeoutError:
+                    print("[시각 질의] 카메라 사진 수신 시간 초과 -> 텍스트만으로 질의 진행")
+                except Exception as e:
+                    print(f"[시각 질의] 사진 수신 예외: {e}")
+                finally:
+                    pending_image_future = None
 
         await process_ai_response(
             websocket, user_text, chat_history,
@@ -2635,7 +2702,7 @@ async def handler(websocket, path=None):
 
                     # ★ Realtime API 모드 (Gemini Live / OpenAI Realtime):
                     # STT와 TTS를 일절 거치지 않고, 수신된 16kHz PCM 오디오를 Realtime API로 즉시 직통 스트리밍!
-                    if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
+                    if current_llm_type in REALTIME_LLM_TYPES:
                         if not active_realtime_session or not active_realtime_session.is_connected:
                             await switch_realtime_session(current_llm_type)
                         if active_realtime_session and active_realtime_session.is_connected:
@@ -2855,7 +2922,7 @@ async def handler(websocket, path=None):
 
                                 # [B] 음성 발화 완료 신호 (클라이언트 VAD 감지)
                                 elif msg_type == "speech_end":
-                                    if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
+                                    if current_llm_type in REALTIME_LLM_TYPES:
                                         print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 턴 완료 전송)")
                                         if active_realtime_session and active_realtime_session.is_connected:
                                             await active_realtime_session.commit_audio()
@@ -2989,7 +3056,7 @@ async def handler(websocket, path=None):
                                     is_speaking = False
                                     silence_time = 0.0
 
-                                    if current_llm_type in ("gemini realtime api", "chatgpt realtime api"):
+                                    if current_llm_type in REALTIME_LLM_TYPES:
                                         if not active_realtime_session or not active_realtime_session.is_connected:
                                             asyncio.create_task(switch_realtime_session(current_llm_type))
 
@@ -3077,7 +3144,7 @@ async def handler(websocket, path=None):
                                 elif msg_type == "set_llm_type":
                                     new_type = ctrl_json.get("llm_type", "gemini api").strip().lower()
                                     need_reinit = (new_type != current_llm_type) or (
-                                        new_type in ("gemini realtime api", "chatgpt realtime api")
+                                        new_type in REALTIME_LLM_TYPES
                                         and (not active_realtime_session or not active_realtime_session.is_connected)
                                     )
                                     current_llm_type = new_type
@@ -3103,7 +3170,7 @@ async def handler(websocket, path=None):
                                     if "llm_type" in ctrl_json:
                                         new_type = str(ctrl_json["llm_type"]).strip().lower()
                                         need_reinit = (new_type != current_llm_type) or (
-                                            new_type in ("gemini realtime api", "chatgpt realtime api")
+                                            new_type in REALTIME_LLM_TYPES
                                             and (not active_realtime_session or not active_realtime_session.is_connected)
                                         )
                                         current_llm_type = new_type

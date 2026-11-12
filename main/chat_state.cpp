@@ -561,14 +561,20 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                     }
                     handled = true;
                 } else if (strcmp(type->valuestring, "capture") == 0) {
-                    ESP_LOGW(TAG, "==========================================================");
-                    ESP_LOGW(TAG, ">>> RECEIVED CAPTURE COMMAND FROM JETSON SERVER! <<<");
-                    ESP_LOGW(TAG, "==========================================================");
-                    s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
-                    audio_pipeline_enable_mic_streaming(false);
-                    chat_state_start_camera_preview();
-                    if (s_chat_state == CHAT_STATE_LISTENING) {
-                        chat_state_set(CHAT_STATE_THINKING);
+                    const app_settings_t *cfg = settings_manager_get();
+                    if (cfg && cfg->llm_type == LLM_TYPE_GEMINI_NATIVE_AUDIO) {
+                        ESP_LOGW(TAG, "Ignoring capture command: Camera is disabled in Gemini Native Audio mode");
+                        wifi_ws_send_text("{\"type\":\"image_failed\",\"reason\":\"camera_disabled_in_native_audio\"}");
+                    } else {
+                        ESP_LOGW(TAG, "==========================================================");
+                        ESP_LOGW(TAG, ">>> RECEIVED CAPTURE COMMAND FROM JETSON SERVER! <<<");
+                        ESP_LOGW(TAG, "==========================================================");
+                        s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                        audio_pipeline_enable_mic_streaming(false);
+                        chat_state_start_camera_preview();
+                        if (s_chat_state == CHAT_STATE_LISTENING) {
+                            chat_state_set(CHAT_STATE_THINKING);
+                        }
                     }
                     handled = true;
                 } else if (strcmp(type->valuestring, "show_clock") == 0) {
@@ -597,6 +603,9 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                             const char *str = llm_item->valuestring;
                             if (strcasecmp(str, "gemini realtime api") == 0 || strcasecmp(str, "gemini realtime") == 0) {
                                 target_type = LLM_TYPE_GEMINI_REALTIME;
+                            } else if (strcasecmp(str, "gemini native audio") == 0 || strcasecmp(str, "native audio") == 0 ||
+                                       strcasecmp(str, "gemini-live-2.5-flash-native-audio") == 0) {
+                                target_type = LLM_TYPE_GEMINI_NATIVE_AUDIO;
                             } else if (strcasecmp(str, "chatgpt realtime api") == 0 || strcasecmp(str, "chatgpt realtime") == 0) {
                                 target_type = LLM_TYPE_CHATGPT_REALTIME;
                             } else if (strcasecmp(str, "local llm") == 0 || strcasecmp(str, "local") == 0) {

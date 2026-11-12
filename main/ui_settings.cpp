@@ -1231,8 +1231,9 @@ static void create_llm_type_view(lv_obj_t *parent) {
     const char *names[LLM_TYPE_COUNT] = {
         "1. Gemini API",
         "2. Gemini Realtime",
-        "3. ChatGPT Realtime",
-        "4. Local LLM"
+        "3. Gemini Native Audio",
+        "4. ChatGPT Realtime",
+        "5. Local LLM"
     };
 
     for (int i = 0; i < LLM_TYPE_COUNT; i++) {
