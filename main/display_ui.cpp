@@ -56,6 +56,9 @@ static lv_timer_t *s_clock_timer = NULL;
 static volatile bool s_is_clock_mode = false;
 static volatile bool s_clock_temp_hidden = false;
 
+// 눈 화면 상단 날짜 및 시간 라벨 (대기 상태에서 작은 글씨로 표시)
+static lv_obj_t *s_eye_datetime_lbl = NULL;
+
 // 상단 상태바 및 Wi-Fi 아이콘 위젯
 static lv_obj_t *s_top_bar = NULL;
 static lv_obj_t *s_wifi_icon = NULL;
@@ -215,6 +218,14 @@ esp_err_t display_ui_init(void) {
   lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -5);
   lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
 
+  // [요구사항 1] 대기 상태에서 눈 상단에 표시되는 작은 날짜/시간 라벨 (13px 나눔고딕)
+  s_eye_datetime_lbl = lv_label_create(s_screen);
+  lv_obj_set_style_text_font(s_eye_datetime_lbl, &lv_font_nanum_13, 0);
+  lv_obj_set_style_text_color(s_eye_datetime_lbl, lv_color_hex(0xD0D0D0), 0);
+  lv_label_set_text(s_eye_datetime_lbl, "");
+  lv_obj_align(s_eye_datetime_lbl, LV_ALIGN_TOP_MID, 0, 31);
+  lv_obj_add_flag(s_eye_datetime_lbl, LV_OBJ_FLAG_HIDDEN);
+
   // 상단 상태바 컨테이너 (lv_layer_top에 배치하여 시계/눈/카메라 등 모든 화면 위에서 상시 노출)
   s_top_bar = lv_obj_create(lv_layer_top());
   lv_obj_set_size(s_top_bar, 240, 36);
@@ -318,6 +329,8 @@ void display_ui_show_message(const char *msg) {
     lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
   if (s_status_label)
     lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+  if (s_eye_datetime_lbl)
+    lv_obj_add_flag(s_eye_datetime_lbl, LV_OBJ_FLAG_HIDDEN);
 
   if (s_center_label) {
     lv_obj_clear_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
@@ -528,6 +541,7 @@ void display_ui_start_camera_preview(void) {
     if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
     if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_eye_datetime_lbl) lv_obj_add_flag(s_eye_datetime_lbl, LV_OBJ_FLAG_HIDDEN);
     if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
     if (s_cam_img) {
       lv_obj_clear_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
@@ -584,14 +598,15 @@ void display_ui_draw_preview_frame(const uint16_t *rgb565_buf) {
 
 void display_ui_update_clock(void) {
   if (lvgl_port_lock(500)) {
+    time_t now = time(NULL);
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+
+    bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+    bool synced = time_sync_is_synced();
+
+    // 1. 대형 시계 화면(s_clock_container)이 표시 중일 때의 갱신
     if (s_clock_container && !lv_obj_has_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN)) {
-      time_t now = time(NULL);
-      struct tm timeinfo;
-      localtime_r(&now, &timeinfo);
-
-      bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
-      bool synced = time_sync_is_synced();
-
       if (!synced) {
         // NTP 동기화 완료 전: 잘못된 시간 숫자는 숨기고 상태 메시지만 화면 중앙에 표시
         if (s_clock_time_lbl) lv_obj_add_flag(s_clock_time_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -611,7 +626,7 @@ void display_ui_update_clock(void) {
         if (s_clock_time_lbl) lv_obj_clear_flag(s_clock_time_lbl, LV_OBJ_FLAG_HIDDEN);
         if (s_clock_ampm_lbl) lv_obj_clear_flag(s_clock_ampm_lbl, LV_OBJ_FLAG_HIDDEN);
 
-        // 1. 상단 날짜 및 요일
+        // 1-1. 상단 날짜 및 요일
         static const char *s_days_en[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
         static const char *s_days_ko[] = {"일", "월", "화", "수", "목", "금", "토"};
         int wday = timeinfo.tm_wday;
@@ -631,7 +646,7 @@ void display_ui_update_clock(void) {
           lv_obj_align(s_clock_date_lbl, LV_ALIGN_TOP_MID, 0, 36);
         }
 
-        // 2. 12시간제 시간 (1~12 : 00~59) 및 AM/PM 텍스트 갱신
+        // 1-2. 12시간제 시간 (1~12 : 00~59) 및 AM/PM 텍스트 갱신
         int hour12 = timeinfo.tm_hour % 12;
         if (hour12 == 0) hour12 = 12;
         bool is_pm = (timeinfo.tm_hour >= 12);
@@ -657,18 +672,45 @@ void display_ui_update_clock(void) {
           lv_obj_update_layout(s_clock_time_lbl);
         }
 
-        // 3. AM(윗첨자) / PM(아랫첨자) 배치 (오전/오후 + 시간 전체 묶음 중앙 정렬)
+        // 1-3. AM(윗첨자) / PM(아랫첨자) 배치 (오전/오후 + 시간 전체 묶음 중앙 정렬)
         if (s_clock_ampm_lbl && s_clock_time_lbl) {
           if (is_pm) {
-            // PM / 오후: 시간 앞 아랫첨자 위치
             lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_BOTTOM, -ampm_gap, -2);
           } else {
-            // AM / 오전: 시간 앞 윗첨자 위치
             lv_obj_align_to(s_clock_ampm_lbl, s_clock_time_lbl, LV_ALIGN_OUT_LEFT_TOP, -ampm_gap, 2);
           }
         }
       }
     }
+
+    // 2. [요구사항 1] 대기 상태에서 눈 상단에 작은 글씨로 날짜와 시간 표시
+    if (s_eye_datetime_lbl) {
+      if (!synced || s_camera_preview_mode || (s_is_clock_mode && !s_clock_temp_hidden)) {
+        // 동기화 전이거나, 카메라 프리뷰 모드이거나, 대형 시계 화면이 노출 중일 때는 숨김
+        lv_obj_add_flag(s_eye_datetime_lbl, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        // 눈 표정 노출 중일 때 상단에 작은 글씨(13px)로 현재 날짜와 시간 표시
+        static const char *s_days_en[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+        static const char *s_days_ko[] = {"일", "월", "화", "수", "목", "금", "토"};
+        int wday = timeinfo.tm_wday;
+        if (wday < 0 || wday > 6) wday = 0;
+
+        char eye_dt_buf[64];
+        if (is_ko) {
+          snprintf(eye_dt_buf, sizeof(eye_dt_buf), "%04d.%02d.%02d (%s) %02d:%02d",
+                   timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                   s_days_ko[wday], timeinfo.tm_hour, timeinfo.tm_min);
+        } else {
+          snprintf(eye_dt_buf, sizeof(eye_dt_buf), "%04d-%02d-%02d (%s) %02d:%02d",
+                   timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                   s_days_en[wday], timeinfo.tm_hour, timeinfo.tm_min);
+        }
+        lv_label_set_text(s_eye_datetime_lbl, eye_dt_buf);
+        lv_obj_align(s_eye_datetime_lbl, LV_ALIGN_TOP_MID, 0, 31);
+        lv_obj_clear_flag(s_eye_datetime_lbl, LV_OBJ_FLAG_HIDDEN);
+      }
+    }
+
     lvgl_port_unlock();
   }
 }
@@ -682,13 +724,13 @@ void display_ui_show_clock_mode(bool enable) {
       if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+      if (s_eye_datetime_lbl) lv_obj_add_flag(s_eye_datetime_lbl, LV_OBJ_FLAG_HIDDEN);
       if (s_center_label) lv_obj_add_flag(s_center_label, LV_OBJ_FLAG_HIDDEN);
       if (s_cam_img) lv_obj_add_flag(s_cam_img, LV_OBJ_FLAG_HIDDEN);
 
       if (s_clock_container) {
         lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_clock_container);
-        display_ui_update_clock();
       }
     } else {
       if (s_clock_container) {
@@ -713,6 +755,8 @@ void display_ui_show_clock_mode(bool enable) {
     if (lv_scr_act()) lv_obj_invalidate(lv_scr_act());
     lvgl_port_unlock();
   }
+
+  display_ui_update_clock();
 }
 
 bool display_ui_is_clock_mode(void) {
@@ -724,7 +768,7 @@ void display_ui_temp_hide_clock(bool hide) {
   s_clock_temp_hidden = hide;
   if (lvgl_port_lock(500)) {
     if (hide) {
-      // 대기 중 간헐적으로 눈 표정 표시 + 하단 발화/터치 유도 텍스트 표시
+      // 대기 중 눈 표정 표시 + 하단 발화/터치 유도 텍스트 표시
       if (s_clock_container) lv_obj_add_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
       if (s_left_eye) lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_right_eye) lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
@@ -746,14 +790,16 @@ void display_ui_temp_hide_clock(bool hide) {
       if (s_left_eye) lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_right_eye) lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
       if (s_status_label) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+      if (s_eye_datetime_lbl) lv_obj_add_flag(s_eye_datetime_lbl, LV_OBJ_FLAG_HIDDEN);
       if (s_clock_container) {
         lv_obj_clear_flag(s_clock_container, LV_OBJ_FLAG_HIDDEN);
-        display_ui_update_clock();
       }
     }
     if (lv_scr_act()) lv_obj_invalidate(lv_scr_act());
     lvgl_port_unlock();
   }
+
+  display_ui_update_clock();
 }
 
 void display_ui_set_wifi_state(ui_wifi_state_t state) {

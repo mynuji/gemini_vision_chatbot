@@ -1324,20 +1324,47 @@ async def stream_llm(messages, image_bytes=None, llm_type="gemini api"):
         async for chunk in stream_gemini(messages, image_bytes=image_bytes):
             yield chunk
 
-VISION_KEYWORDS = (
-    "앞에", "보이는", "보여", "보이니", "보이나요", "보여요", "이거", "이게", "사진", "카메라", "찍어",
-    "봐봐", "봐줘", "물건", "뭐야", "무엇", "글자", "읽어줘", "어떤",
-    "풍경", "모습", "색깔", "색상", "표정", "누구", "사람", "인식", "시각",
-    "촬영", "화면", "영상", "비춰", "비춰줘", "보여줘", "봐", "찍어줘",
-    "책", "얼굴", "사물", "앞", "이 물건", "이 책", "이 글", "이 그림",
-    "주변", "상황", "생겼", "있어", "있니"
-)
+# 명시적으로 카메라/시각 행위를 요구하는 키워드 및 표현
+EXPLICIT_VISION_PATTERNS = [
+    r"카메라",
+    r"사진",
+    r"촬영",
+    r"찍어",
+    r"비춰",
+    r"보여\s*(줄게|줄테니|주면)",
+    r"보여(\?|요|니|줘)",
+    r"보이나(요|\?)?",
+    r"보이니(\?|\b)",
+    r"봐\s*봐",
+    r"봐\s*줘",
+    r"글자\s*(읽|알려)",
+    r"글씨\s*(읽|알려)",
+    r"텍스트\s*(읽|알려)",
+]
+
+# 결합 패턴: 시각 지시어/사물 + 상태/의문 표현 결합 ("이거 뭐야?", "앞에 뭐가 보여?" 등)
+# 일상 질문("양자역학이 뭐야?", "비 소식 있어?" 등)에 대한 오탐(False Positive) 방지
+COMBINED_VISION_PATTERNS = [
+    r"(이거|이게|이\s*물건|이\s*사물|이\s*약|이\s*책|이\s*글|이\s*그림)\s*(.*)?(뭐야|무엇|뭔지|어떤|어때|읽어|해석|알려|보여|생겼)",
+    r"(앞에|눈앞에|화면에|카메라\s*앞에)\s*(.*)?(보여|보이|뭐|무엇|어떤|있어|있니|사람|물건|상황|풍경)",
+    r"(무슨|어떤)\s*색(깔|상)?",
+    r"(내\s*)?(얼굴|표정|모습)\s*(.*)?(어때|어떻|봐)",
+    r"(뭐|무엇|누구)\s*(로|처럼|같이)\s*보여",
+]
 
 def is_vision_query(text):
-    """사용자 발화에 시각적 분석이 필요한 키워드가 포함되어 있는지 판정"""
+    """사용자 발화에 시각적 분석이 필요한 의도가 포함되어 있는지 정밀 판정"""
     if not text:
         return False
-    return any(k in text for k in VISION_KEYWORDS)
+    # 1. 명시적 시각 행위 키워드 검사
+    for pat in EXPLICIT_VISION_PATTERNS:
+        if re.search(pat, text):
+            return True
+    # 2. 결합형 시각 질의 패턴 검사
+    for pat in COMBINED_VISION_PATTERNS:
+        if re.search(pat, text):
+            return True
+    return False
 
 SESSION_END_KEYWORDS = (
     "그만 대화", "대화 그만", "그만하자", "그만할래", "그만할게",
@@ -2567,7 +2594,8 @@ async def handler(websocket, path=None):
                             import io
                             from PIL import Image
                             img = Image.open(io.BytesIO(message))
-                            rotated_img = img.rotate(90, expand=True) # 시계 방향 90도 회전
+                            # PIL의 rotate(angle)은 기본이 반시계 방향이므로, 시계 방향 90도 회전은 rotate(-90) 또는 ROTATE_270
+                            rotated_img = img.rotate(-90, expand=True)
                             buf = io.BytesIO()
                             rotated_img.save(buf, format="JPEG", quality=90)
                             message = buf.getvalue()

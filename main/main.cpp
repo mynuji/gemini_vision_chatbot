@@ -32,11 +32,15 @@ static bool s_boot_clock_synced_seen = false;
 static uint32_t s_last_ntp_retry_time = 0;  // 1분 주기 재시도 타임스탬프 (최초 동기화 전)
 static time_t s_last_24h_sync_sec = 0;      // 24시간 주기 정기 재동기화 타임스탬프
 
+// [요구사항 2] 대기 장시간 화면 배정 비율 (눈 70% : 시계 30%)
+// 총 40초 주기 기준: 눈 화면 28초 (70%), 시계 화면 12초 (30%)
+#define IDLE_CYCLE_EYE_MS    28000
+#define IDLE_CYCLE_CLOCK_MS  12000
+
 static uint32_t s_idle_clock_start_time = 0;
 static bool s_idle_clock_active = false;
-static uint32_t s_next_eye_peek_time = 0;
-static uint32_t s_eye_peek_end_time = 0;
-static bool s_eye_peeking = false;
+static bool s_idle_showing_eyes = false;
+static uint32_t s_idle_phase_end_time = 0;
 
 static void on_ntp_time_synced(void) {
     ESP_LOGI(TAG, "NTP Time Synced Callback received!");
@@ -143,7 +147,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
             if (s_idle_clock_active || s_boot_clock_active) {
                 s_idle_clock_active = false;
                 s_boot_clock_active = false;
-                s_eye_peeking = false;
+                s_idle_showing_eyes = false;
                 display_ui_show_clock_mode(false);
             }
             s_idle_clock_start_time = now;
@@ -157,7 +161,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
             if (s_boot_clock_active || s_idle_clock_active || chat_state_is_temp_clock_active()) {
                 s_boot_clock_active = false;
                 s_idle_clock_active = false;
-                s_eye_peeking = false;
+                s_idle_showing_eyes = false;
                 display_ui_show_clock_mode(false);
             }
             s_idle_clock_start_time = now;
@@ -242,7 +246,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
             }
         }
 
-        // 1-3. 5분 대기 초과 시 시계 표시 및 간헐적 눈 애니메이션 관리
+        // 1-3. [요구사항 2] 5분 대기 초과 시 눈(70%)과 시계(30%) 화면 비율 순환 배정
         if (!s_boot_clock_active) {
             chat_state_t cur_state = chat_state_get();
             if (chat_state_is_temp_clock_active()) {
@@ -253,7 +257,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
                 s_idle_clock_start_time = now;
                 if (s_idle_clock_active) {
                     s_idle_clock_active = false;
-                    s_eye_peeking = false;
+                    s_idle_showing_eyes = false;
                     display_ui_show_clock_mode(false);
                 }
             } else {
@@ -262,27 +266,28 @@ static void chat_monitor_loop_task(void *pvParameters) {
                     // 5분(300,000ms) 초과 여부 검사
                     if (now - s_idle_clock_start_time >= 300000) {
                         s_idle_clock_active = true;
+                        // 장시간 대기 진입: 먼저 시계 화면(30% 시간 배정: 12초) 표시
+                        s_idle_showing_eyes = false;
+                        s_idle_phase_end_time = now + IDLE_CYCLE_CLOCK_MS;
                         display_ui_show_clock_mode(true);
-                        // 약 30초~1분(30,000 ~ 60,000ms) 사이 첫 번째 눈 깜빡임 시점 계산
-                        s_next_eye_peek_time = now + 30000 + (esp_random() % 30000);
-                        s_eye_peeking = false;
-                        ESP_LOGI(TAG, "Standby idle > 5 minutes -> Switching to Clock display mode");
+                        display_ui_temp_hide_clock(false);
+                        ESP_LOGI(TAG, "Standby idle > 5 minutes -> Started Clock/Eyes cycle (Clock 30%% = 12s, Eyes 70%% = 28s)");
                     }
                 } else {
-                    // 시계 표시 모드 유지 중: 30초~1분 사이마다 간헐적으로 눈 애니메이션 표시
-                    if (!s_eye_peeking) {
-                        if (now >= s_next_eye_peek_time) {
-                            s_eye_peeking = true;
-                            s_eye_peek_end_time = now + 3500; // 약 3.5초 동안 눈 표시 및 깜빡임
+                    // 장시간 대기 순환: 눈 70%(28초) / 시계 30%(12초) 주기적 전환
+                    if (now >= s_idle_phase_end_time) {
+                        if (!s_idle_showing_eyes) {
+                            // 시계(30%) 만료 -> 눈 화면(70%, 28초)으로 전환
+                            s_idle_showing_eyes = true;
+                            s_idle_phase_end_time = now + IDLE_CYCLE_EYE_MS;
                             display_ui_temp_hide_clock(true);
-                            ESP_LOGI(TAG, "Clock peek: displaying eyes to indicate Alexa standby");
-                        }
-                    } else {
-                        if (now >= s_eye_peek_end_time) {
-                            s_eye_peeking = false;
-                            s_next_eye_peek_time = now + 30000 + (esp_random() % 30000); // 다음 30~60초 후
+                            ESP_LOGI(TAG, "Idle cycle: Switching to Eyes display (70%% time = 28s)");
+                        } else {
+                            // 눈 화면(70%) 만료 -> 시계 화면(30%, 12초)으로 전환
+                            s_idle_showing_eyes = false;
+                            s_idle_phase_end_time = now + IDLE_CYCLE_CLOCK_MS;
                             display_ui_temp_hide_clock(false);
-                            ESP_LOGI(TAG, "Clock peek: returning to Clock display");
+                            ESP_LOGI(TAG, "Idle cycle: Switching to Clock display (30%% time = 12s)");
                         }
                     }
                 }
@@ -300,7 +305,7 @@ static void chat_monitor_loop_task(void *pvParameters) {
                                   (st == CHAT_STATE_THINKING) ? "THINKING" : "SPEAKING";
             ESP_LOGI(TAG, "Health Check: State=%s(%d), ClockMode=%s, WS=%s, FreeHeap=%uKB",
                      st_name, (int)st,
-                     s_boot_clock_active ? "BOOT_CLOCK" : s_idle_clock_active ? (s_eye_peeking ? "EYE_PEEK" : "IDLE_CLOCK") : "EYES",
+                     s_boot_clock_active ? "BOOT_CLOCK" : s_idle_clock_active ? (s_idle_showing_eyes ? "IDLE_EYES(70%)" : "IDLE_CLOCK(30%)") : "EYES",
                      wifi_ws_is_connected() ? "CONNECTED" : "NO",
                      (unsigned int)(esp_get_free_internal_heap_size() / 1024));
             last_status_log_time = now;
