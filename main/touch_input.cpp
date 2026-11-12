@@ -149,18 +149,25 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
     int16_t y = s_last_y;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
-    // 하드웨어 INT 핀 상태 확인 (Seeed CHSC6X 공식: Active Low 디바운스 확인)
-    bool pin_active = (gpio_get_level((gpio_num_t)TOUCH_INT) == 0);
-    if (!pin_active) {
-        // INT 핀이 HIGH이면 물리적 터치가 없으므로 1ms 대기 후 재확인
-        esp_rom_delay_us(1000);
-        if (gpio_get_level((gpio_num_t)TOUCH_INT) != 0) {
-            pressed = false;
-            goto process_touch_state;
+    if (s_chip_type == TOUCH_CHIP_CHSC6X) {
+        uint8_t data[5] = {0};
+        esp_err_t ret = i2c_master_read_from_device(I2C_TOUCH_PORT, s_detected_addr,
+                                                   data, 5, pdMS_TO_TICKS(20));
+        if (ret == ESP_OK) {
+            // Seeed 공식 CHSC6X 프로토콜:
+            // data[0] == 0x01 (Touch Down / Active), 0x03 (Contact / Move)
+            // data[0] == 0x02 (Lift / Release), 0x00 (None / Idle)
+            if (data[0] == 0x01 || data[0] == 0x03) {
+                x = (int16_t)data[2]; // 정방향 (오른쪽으로 밀면 증가)
+                y = (int16_t)data[4];
+                pressed = true;
+            } else {
+                pressed = false;
+            }
+        } else {
+            pressed = false; // I2C 통신 오류 시 절대 터치로 오인식하지 않음
         }
-    }
-
-    if (s_chip_type == TOUCH_CHIP_CST816S) {
+    } else if (s_chip_type == TOUCH_CHIP_CST816S) {
         uint8_t data[6] = {0};
         uint8_t reg = 0x01;
         esp_err_t ret = i2c_master_write_read_device(I2C_TOUCH_PORT, s_detected_addr,
@@ -171,23 +178,6 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
             pressed = true;
         } else {
             pressed = false;
-        }
-    } else if (s_chip_type == TOUCH_CHIP_CHSC6X) {
-        uint8_t data[5] = {0};
-        esp_err_t ret = i2c_master_read_from_device(I2C_TOUCH_PORT, s_detected_addr,
-                                                   data, 5, pdMS_TO_TICKS(20));
-        if (ret == ESP_OK) {
-            // Seeed 공식 CHSC6X 프로토콜: data[0] == 0x01 (Touch Down), 0x03 (Contact/Move)
-            // 0x02(Lift/Release) 및 0x00(None)은 pressed = false 처리
-            if (data[0] == 0x01 || data[0] == 0x03) {
-                x = (int16_t)data[2]; // 정방향 (오른쪽으로 밀면 증가)
-                y = (int16_t)data[4];
-                pressed = true;
-            } else {
-                pressed = false;
-            }
-        } else {
-            pressed = false; // I2C 통신 타임아웃/오류 발생 시 절대 거짓 터치로 처리하지 않음!
         }
     } else if (s_chip_type == TOUCH_CHIP_FT6236) {
         uint8_t data[5] = {0};
@@ -202,13 +192,10 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
             pressed = false;
         }
     } else {
-        // I2C 칩이 없는 경우에만 INT 핀 타임스탬프 폴백
-        pressed = (now - s_last_touch_isr_time < 200) && (gpio_get_level((gpio_num_t)TOUCH_INT) == 0);
+        pressed = false;
         x = 120;
         y = 120;
     }
-
-process_touch_state:
 
     // 좌표 경계 클램프 (240x240)
     if (x < 0) x = 0;
