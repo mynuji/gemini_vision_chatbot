@@ -5,6 +5,7 @@ import re
 import numpy as np
 import torch
 import time
+import datetime
 import subprocess
 import tempfile
 import os
@@ -569,25 +570,29 @@ class GeminiLiveSession:
         self.speaking_active = False
         self.tool_call_active = False
         self.replied_this_turn = False
+        now_dt = datetime.datetime.now()
+        time_str = now_dt.strftime("%Y년 %m월 %d일 %p %I시 %M분")
         if allow_camera:
             self.system_prompt = (
-                "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
+                f"너의 이름은 '친구'야. 현재 시각은 {time_str}이야. "
+                "너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
                 "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
+                "사용자가 현재 시간이나 오늘 날짜를 물어보면 위 시각을 바탕으로 자연스럽게 한국어로 바로 답변해줘. "
                 "너에게는 눈앞을 볼 수 있는 실시간 카메라(capture_camera_image 도구)가 장착되어 있어. "
                 "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '이거 봐봐', '카메라로 봐줘', '사진 찍어봐', '글자 읽어줘' 등 "
-                "현재 보이는 상황이나 사물, 사람, 풍경, 글자에 대해 물어보면 절대 볼 수 없다고 답하지 말고 반드시 capture_camera_image 도구를 호출해줘. "
-                "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
+                "실제 눈앞의 사물이나 상황, 사람, 글자를 확인해야 할 때만 capture_camera_image 도구를 호출해줘. "
                 "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
                 "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
                 "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
             )
         else:
             self.system_prompt = (
-                "너의 이름은 '친구'야. 너는 음성으로 대화하는 고품질 네이티브 오디오 한국어 AI 비서야. "
+                f"너의 이름은 '친구'야. 현재 시각은 {time_str}이야. "
+                "너는 음성으로 대화하는 고품질 네이티브 오디오 한국어 AI 비서야. "
                 "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
+                "사용자가 현재 시간이나 오늘 날짜를 물어보면 위 시각을 바탕으로 자연스럽게 한국어로 바로 답변해줘. "
                 "현재 너는 '음성 전용(Native Audio)' 모드로 동작 중이며 카메라는 지원하지 않아. "
                 "사용자가 사물이나 사진, 카메라를 봐달라고 하거나 무엇이 보이는지 물어보면 '현재는 음성 전용 모드라 카메라를 볼 수 없어요. 카메라를 보시려면 Gemini Realtime으로 변경해 주세요'라고 친절히 안내해줘. "
-                "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
                 "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
                 "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
                 "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
@@ -701,19 +706,11 @@ class GeminiLiveSession:
                                                 "direction": {"type": "STRING", "enum": ["up", "down", "max", "min"], "description": "마이크 감도 조절 방향"}
                                             }
                                         }
-                                    },
-                                    {
-                                        "name": "get_current_time",
-                                        "description": "사용자가 현재 시각, 지금 몇 시인지, 날짜 및 시간을 물어볼 때 호출하여 현재 시간 정보를 얻고 화면에 시계를 표시합니다.",
-                                        "parameters": {
-                                            "type": "OBJECT",
-                                            "properties": {}
-                                        }
                                     }
                                 ] + ([
                                     {
                                         "name": "capture_camera_image",
-                                        "description": "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '봐봐', '사진 찍어봐', '글자 읽어줘' 등 카메라로 현재 보이는 실시간 상황이나 사물, 사람, 글자를 확인해야 할 때 호출합니다.",
+                                        "description": "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '봐봐', '카메라로 봐줘', '사진 찍어봐', '글자 읽어줘' 등 카메라로 현재 보이는 실시간 상황이나 사물, 사람, 글자를 확인해야 할 때만 호출합니다. 시각적 확인이 필요 없는 일반 대화에는 절대 호출하지 마세요.",
                                         "parameters": {
                                             "type": "OBJECT",
                                             "properties": {
@@ -721,7 +718,8 @@ class GeminiLiveSession:
                                                     "type": "STRING",
                                                     "description": "사용자가 카메라 화면에 대해 물어본 질문 내용"
                                                 }
-                                            }
+                                            },
+                                            "required": ["question"]
                                         }
                                     }
                                 ] if self.allow_camera else [])
@@ -1071,13 +1069,16 @@ class OpenAIRealtimeSession:
         self.speaking_active = False
         self.tool_call_active = False
         self.replied_this_turn = False
+        now_dt = datetime.datetime.now()
+        time_str = now_dt.strftime("%Y년 %m월 %d일 %p %I시 %M분")
         self.system_prompt = (
-            "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
+            f"너의 이름은 '친구'야. 현재 시각은 {time_str}이야. "
+            "너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
             "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 대답해. "
+            "사용자가 현재 시간이나 오늘 날짜를 물어보면 위 시각을 바탕으로 자연스럽게 한국어로 바로 답변해줘. "
             "너에게는 눈앞을 볼 수 있는 실시간 카메라(capture_camera_image 도구)가 장착되어 있어. "
             "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '이거 봐봐', '카메라로 봐줘', '사진 찍어봐', '글자 읽어줘' 등 "
-            "현재 보이는 상황이나 사물, 사람, 풍경, 글자에 대해 물어보면 절대 볼 수 없다고 답하지 말고 반드시 capture_camera_image 도구를 호출해줘. "
-            "사용자가 현재 시간이나 몇 시인지 물어보면 반드시 get_current_time 도구를 호출해줘. "
+            "실제 눈앞의 사물이나 상황, 사람, 글자를 확인해야 할 때만 capture_camera_image 도구를 호출해줘. "
             "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
             "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
             "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
@@ -1161,17 +1162,8 @@ class OpenAIRealtimeSession:
                         },
                         {
                             "type": "function",
-                            "name": "get_current_time",
-                            "description": "사용자가 현재 시각, 지금 몇 시인지, 날짜 및 시간을 물어볼 때 호출하여 현재 시간 정보를 얻고 화면에 시계를 표시합니다.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {}
-                            }
-                        },
-                        {
-                            "type": "function",
                             "name": "capture_camera_image",
-                            "description": "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '봐봐', '사진 찍어봐', '글자 읽어줘' 등 카메라로 현재 보이는 실시간 상황이나 사물, 사람, 글자를 확인해야 할 때 호출합니다.",
+                            "description": "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '봐봐', '사진 찍어봐', '글자 읽어줘' 등 카메라로 현재 보이는 실시간 상황이나 사물, 사람, 글자를 확인해야 할 때만 호출합니다. 시각적 확인이 필요 없는 일반 대화에는 절대 호출하지 마세요.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
@@ -1179,7 +1171,8 @@ class OpenAIRealtimeSession:
                                         "type": "string",
                                         "description": "사용자가 카메라 화면에 대해 물어본 질문 내용"
                                     }
-                                }
+                                },
+                                "required": ["question"]
                             }
                         }
                     ],
