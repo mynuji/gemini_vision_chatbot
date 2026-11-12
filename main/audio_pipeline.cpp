@@ -279,12 +279,12 @@ static void audio_feed_task(void *pvParameters) {
         //    바스락거리는 주변 생활 소음, 옷깃 스침 등이 인위적으로 증폭되어 WakeNet이 오탐(False Wakeup)하는 것을
         //    원천 방지하기 위해 디지털 게인을 절대 적용하지 않습니다 (1.0x 원음 유지).
         // 2) 스피커 출력 중: 자체 스피커 소리가 마이크로 피드백되어 AEC 왜곡이 발생하는 것을 방지하기 위해 1.0x 원음 유지.
-        // 3) 대화 청취(LISTENING) 중: 작은 목소리를 잘 수음하도록 설정된 마이크 게인 적용 (최대 3.0배로 안전 제한).
+        // 3) 대화 청취(LISTENING) 중: 작은 목소리를 잘 수음하도록 설정된 마이크 게인 적용 (최대 4.5배로 안전 제한).
         chat_state_t cur_st = chat_state_get();
         bool is_playing = s_is_speaker_playing || (s_spk_buffered_bytes > 0);
         if (!is_playing && cur_st == CHAT_STATE_LISTENING && s_mic_gain > 10) {
             uint8_t gain = s_mic_gain;
-            if (gain > 30) gain = 30; // 과도한 잡음 증폭 방지 (최대 3.0배)
+            if (gain > 45) gain = 45; // 과도한 왜곡 방지 (최대 4.5배)
             for (int i = 0; i < feed_chunksize; i++) {
                 int32_t val = (int32_t)mic_buf[i] * (int32_t)gain / 10;
                 if (val > 32767) val = 32767;
@@ -408,9 +408,9 @@ static void audio_fetch_task(void *pvParameters) {
             }
 
             // 비프음 및 단발성 주변 소음 방지:
-            // 500ms 안정화 후 실제 음성 에너지(피크 400 이상)를 갖는 연속 6프레임(약 192ms) 발화 시 실제 발화로 판정
-            // (미세한 바스락거림이나 단발성 클릭 소음으로 인한 섣부른 발화 오인 방지)
-            if (now_ms - s_mic_stream_start_ms > 500) {
+            // 비프음 종료 후(350ms) 안정화 후 실제 음성 에너지(피크 80 이상)를 갖는 연속 4프레임(약 128ms) 발화 시 실제 발화로 판정
+            // (미세한 바스락거림이나 단발성 클릭 소음은 거르고 실제 사람의 목소리는 신속하게 감지)
+            if (now_ms - s_mic_stream_start_ms > 350) {
                 int16_t *chk_samples = (int16_t *)res->data;
                 int chk_cnt = res->data_size / sizeof(int16_t);
                 int32_t chk_peak = 0;
@@ -419,9 +419,9 @@ static void audio_fetch_task(void *pvParameters) {
                     if (v > chk_peak) chk_peak = v;
                 }
 
-                if (res->vad_state == VAD_SPEECH && chk_peak >= 400) {
+                if (res->vad_state == VAD_SPEECH && chk_peak >= 80) {
                     s_vad_speech_frames++;
-                    if (s_vad_speech_frames >= 6) {
+                    if (s_vad_speech_frames >= 4) {
                         s_last_speech_ms = now_ms;
                         if (!s_has_user_spoken) {
                             s_has_user_spoken = true;
@@ -436,9 +436,9 @@ static void audio_fetch_task(void *pvParameters) {
 
             if (s_has_user_spoken) {
                 // 발화 종료 판정:
-                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 800ms) 침묵이 650ms 이상 지속될 때
+                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 800ms) 침묵이 700ms 이상 지속될 때
                 // 2) 최대 발화 제한: 사용자가 말을 시작한 시점(s_speech_start_ms)으로부터 15초 초과 시 (대기 시간과 무관!)
-                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 800) && (now_ms - s_last_speech_ms > 650);
+                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 800) && (now_ms - s_last_speech_ms > 700);
                 bool max_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 15000);
 
                 if (silence_timeout || max_timeout) {
@@ -542,7 +542,7 @@ esp_err_t audio_pipeline_init(void) {
         afe_config->wakenet_model_name = esp_srmodel_filter(models, ESP_WN_PREFIX, NULL);
         afe_config->wakenet_mode = DET_MODE_90;
         afe_config->vad_init = true;
-        afe_config->vad_mode = VAD_MODE_3; // 강력한 음성/비음성 분리 모드 (바스락 소리 필터링)
+        afe_config->vad_mode = VAD_MODE_2; // 실시간 음성 대화에 최적화된 균형 VAD 모드 (MODE_3의 과도한 음성 차단 방지)
         afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
         afe_config = afe_config_check(afe_config);
 

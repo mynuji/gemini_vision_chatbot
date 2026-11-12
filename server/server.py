@@ -2925,12 +2925,13 @@ async def handler(websocket, path=None):
                                             # 무음 또는 미세 주변 잡음(바스락거림) 필터링: 유효 발화 길이 및 음향 에너지 검사
                                             total_buffered_len = sum(len(c) for c in audio_buffer)
                                             max_peak = max((float(np.max(np.abs(c))) for c in audio_buffer), default=0.0) if audio_buffer else 0.0
-                                            if total_buffered_len < 4800 or max_peak < 0.02:
+                                            if total_buffered_len < 3200 or max_peak < 0.003:
                                                 print(f"[Realtime 무음 차단] 수신된 오디오가 무음 또는 미세 소음({total_buffered_len/16000:.2f}s, peak={max_peak:.3f})이므로 AI 질의를 생략하고 대기 상태(DONE)로 복귀합니다.")
                                                 audio_buffer = []
                                                 await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": True}))
                                                 continue
 
+                                            print(f"[Realtime 음성 유효] 수신 오디오 감지: {total_buffered_len/16000:.2f}s, peak={max_peak:.3f} -> Gemini 세션 커밋")
                                             await active_realtime_session.commit_audio()
 
                                             if rt_watchdog_task and not rt_watchdog_task.done():
@@ -2998,8 +2999,8 @@ async def handler(websocket, path=None):
                                             silence_time = 0.0
 
                                             peak_val = np.max(np.abs(full_audio)) if len(full_audio) > 0 else 0.0
-                                            # 최소 0.5초(8000 샘플) 이상이고 최소 음량(0.008) 이상일 때 실제 발화로 처리
-                                            if len(full_audio) >= 8000 and peak_val >= 0.008:
+                                            # 최소 0.25초(4000 샘플) 이상이고 최소 음량(0.003) 이상일 때 실제 발화로 처리
+                                            if len(full_audio) >= 4000 and peak_val >= 0.003:
                                                 print("\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) -> whisper.cpp 실행")
                                                 user_text, asr_ms = await run_whisper_cpp(full_audio)
                                                 t_last_whisper = time.perf_counter()
@@ -3090,7 +3091,7 @@ async def handler(websocket, path=None):
                                         silence_time = 0.0
 
                                         peak_val = np.max(np.abs(full_audio)) if len(full_audio) > 0 else 0.0
-                                        if len(full_audio) >= 4800 and peak_val >= 0.01:
+                                        if len(full_audio) >= 4000 and peak_val >= 0.003:
                                             print("[제어 명령] whisper.cpp 즉시 실행")
                                             user_text, asr_ms = await run_whisper_cpp(full_audio)
                                             print(f"[음성 인식 완료] {user_text or '(인식 실패 또는 무음)'} ({asr_ms:.0f}ms)")
