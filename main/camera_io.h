@@ -15,23 +15,40 @@ extern "C" {
 #endif
 
 /**
- * @brief OV2640 카메라 초기화 (JPEG / VGA 기본)
+ * @brief 카메라 초기화 (부팅 시 1회 수행, QVGA 기본)
  * @return ESP_OK 성공, 실패 시 esp_camera_init()의 에러 코드
  */
 esp_err_t camera_io_init(void);
 
 /**
- * @brief 카메라 전원 차단 및 클럭 정지 (Sleep 모드)
+ * @brief 카메라 저전력 소프트웨어 대기(Software Standby) 모드 진입
  *
- * 사용하지 않을 때 OV2640의 20MHz XCLK 및 DMA/센서를 정지하여
- * 150~200mW 상시 전력 소모와 모듈 발열을 원천 차단합니다.
+ * XIAO ESP32-S3 Sense의 OV3660/OV2640 센서 내부 ADC 및 픽셀 어레이 전원을 차단하여
+ * 발열과 전력 소모를 원천 방지합니다. 드라이버 인스턴스는 보존되므로 즉시 재기동 가능합니다.
+ */
+esp_err_t camera_io_standby(void);
+
+/**
+ * @brief 카메라 소프트웨어 대기 모드 해제 (Wake up)
+ *
+ * 대기 모드에서 10~30ms 만에 신속하게 복귀하여 즉시 촬영/프리뷰가 가능한 상태로 전환합니다.
+ */
+esp_err_t camera_io_wake(void);
+
+/**
+ * @brief 카메라 전원 차단 (camera_io_standby()의 호환 래퍼)
  */
 esp_err_t camera_io_deinit(void);
 
 /**
- * @brief 카메라 초기화 완료 및 동작 중 여부
+ * @brief 카메라 드라이버 초기화 및 현재 Wake(촬영 가능) 상태 여부
  */
 bool camera_io_is_ready(void);
+
+/**
+ * @brief 카메라 드라이버가 메모리에 초기화되어 있는지 여부 (Standby 상태 포함)
+ */
+bool camera_io_is_initialized(void);
 
 /**
  * @brief 현재 장면을 JPEG로 촬영하여 PSRAM 버퍼로 복사해 반환

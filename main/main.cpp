@@ -383,9 +383,9 @@ extern "C" void app_main(void) {
         } else {
             ESP_LOGW(TAG, "Camera self-test capture failed");
         }
-        // 자가 진단 완료 후, 카메라를 즉시 대기(Sleep/Power-down) 상태로 전환!
-        // 평상시(대기/시계/눈 모드) 발열(20MHz XCLK 지속 가동)을 원천 차단하고 On-Demand로 필요할 때만 켭니다.
-        camera_io_deinit();
+        // 자가 진단 완료 후, 카메라를 즉시 소프트웨어 저전력 대기(Software Standby) 상태로 전환!
+        // 평상시(대기/시계/눈 모드) 센서 내부 ADC/픽셀 어레이를 꺼서 발열을 원천 차단하고 On-Demand로 필요할 때만 켭니다.
+        camera_io_standby();
     } else {
         ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
     }
