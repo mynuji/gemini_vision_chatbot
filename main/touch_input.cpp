@@ -203,20 +203,21 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
     if (y < 0) y = 0;
     if (y > 239) y = 239;
 
-    // 상단 10회 연속 터치 감지 (터치가 새로 눌렸을 때, 설정 화면이 닫혀있을 때만 동작)
+    // 상단 10회 연속 터치 감지 (설정 메뉴 진입 전용: 화면 상단 가장자리 한정)
     if (pressed && !s_is_pressed && !ui_settings_is_active()) {
-        bool is_rapid_tapping = (now - s_last_top_tap_time < 3000) && (s_top_tap_count > 0);
-        bool is_top_area = (y <= 100) || is_rapid_tapping;
+        // 상단 특정 범위 정의: 상단 Wi-Fi 아이콘 및 최상단 영역 (Y <= 55, X: 60 ~ 180)
+        bool is_top_area = (y <= 55 && x >= 60 && x <= 180);
 
         if (is_top_area) {
-            if (now - s_last_top_tap_time < 3000) {
+            // 상단 영역 내에서 1.5초 이내에 연속해서 탭할 때만 카운트 증가
+            if (now - s_last_top_tap_time < 1500) {
                 s_top_tap_count++;
             } else {
                 s_top_tap_count = 1;
             }
             s_last_top_tap_time = now;
 
-            ESP_LOGI(TAG, "Top area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
+            ESP_LOGI(TAG, "Top settings area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
             audio_io_play_tone(2400.0f, 15);
 
             if (s_top_tap_count >= 10) {
@@ -228,6 +229,7 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
                 }
             }
         } else {
+            // 상단 이외의 화면 영역(중앙, 눈/시계 영역, 하단 등) 터치는 100% 대화(발화 시작 / 중단) 이벤트로 즉각 처리!
             s_top_tap_count = 0;
             s_chat_touch_event_flag = true;
             ESP_LOGI(TAG, "Chat touch area tapped (x=%d, y=%d) -> Chat event flagged", x, y);
