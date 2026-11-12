@@ -60,9 +60,14 @@ esp_err_t settings_manager_init(void);
 const app_settings_t* settings_manager_get(void);
 
 /**
- * @brief 설정을 NVS에 저장
+ * @brief 설정을 NVS에 저장 (비동기 큐잉 - UI/웹소켓 스레드 블로킹 및 캐시 패닉 방지)
  */
 esp_err_t settings_manager_save(const app_settings_t *new_settings);
+
+/**
+ * @brief 설정을 NVS에 동기적으로 저장 (저장 완료까지 대기 - 재부팅 전 사용)
+ */
+esp_err_t settings_manager_save_sync(const app_settings_t *new_settings);
 
 /**
  * @brief 설정을 초기 기본값으로 복원

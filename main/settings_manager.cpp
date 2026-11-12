@@ -3,6 +3,10 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include <string.h>
 
 static const char *TAG = "SETTINGS_MGR";
@@ -12,6 +16,45 @@ static const char *NVS_KEY = "app_cfg";
 static app_settings_t s_settings;
 static bool s_initialized = false;
 static settings_change_cb_t s_change_cb = NULL;
+
+typedef struct {
+    app_settings_t settings;
+    bool notify;
+    SemaphoreHandle_t done_sem;
+} save_req_t;
+
+static TaskHandle_t s_save_task_handle = NULL;
+static QueueHandle_t s_save_queue = NULL;
+
+static void settings_save_worker_task(void *arg) {
+    save_req_t req;
+    while (1) {
+        if (xQueueReceive(s_save_queue, &req, portMAX_DELAY) == pdTRUE) {
+            nvs_handle_t nvs_handle;
+            esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+            if (err == ESP_OK) {
+                err = nvs_set_blob(nvs_handle, NVS_KEY, &req.settings, sizeof(app_settings_t));
+                if (err == ESP_OK) {
+                    err = nvs_commit(nvs_handle);
+                    ESP_LOGI(TAG, "Asynchronously saved settings to NVS! (SSID='%s', Server='%s:%u', Vol=%u%%, Notify=%d)",
+                             req.settings.wifi_ssid, req.settings.server_ip, (unsigned int)req.settings.server_port, req.settings.volume, (int)req.notify);
+                    if (req.notify && s_change_cb != NULL) {
+                        s_change_cb(&req.settings);
+                    }
+                } else {
+                    ESP_LOGE(TAG, "nvs_set_blob failed: %s", esp_err_to_name(err));
+                }
+                nvs_close(nvs_handle);
+            } else {
+                ESP_LOGE(TAG, "nvs_open failed for async write: %s", esp_err_to_name(err));
+            }
+
+            if (req.done_sem != NULL) {
+                xSemaphoreGive(req.done_sem);
+            }
+        }
+    }
+}
 
 void settings_manager_set_change_callback(settings_change_cb_t cb) {
     s_change_cb = cb;
@@ -137,6 +180,13 @@ esp_err_t settings_manager_init(void) {
 
     s_initialized = true;
 
+    if (s_save_queue == NULL) {
+        s_save_queue = xQueueCreate(4, sizeof(save_req_t));
+        // 태스크 스택을 반드시 내부 SRAM(3584B)에 생성하여
+        // SPI 플래시 쓰기(nvs_commit) 시 캐시 비활성화로 인한 패닉을 원천 방지!
+        xTaskCreatePinnedToCore(settings_save_worker_task, "settings_save", 3584, NULL, 5, &s_save_task_handle, 0);
+    }
+
     if (need_save_default) {
         settings_manager_save(&s_settings);
     }
@@ -151,105 +201,126 @@ const app_settings_t* settings_manager_get(void) {
     return &s_settings;
 }
 
-static esp_err_t settings_manager_save_internal(const app_settings_t *new_settings, bool notify) {
+static esp_err_t settings_manager_save_internal(const app_settings_t *new_settings, bool notify, bool wait_done) {
     if (!new_settings) return ESP_ERR_INVALID_ARG;
 
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open failed for writing: %s", esp_err_to_name(err));
-        return err;
-    }
-
+    // 즉시 인메모리 반영 (UI/오디오 모듈이 대기 없이 즉시 최신 설정 참조)
     memcpy(&s_settings, new_settings, sizeof(app_settings_t));
     s_settings.magic = SETTINGS_MAGIC;
+
+    if (s_save_queue != NULL) {
+        save_req_t req;
+        memcpy(&req.settings, &s_settings, sizeof(app_settings_t));
+        req.notify = notify;
+        req.done_sem = NULL;
+
+        if (wait_done) {
+            req.done_sem = xSemaphoreCreateBinary();
+            if (req.done_sem) {
+                if (xQueueSend(s_save_queue, &req, pdMS_TO_TICKS(1000)) == pdTRUE) {
+                    xSemaphoreTake(req.done_sem, pdMS_TO_TICKS(3000));
+                }
+                vSemaphoreDelete(req.done_sem);
+                return ESP_OK;
+            }
+        }
+
+        // 비동기 큐 전송 (LVGL UI 태스크 및 WebSocket 태스크 블로킹 원천 차단)
+        if (xQueueSend(s_save_queue, &req, pdMS_TO_TICKS(200)) == pdTRUE) {
+            return ESP_OK;
+        } else {
+            ESP_LOGW(TAG, "Save queue full, request dropped");
+            return ESP_OK;
+        }
+    }
+
+    // s_save_queue 초기화 전 동기 저장
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) return err;
 
     err = nvs_set_blob(nvs_handle, NVS_KEY, &s_settings, sizeof(app_settings_t));
     if (err == ESP_OK) {
         err = nvs_commit(nvs_handle);
-        ESP_LOGI(TAG, "Saved settings to NVS successfully! (SSID='%s', Server='%s:%u', Vol=%u%%, Notify=%d)",
-                 s_settings.wifi_ssid, s_settings.server_ip, (unsigned int)s_settings.server_port, s_settings.volume, (int)notify);
-        if (notify && s_change_cb != NULL) {
-            s_change_cb(&s_settings);
-        }
-    } else {
-        ESP_LOGE(TAG, "nvs_set_blob failed: %s", esp_err_to_name(err));
     }
-
     nvs_close(nvs_handle);
     return err;
 }
 
 esp_err_t settings_manager_save(const app_settings_t *new_settings) {
-    return settings_manager_save_internal(new_settings, true);
+    return settings_manager_save_internal(new_settings, true, false);
+}
+
+esp_err_t settings_manager_save_sync(const app_settings_t *new_settings) {
+    return settings_manager_save_internal(new_settings, true, true);
 }
 
 esp_err_t settings_manager_reset_to_default(void) {
     app_settings_t def;
     set_defaults(&def);
-    return settings_manager_save(&def);
+    return settings_manager_save_sync(&def);
 }
 
 esp_err_t settings_manager_set_volume(uint8_t volume) {
     if (volume < 10) volume = 10;
     if (volume > 100) volume = 100;
     s_settings.volume = volume;
-    return settings_manager_save(&s_settings);
+    return settings_manager_save_internal(&s_settings, true, false);
 }
 
 esp_err_t settings_manager_set_volume_no_notify(uint8_t volume) {
     if (volume < 10) volume = 10;
     if (volume > 100) volume = 100;
     s_settings.volume = volume;
-    return settings_manager_save_internal(&s_settings, false);
+    return settings_manager_save_internal(&s_settings, false, false);
 }
 
 esp_err_t settings_manager_set_brightness(uint8_t brightness) {
     if (brightness < 10) brightness = 10;
     if (brightness > 100) brightness = 100;
     s_settings.brightness = brightness;
-    return settings_manager_save(&s_settings);
+    return settings_manager_save_internal(&s_settings, true, false);
 }
 
 esp_err_t settings_manager_set_mic_gain(uint8_t mic_gain) {
     if (mic_gain < 10) mic_gain = 10;
     if (mic_gain > 60) mic_gain = 60;
     s_settings.mic_gain = mic_gain;
-    return settings_manager_save(&s_settings);
+    return settings_manager_save_internal(&s_settings, true, false);
 }
 
 esp_err_t settings_manager_set_mic_gain_no_notify(uint8_t mic_gain) {
     if (mic_gain < 10) mic_gain = 10;
     if (mic_gain > 60) mic_gain = 60;
     s_settings.mic_gain = mic_gain;
-    return settings_manager_save_internal(&s_settings, false);
+    return settings_manager_save_internal(&s_settings, false, false);
 }
 
 esp_err_t settings_manager_set_port(uint16_t port) {
     if (port == 0) port = 8765;
     s_settings.server_port = port;
-    return settings_manager_save(&s_settings);
+    return settings_manager_save_internal(&s_settings, true, false);
 }
 
 esp_err_t settings_manager_set_llm_type(uint8_t llm_type) {
     if (llm_type >= LLM_TYPE_COUNT) llm_type = 0;
     s_settings.llm_type = llm_type;
-    return settings_manager_save(&s_settings);
+    return settings_manager_save_internal(&s_settings, true, false);
 }
 
 esp_err_t settings_manager_set_llm_type_no_notify(uint8_t llm_type) {
     if (llm_type >= LLM_TYPE_COUNT) llm_type = 0;
     s_settings.llm_type = llm_type;
-    return settings_manager_save_internal(&s_settings, false);
+    return settings_manager_save_internal(&s_settings, false, false);
 }
 
 esp_err_t settings_manager_set_ntp_server(uint8_t ntp_server_idx) {
     s_settings.ntp_server_idx = ntp_server_idx;
-    return settings_manager_save(&s_settings);
+    return settings_manager_save_internal(&s_settings, true, false);
 }
 
 esp_err_t settings_manager_set_timezone(uint8_t timezone_idx) {
     s_settings.timezone_idx = timezone_idx;
-    return settings_manager_save(&s_settings);
+    return settings_manager_save_internal(&s_settings, true, false);
 }
 

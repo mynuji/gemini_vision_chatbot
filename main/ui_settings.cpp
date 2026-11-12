@@ -235,7 +235,7 @@ static void on_menu_btn_event(lv_event_t *e) {
         else if (id == 10) show_view(SUBVIEW_INFO);
         else if (id == 11) {
             // 저장 후 재부팅
-            settings_manager_save(&s_edit_cfg);
+            settings_manager_save_sync(&s_edit_cfg);
             audio_io_play_tone(1600.0f, 150);
             vTaskDelay(pdMS_TO_TICKS(200));
             esp_restart();
