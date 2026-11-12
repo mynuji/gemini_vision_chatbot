@@ -38,6 +38,21 @@ static void camera_preview_task(void *pvParameters) {
     ESP_LOGW(TAG, ">>> CAMERA PREVIEW TASK STARTED (240x240 RGB565 0-LAG) <<<");
     ESP_LOGW(TAG, "==========================================================");
 
+    // 카메라가 꺼져 있다면 On-Demand로 즉시 기동
+    bool newly_started = false;
+    if (!camera_io_is_ready()) {
+        ESP_LOGI(TAG, "Waking camera hardware from standby...");
+        esp_err_t err = camera_io_init();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to wake camera: %s", esp_err_to_name(err));
+            s_camera_preview_active = false;
+            s_preview_task_handle = NULL;
+            vTaskDelete(NULL);
+            return;
+        }
+        newly_started = true;
+    }
+
     display_ui_start_camera_preview();
 
     uint16_t *crop_buf = display_ui_get_preview_buffer();
@@ -53,10 +68,20 @@ static void camera_preview_task(void *pvParameters) {
         if (dec_buf) free(dec_buf);
         if (work_buf) free(work_buf);
         display_ui_stop_camera_preview();
+        camera_io_deinit();
         s_camera_preview_active = false;
         s_preview_task_handle = NULL;
         vTaskDelete(NULL);
         return;
+    }
+
+    // 신규 부팅 직후인 경우 센서 노출/화이트밸런스 수렴을 위해 1프레임 버퍼 플러시
+    if (newly_started) {
+        camera_fb_t *dummy_fb = camera_io_get_fb(pdMS_TO_TICKS(300));
+        if (dummy_fb) {
+            camera_io_return_fb(dummy_fb);
+            vTaskDelay(pdMS_TO_TICKS(30));
+        }
     }
 
     // 1. 카메라 사진(QVGA 320x240, ~10KB)을 지연 없이 즉시 촬영하여 서버로 초고속 전송
@@ -165,6 +190,9 @@ static void camera_preview_task(void *pvParameters) {
     free(work_buf);
     display_ui_stop_camera_preview();
 
+    // 프리뷰 종료 즉시 카메라 전원 차단 및 20MHz XCLK 정지 (발열 원천 차단)
+    camera_io_deinit();
+
     s_camera_preview_active = false;
     s_preview_task_handle = NULL;
     vTaskDelete(NULL);
@@ -188,6 +216,9 @@ void chat_state_start_camera_preview(void) {
 
 void chat_state_stop_camera_preview(void) {
     if (!s_camera_preview_active && s_preview_task_handle == NULL) {
+        if (camera_io_is_ready()) {
+            camera_io_deinit();
+        }
         return;
     }
     if (s_camera_preview_active) {
@@ -204,6 +235,9 @@ void chat_state_stop_camera_preview(void) {
     }
     // LCD를 눈 모양으로 즉시 복원
     display_ui_stop_camera_preview();
+    if (camera_io_is_ready()) {
+        camera_io_deinit();
+    }
 }
 
 void chat_state_init(void) {

@@ -1,6 +1,7 @@
 #include "camera_io.h"
 #include "bsp_board.h"
 
+#include "driver/gpio.h"
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -23,15 +24,21 @@ static bool s_ready = false;
 static SemaphoreHandle_t s_cam_mutex = NULL;
 
 esp_err_t camera_io_init(void) {
-    if (s_ready) {
-        return ESP_OK;
-    }
-
     if (s_cam_mutex == NULL) {
         s_cam_mutex = xSemaphoreCreateMutex();
         if (s_cam_mutex == NULL) {
             return ESP_ERR_NO_MEM;
         }
+    }
+
+    if (xSemaphoreTake(s_cam_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        ESP_LOGW(TAG, "camera_io_init: mutex timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (s_ready) {
+        xSemaphoreGive(s_cam_mutex);
+        return ESP_OK;
     }
 
     camera_config_t config = {};
@@ -69,6 +76,7 @@ esp_err_t camera_io_init(void) {
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_camera_init failed: 0x%x (%s)", err, esp_err_to_name(err));
+        xSemaphoreGive(s_cam_mutex);
         return err;
     }
 
@@ -76,6 +84,7 @@ esp_err_t camera_io_init(void) {
     if (s == NULL) {
         ESP_LOGE(TAG, "Camera sensor handle not acquired");
         esp_camera_deinit();
+        xSemaphoreGive(s_cam_mutex);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -98,11 +107,41 @@ esp_err_t camera_io_init(void) {
     }
 
     s_ready = true;
+    xSemaphoreGive(s_cam_mutex);
 
     ESP_LOGI(TAG, "Camera driver ready (Stable QVGA 320x240 pipeline). Free PSRAM: %u KB, InitTime: %lld ms",
              (unsigned int)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
              (long long)((esp_timer_get_time() - t0) / 1000));
     return ESP_OK;
+}
+
+esp_err_t camera_io_deinit(void) {
+    if (s_cam_mutex == NULL) {
+        return ESP_OK;
+    }
+
+    if (xSemaphoreTake(s_cam_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGW(TAG, "camera_io_deinit: mutex timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (!s_ready) {
+        xSemaphoreGive(s_cam_mutex);
+        return ESP_OK;
+    }
+
+    esp_err_t err = esp_camera_deinit();
+
+    // 20MHz XCLK 출력 핀(GPIO 10) 정지 및 입력 플로팅 전환:
+    // 클럭이 완전히 차단되어 OV2640 내부 PLL/ADC/픽셀 배열 구동이 멈추고 발열이 원천 해소됩니다.
+    gpio_reset_pin((gpio_num_t)CAM_PIN_XCLK);
+    gpio_set_direction((gpio_num_t)CAM_PIN_XCLK, GPIO_MODE_INPUT);
+
+    s_ready = false;
+    xSemaphoreGive(s_cam_mutex);
+
+    ESP_LOGI(TAG, "Camera powered off (XCLK halted, power saving active, sensor cooling)");
+    return err;
 }
 
 void camera_io_set_high_res(bool high_res) {
@@ -121,17 +160,34 @@ esp_err_t camera_io_capture_jpeg(uint8_t **out_jpeg, size_t *out_len,
     *out_jpeg = NULL;
     *out_len = 0;
 
-    if (!s_ready) {
-        return ESP_ERR_INVALID_STATE;
+    bool was_ready = s_ready;
+    if (!was_ready) {
+        ESP_LOGI(TAG, "camera_io_capture_jpeg: waking camera on-demand...");
+        esp_err_t err = camera_io_init();
+        if (err != ESP_OK) {
+            return err;
+        }
     }
 
     if (xSemaphoreTake(s_cam_mutex, pdMS_TO_TICKS(2500)) != pdTRUE) {
         ESP_LOGW(TAG, "Camera mutex timeout");
+        if (!was_ready) {
+            camera_io_deinit();
+        }
         return ESP_ERR_TIMEOUT;
     }
 
     esp_err_t ret = ESP_OK;
     int64_t t0 = esp_timer_get_time();
+
+    // 단독 On-Demand 기동 직후인 경우 노출 안정을 위해 필요 시 1회 버퍼 플러시
+    if (!was_ready) {
+        camera_fb_t *flush_fb = esp_camera_fb_get();
+        if (flush_fb) {
+            esp_camera_fb_return(flush_fb);
+            vTaskDelay(pdMS_TO_TICKS(30));
+        }
+    }
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb == NULL) {
@@ -161,6 +217,12 @@ esp_err_t camera_io_capture_jpeg(uint8_t **out_jpeg, size_t *out_len,
         esp_camera_fb_return(fb);
     }
     xSemaphoreGive(s_cam_mutex);
+
+    // 단독 호출로 켰던 경우, 촬영 후 즉시 다시 Sleep 모드로 전환하여 발열 차단
+    if (!was_ready) {
+        camera_io_deinit();
+    }
+
     return ret;
 }
 
@@ -169,6 +231,10 @@ camera_fb_t *camera_io_get_fb(uint32_t timeout_ticks) {
         return NULL;
     }
     if (xSemaphoreTake(s_cam_mutex, (TickType_t)timeout_ticks) != pdTRUE) {
+        return NULL;
+    }
+    if (!s_ready) {
+        xSemaphoreGive(s_cam_mutex);
         return NULL;
     }
     camera_fb_t *fb = esp_camera_fb_get();

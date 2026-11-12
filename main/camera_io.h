@@ -21,7 +21,15 @@ extern "C" {
 esp_err_t camera_io_init(void);
 
 /**
- * @brief 카메라 초기화 완료 여부
+ * @brief 카메라 전원 차단 및 클럭 정지 (Sleep 모드)
+ *
+ * 사용하지 않을 때 OV2640의 20MHz XCLK 및 DMA/센서를 정지하여
+ * 150~200mW 상시 전력 소모와 모듈 발열을 원천 차단합니다.
+ */
+esp_err_t camera_io_deinit(void);
+
+/**
+ * @brief 카메라 초기화 완료 및 동작 중 여부
  */
 bool camera_io_is_ready(void);
 

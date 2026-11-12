@@ -371,7 +371,7 @@ extern "C" void app_main(void) {
     // (AES 복호화에 내부 SRAM이 필요하므로 Wi-Fi/카메라 이전 200KB+ 가용 시점에 최우선 로드!)
     ESP_ERROR_CHECK(audio_pipeline_init());
 
-    // [5] OV2640/OV3660 카메라 초기화 (16KB 연속 DMA 버퍼 할당)
+    // [5] OV2640/OV3660 카메라 초기화 및 부팅 자가 진단
     esp_err_t cam_err = camera_io_init();
     if (cam_err == ESP_OK) {
         uint8_t *jpeg = NULL;
@@ -383,6 +383,9 @@ extern "C" void app_main(void) {
         } else {
             ESP_LOGW(TAG, "Camera self-test capture failed");
         }
+        // 자가 진단 완료 후, 카메라를 즉시 대기(Sleep/Power-down) 상태로 전환!
+        // 평상시(대기/시계/눈 모드) 발열(20MHz XCLK 지속 가동)을 원천 차단하고 On-Demand로 필요할 때만 켭니다.
+        camera_io_deinit();
     } else {
         ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
     }
