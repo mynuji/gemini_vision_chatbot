@@ -75,6 +75,14 @@ void display_ui_refresh_camera_preview(void);
 void display_ui_draw_preview_frame(const uint16_t *rgb565_buf);
 
 /**
+ * @brief 부팅 시 카메라 촬영 자가 진단 이미지를 화면에 일정 시간 표출
+ * @param jpeg_buf JPEG 압축 데이터
+ * @param jpeg_len 데이터 길이
+ * @param display_ms 화면 표출 시간 (ms)
+ */
+void display_ui_show_camera_snapshot(const uint8_t *jpeg_buf, size_t jpeg_len, uint32_t display_ms);
+
+/**
  * @brief LCD 백라이트 밝기 조절 (10 ~ 100%)
  */
 void display_ui_set_brightness(uint8_t percent);

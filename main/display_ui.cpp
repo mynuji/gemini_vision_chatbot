@@ -23,6 +23,7 @@
 #include "freertos/idf_additions.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
+#include "jpeg_decoder.h"
 #include <time.h>
 #include <sys/time.h>
 
@@ -679,6 +680,65 @@ void display_ui_refresh_camera_preview(void) {
 void display_ui_draw_preview_frame(const uint16_t *rgb565_buf) {
   // s_crop_buf는 이미 s_cam_img_dsc에 바인딩되어 있으므로 화면 무효화(invalidate) 트리거
   display_ui_refresh_camera_preview();
+}
+
+void display_ui_show_camera_snapshot(const uint8_t *jpeg_buf, size_t jpeg_len, uint32_t display_ms) {
+  if (jpeg_buf == NULL || jpeg_len == 0 || s_crop_buf == NULL) {
+    return;
+  }
+
+  size_t dec_sz = 320 * 240 * sizeof(uint16_t);
+  size_t work_sz = 65536;
+  uint16_t *dec_buf = (uint16_t *)heap_caps_malloc(dec_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  void *work_buf = heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+  if (dec_buf == NULL || work_buf == NULL) {
+    if (dec_buf) free(dec_buf);
+    if (work_buf) free(work_buf);
+    return;
+  }
+
+  esp_jpeg_image_cfg_t jpeg_cfg = {};
+  jpeg_cfg.indata = (uint8_t *)jpeg_buf;
+  jpeg_cfg.indata_size = (uint32_t)jpeg_len;
+  jpeg_cfg.outbuf = (uint8_t *)dec_buf;
+  jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
+  jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
+  jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_0;
+  jpeg_cfg.flags.swap_color_bytes = 1;
+  jpeg_cfg.advanced.working_buffer = work_buf;
+  jpeg_cfg.advanced.working_buffer_size = work_sz;
+
+  esp_jpeg_image_output_t out_info = {};
+  if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+    // [시계방향 90도 정방향 회전하여 240x240 정사각 화면에 채움]
+    for (int y = 0; y < 240; y++) {
+      int src_x = 279 - y;
+      uint16_t *dst_row = s_crop_buf + (y * 240);
+      for (int x = 0; x < 240; x++) {
+        int src_y = x;
+        dst_row[x] = dec_buf[src_y * 320 + src_x];
+      }
+    }
+
+    display_ui_start_camera_preview();
+    display_ui_refresh_camera_preview();
+
+    if (lvgl_port_lock(500)) {
+      if (s_status_label) {
+        lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(s_status_label, "CAMERA TEST OK");
+        lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -15);
+      }
+      lvgl_port_unlock();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(display_ms));
+    display_ui_stop_camera_preview();
+  }
+
+  free(dec_buf);
+  free(work_buf);
 }
 
 void display_ui_update_clock(void) {

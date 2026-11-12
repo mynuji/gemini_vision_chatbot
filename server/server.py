@@ -572,12 +572,17 @@ class GeminiLiveSession:
         self.replied_this_turn = False
         now_dt = datetime.datetime.now()
         time_str = now_dt.strftime("%Y년 %m월 %d일 %p %I시 %M분")
+        time_rule = (
+            f"현재 시각/날짜 정보: {time_str}. "
+            "사용자가 '몇 시야?', '지금 몇 시?', '오늘 며칠이야?'처럼 시간이나 날짜를 물어봤을 때만 이를 바탕으로 답변해. "
+            "사용자가 시간을 묻지 않았는데 먼저 시간을 말하거나, 아무 소리가 들리지 않을 때 혼자 말을 시작하면 절대 안 돼. "
+            "사용자의 음성이 들리지 않거나 바스락거리는 잡음, 침묵인 경우 아무 말도 하지 마. "
+        )
         if allow_camera:
             self.system_prompt = (
-                f"너의 이름은 '친구'야. 현재 시각은 {time_str}이야. "
-                "너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
+                "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
                 "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
-                "사용자가 현재 시간이나 오늘 날짜를 물어보면 위 시각을 바탕으로 자연스럽게 한국어로 바로 답변해줘. "
+                + time_rule +
                 "너에게는 눈앞을 볼 수 있는 실시간 카메라(capture_camera_image 도구)가 장착되어 있어. "
                 "사용자가 '지금 뭐가 보여?', '앞에 뭐가 있어?', '이거 뭐야?', '이거 봐봐', '카메라로 봐줘', '사진 찍어봐', '글자 읽어줘' 등 "
                 "실제 눈앞의 사물이나 상황, 사람, 글자를 확인해야 할 때만 capture_camera_image 도구를 호출해줘. "
@@ -587,10 +592,9 @@ class GeminiLiveSession:
             )
         else:
             self.system_prompt = (
-                f"너의 이름은 '친구'야. 현재 시각은 {time_str}이야. "
-                "너는 음성으로 대화하는 고품질 네이티브 오디오 한국어 AI 비서야. "
+                "너의 이름은 '친구'야. 너는 음성으로 대화하는 고품질 네이티브 오디오 한국어 AI 비서야. "
                 "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 자연스러운 한국어 구어체로 두세 문장 이내로 간결하게 답해줘. "
-                "사용자가 현재 시간이나 오늘 날짜를 물어보면 위 시각을 바탕으로 자연스럽게 한국어로 바로 답변해줘. "
+                + time_rule +
                 "현재 너는 '음성 전용(Native Audio)' 모드로 동작 중이며 카메라는 지원하지 않아. "
                 "사용자가 사물이나 사진, 카메라를 봐달라고 하거나 무엇이 보이는지 물어보면 '현재는 음성 전용 모드라 카메라를 볼 수 없어요. 카메라를 보시려면 Gemini Realtime으로 변경해 주세요'라고 친절히 안내해줘. "
                 "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
@@ -2918,6 +2922,15 @@ async def handler(websocket, path=None):
                                     if current_llm_type in REALTIME_LLM_TYPES:
                                         print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 턴 완료 전송)")
                                         if active_realtime_session and active_realtime_session.is_connected:
+                                            # 무음 또는 미세 주변 잡음(바스락거림) 필터링: 유효 발화 길이 및 음향 에너지 검사
+                                            total_buffered_len = sum(len(c) for c in audio_buffer)
+                                            max_peak = max((float(np.max(np.abs(c))) for c in audio_buffer), default=0.0) if audio_buffer else 0.0
+                                            if total_buffered_len < 4800 or max_peak < 0.02:
+                                                print(f"[Realtime 무음 차단] 수신된 오디오가 무음 또는 미세 소음({total_buffered_len/16000:.2f}s, peak={max_peak:.3f})이므로 AI 질의를 생략하고 대기 상태(DONE)로 복귀합니다.")
+                                                audio_buffer = []
+                                                await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": True}))
+                                                continue
+
                                             await active_realtime_session.commit_audio()
 
                                             if rt_watchdog_task and not rt_watchdog_task.done():

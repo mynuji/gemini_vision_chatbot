@@ -378,7 +378,9 @@ extern "C" void app_main(void) {
         size_t jpeg_len = 0;
         uint16_t w = 0, h = 0;
         if (camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h) == ESP_OK) {
-            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
+            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes -> Displaying on LCD", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
+            // [요구사항 3] 부팅 시 카메라 촬영 시험 이미지를 LCD 화면에 1.5초간 표출
+            display_ui_show_camera_snapshot(jpeg, jpeg_len, 1500);
             free(jpeg);
         } else {
             ESP_LOGW(TAG, "Camera self-test capture failed");
