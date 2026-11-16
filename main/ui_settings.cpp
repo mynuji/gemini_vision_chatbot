@@ -734,6 +734,7 @@ static void on_edit_pw_click(lv_event_t *e) {
 
 static void on_wifi_save_click(lv_event_t *e) {
     settings_manager_save(&s_edit_cfg);
+    wifi_ws_reconnect_new_ap(s_edit_cfg.wifi_ssid, s_edit_cfg.wifi_pass);
     audio_io_play_tone(1400.0f, 60);
     show_view(SUBVIEW_MAIN);
 }
@@ -867,7 +868,6 @@ static void create_wifi_scan_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, is_scan_ko ? "취소" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
-        revert_edit_config();
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_WIFI);
     }, LV_EVENT_CLICKED, NULL);

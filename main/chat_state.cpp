@@ -27,6 +27,22 @@ static uint32_t s_last_barge_in_ms = 0;
 static uint32_t s_last_state_change_ms = 0;
 static SemaphoreHandle_t s_state_mutex = NULL;
 
+static ui_emotion_t s_speaking_emotion = UI_EMOTION_SPEAKING;
+
+static ui_emotion_t parse_speaking_emotion(const char *em_str) {
+    if (!em_str) return UI_EMOTION_SPEAKING;
+    if (strcmp(em_str, "happy") == 0) {
+        return UI_EMOTION_SPEAKING_HAPPY;
+    } else if (strcmp(em_str, "sad") == 0 || strcmp(em_str, "droopy") == 0) {
+        return UI_EMOTION_SPEAKING_SAD;
+    } else if (strcmp(em_str, "crying") == 0 || strcmp(em_str, "tear") == 0) {
+        return UI_EMOTION_SPEAKING_CRYING;
+    } else if (strcmp(em_str, "surprised") == 0) {
+        return UI_EMOTION_SPEAKING_SURPRISED;
+    }
+    return UI_EMOTION_SPEAKING;
+}
+
 static bool s_temp_clock_active = false;
 static uint32_t s_temp_clock_end_ms = 0;
 
@@ -307,6 +323,7 @@ void chat_state_set(chat_state_t new_state) {
             chat_state_stop_camera_preview();
             s_session_active = false;
             s_close_session_after_speaking = false;
+            s_speaking_emotion = UI_EMOTION_SPEAKING;
             audio_pipeline_enable_mic_streaming(false);
             display_ui_pause_auto_blink(false);
             {
@@ -323,16 +340,17 @@ void chat_state_set(chat_state_t new_state) {
         case CHAT_STATE_LISTENING:
             chat_state_stop_camera_preview();
             s_session_active = true;
+            s_speaking_emotion = UI_EMOTION_SPEAKING;
             s_listening_start_ms = now_ms;
             audio_pipeline_enable_mic_streaming(true);
-            display_ui_pause_auto_blink(true);
+            display_ui_pause_auto_blink(false);
             display_ui_set_emotion(UI_EMOTION_LISTENING, UI_EMOTION_LISTENING, is_ko ? "듣고 있어요..." : "LISTENING...");
             break;
 
         case CHAT_STATE_THINKING:
             audio_pipeline_enable_mic_streaming(false);
             if (!s_camera_preview_active) {
-                display_ui_pause_auto_blink(true);
+                display_ui_pause_auto_blink(false);
                 display_ui_set_emotion(UI_EMOTION_SLEEPY, UI_EMOTION_SLEEPY, is_ko ? "생각 중..." : "THINKING...");
             }
             break;
@@ -340,8 +358,8 @@ void chat_state_set(chat_state_t new_state) {
         case CHAT_STATE_SPEAKING:
             audio_pipeline_enable_mic_streaming(false);
             if (!s_camera_preview_active) {
-                display_ui_pause_auto_blink(true);
-                display_ui_set_emotion(UI_EMOTION_SPEAKING, UI_EMOTION_SPEAKING, is_ko ? "말하는 중..." : "SPEAKING...");
+                display_ui_pause_auto_blink(false);
+                display_ui_set_emotion(s_speaking_emotion, s_speaking_emotion, is_ko ? "말하는 중..." : "SPEAKING...");
             }
             break;
     }
@@ -544,9 +562,25 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                         // 서버에서 음성 출력 시작(SPEAKING)을 알리면 IDLE 상태 여부와 관계없이 스피커 수신 준비
                         audio_pipeline_set_discard_tts(false);
                         s_last_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
+
+                        // 말 내용에 따른 감정(emotion) 파싱
+                        cJSON *em_item = cJSON_GetObjectItem(root, "emotion");
+                        if (cJSON_IsString(em_item) && em_item->valuestring != NULL) {
+                            s_speaking_emotion = parse_speaking_emotion(em_item->valuestring);
+                            ESP_LOGI(TAG, "Server specified speaking emotion: %s -> %d", em_item->valuestring, s_speaking_emotion);
+                        } else {
+                            s_speaking_emotion = UI_EMOTION_SPEAKING;
+                        }
+
                         if (s_chat_state != CHAT_STATE_SPEAKING) {
                             ESP_LOGI(TAG, "Server status SPEAKING received -> Switching state to SPEAKING");
                             chat_state_set(CHAT_STATE_SPEAKING);
+                        } else {
+                            // 이미 SPEAKING 중인 상태에서 감정이 업데이트된 경우 즉시 화면 반영
+                            if (!s_camera_preview_active) {
+                                bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+                                display_ui_set_emotion(s_speaking_emotion, s_speaking_emotion, is_ko ? "말하는 중..." : "SPEAKING...");
+                            }
                         }
                     } else if (strcmp(message->valuestring, "LISTENING...") == 0 || strcmp(message->valuestring, "LISTENING") == 0) {
                         if (s_chat_state != CHAT_STATE_IDLE) {
@@ -594,6 +628,17 @@ void chat_state_handle_server_text(const char *text, size_t len) {
                         chat_state_stop_camera_preview();
                     } else {
                         ESP_LOGI(TAG, "Speaker still playing. Deferring preview stop until speaker finished.");
+                    }
+                    handled = true;
+                } else if (strcmp(type->valuestring, "emotion") == 0) {
+                    cJSON *em_item = cJSON_GetObjectItem(root, "emotion");
+                    if (cJSON_IsString(em_item) && em_item->valuestring != NULL) {
+                        s_speaking_emotion = parse_speaking_emotion(em_item->valuestring);
+                        ESP_LOGI(TAG, "Dynamic speaking emotion updated: %s -> %d", em_item->valuestring, s_speaking_emotion);
+                        if (s_chat_state == CHAT_STATE_SPEAKING && !s_camera_preview_active) {
+                            bool is_ko = (settings_manager_get_language() == APP_LANG_KO);
+                            display_ui_set_emotion(s_speaking_emotion, s_speaking_emotion, is_ko ? "말하는 중..." : "SPEAKING...");
+                        }
                     }
                     handled = true;
                 } else if (strcmp(type->valuestring, "set_llm_type") == 0) {

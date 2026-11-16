@@ -138,6 +138,60 @@ def clean_text_for_tts(text):
         cleaned += "."
     return cleaned
 
+def detect_emotion_from_text(text: str) -> str:
+    """
+    발화 텍스트의 감정과 분위기를 분석하여 눈 애니메이션 감정 태그를 도출합니다.
+    반환값: "happy" | "sad" | "crying" | "surprised" | "normal"
+    """
+    if not text:
+        return "normal"
+    
+    t = text.lower()
+
+    # 1. CRYING (울먹임, 눈물, 비통, 흐느낌)
+    crying_keywords = [
+        "눈물", "흑흑", "엉엉", "울컥", "울음", "훌쩍", "울먹", "속상해", "너무 슬퍼", 
+        "마음이 아파", "눈물이", "울었", "울고", "crying", "tear", "tears", "sob", "weep"
+    ]
+    for kw in crying_keywords:
+        if kw in t:
+            return "crying"
+
+    # 2. SAD (슬픔, 미안, 사과, 아쉬움, 위로, 유감, 아픔, 걱정, 시무룩)
+    sad_keywords = [
+        "죄송", "미안", "아쉽", "슬프", "안타깝", "유감", "힘내", "걱정", "불편", "속상", 
+        "어쩌죠", "낙담", "어려움", "아파", "아프", "피곤", "지치", "실패", "시무룩",
+        "힘드", "우울", "괴롭", "답답", "위로", "상처", "후회", "비극",
+        "sorry", "sad", "unfortunate", "apologize", "pity", "hurt", "worry", "regret", "depressed"
+    ]
+    for kw in sad_keywords:
+        if kw in t:
+            return "sad"
+
+    # 2. SURPRISED (놀람, 감탄, 신기, 발견, 충격, 환호)
+    surprised_keywords = [
+        "와!", "와아", "우와", "대박", "정말요", "진짜요", "놀랍", "대단", "신기", "세상에", 
+        "헉", "어머", "찾았", "발견", "비밀", "특별", "놀라", "굉장", "깜짝", "어라",
+        "wow", "amazing", "incredible", "really", "surprising", "unbelievable", "wonder", "omg", "whoa"
+    ]
+    for kw in surprised_keywords:
+        if kw in t:
+            return "surprised"
+
+    # 3. HAPPY (기쁨, 웃음, 인사, 감사, 칭찬, 축하, 긍정, 반가움, 사랑)
+    happy_keywords = [
+        "안녕", "반가", "고마", "감사", "좋아", "멋져", "기뻐", "행복", "사랑", "축하", 
+        "환영", "최고", "하하", "호호", "ㅎㅎ", "헤헤", "다행", "즐거", "화이팅", "응원", 
+        "완벽", "성공", "기대", "좋은", "귀여", "친절", "대환영", "반갑", "멋지", "좋네",
+        "훌륭", "예쁘", "재밌", "뿌듯", "웃음", "미소",
+        "happy", "glad", "thank", "welcome", "awesome", "great", "congrat", "love", "nice", "wonderful", "haha"
+    ]
+    for kw in happy_keywords:
+        if kw in t:
+            return "happy"
+
+    return "normal"
+
 # ==========================================
 # MP3 -> PCM (16kHz, 16-bit, Mono) 실시간 변환 함수
 # ==========================================
@@ -1014,8 +1068,14 @@ class GeminiLiveSession:
                                 self.replied_this_turn = True
                                 if first_chunk:
                                     first_chunk = False
-                                    await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+                                    await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING...", "emotion": "normal"}))
                                 await self.esp_ws.send(pcm16)
+
+                        text_part = part.get("text", "")
+                        if text_part:
+                            em = detect_emotion_from_text(text_part)
+                            if em != "normal":
+                                await self.esp_ws.send(json.dumps({"type": "emotion", "emotion": em}))
 
                 if server_content.get("turnComplete"):
                     print("\n[Gemini Realtime] turnComplete 수신 -> DONE 전송")
@@ -1248,6 +1308,10 @@ class OpenAIRealtimeSession:
                 elif event_type == "response.audio_transcript.delta":
                     txt = event.get("delta", "")
                     print(txt, end="", flush=True)
+                    if txt:
+                        cur_em = detect_emotion_from_text(txt)
+                        if cur_em != "normal":
+                            await self.esp_ws.send(json.dumps({"type": "emotion", "emotion": cur_em}))
 
                 # 4. 발화 완료
                 elif event_type == "response.audio.done":
@@ -1758,7 +1822,8 @@ async def play_tts_announcement(websocket, text, close_session=False):
             return
 
         print(f"[안내 음성] TTS 합성 완료 ({len(pcm)} bytes) -> ESP32로 안내 음성 전송 개시")
-        await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+        guidance_emotion = detect_emotion_from_text(text)
+        await websocket.send(json.dumps({"type": "status", "message": "SPEAKING...", "emotion": guidance_emotion}))
 
         chunk_len = 2048
         total_chunks = (len(pcm) + chunk_len - 1) // chunk_len
@@ -1877,12 +1942,23 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
                         pcm_queue.task_done()
                         break
                     
+                    sent_emotion = detect_emotion_from_text(entry.get("text", ""))
                     # 첫 오디오 청크 전송 시 ESP32 화면을 THINKING -> SPEAKING으로 즉시 전환
                     if first_sent:
                         t_playback_start = time.perf_counter()
                         if interrupted_holder is not None and interrupted_holder.get("active_ai_response"):
                             interrupted_holder["active_ai_response"]["t_playback_start"] = t_playback_start
-                        await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+                        await websocket.send(json.dumps({
+                            "type": "status",
+                            "message": "SPEAKING...",
+                            "emotion": sent_emotion
+                        }))
+                    else:
+                        # 문장 단위로 감정이 달라지는 경우 ESP32로 emotion 동적 전송
+                        await websocket.send(json.dumps({
+                            "type": "emotion",
+                            "emotion": sent_emotion
+                        }))
 
                     entry["status"] = "sending"
                     pcm_data = entry["pcm"]
@@ -2173,7 +2249,8 @@ async def resume_ai_response(websocket, session_data, chat_history, interrupted_
 
         remaining_text = " ".join([e["text"] for e in remaining_entries])
         print(f"\n[AI 이어말하기] {remaining_text}")
-        await websocket.send(json.dumps({"type": "status", "message": "SPEAKING..."}))
+        rem_emotion = detect_emotion_from_text(remaining_entries[0]["text"] if remaining_entries else remaining_text)
+        await websocket.send(json.dumps({"type": "status", "message": "SPEAKING...", "emotion": rem_emotion}))
 
         t_playback_start = None
         if interrupted_holder is not None:
@@ -2202,6 +2279,9 @@ async def resume_ai_response(websocket, session_data, chat_history, interrupted_
                         t_playback_start = time.perf_counter()
                         if interrupted_holder is not None and interrupted_holder.get("active_ai_response"):
                             interrupted_holder["active_ai_response"]["t_playback_start"] = t_playback_start
+                    else:
+                        sent_emotion = detect_emotion_from_text(entry.get("text", ""))
+                        await websocket.send(json.dumps({"type": "emotion", "emotion": sent_emotion}))
                     entry["status"] = "sending"
                     pcm_data = entry["pcm"]
                     for idx, i in enumerate(range(0, len(pcm_data), chunk_len)):

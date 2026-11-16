@@ -94,6 +94,16 @@ typedef struct {
  */
 int wifi_ws_scan_aps(wifi_ap_info_t *ap_list, int max_aps);
 
+/**
+ * @brief 새로운 Wi-Fi SSID 및 비밀번호로 설정 갱신 후 재연결 시도
+ */
+esp_err_t wifi_ws_reconnect_new_ap(const char *ssid, const char *pass);
+
+/**
+ * @brief Wi-Fi는 연결되어 있으나 WebSocket이 끊어진 경우 재연결/재시작 수행
+ */
+esp_err_t wifi_ws_check_and_reconnect(void);
+
 #ifdef __cplusplus
 }
 #endif

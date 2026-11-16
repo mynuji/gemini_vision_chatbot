@@ -309,6 +309,11 @@ static void chat_monitor_loop_task(void *pvParameters) {
                      wifi_ws_is_connected() ? "CONNECTED" : "NO",
                      (unsigned int)(esp_get_free_internal_heap_size() / 1024));
             last_status_log_time = now;
+
+            // Wi-Fi는 정상이지만 WebSocket이 끊어져 있다면 자동 재접속/재시작 트리거
+            if (wifi_ws_is_wifi_connected() && !wifi_ws_is_connected()) {
+                wifi_ws_check_and_reconnect();
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));

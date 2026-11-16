@@ -19,8 +19,10 @@ static const char *TAG = "WIFI_WS";
 static esp_websocket_client_handle_t s_ws_client = NULL;
 static volatile bool s_is_ws_connected = false;
 static volatile bool s_is_wifi_connected = false;
+static volatile bool s_is_scanning = false;
 static SemaphoreHandle_t s_send_mutex = NULL;
 static esp_timer_handle_t s_wifi_disconn_timer = NULL;
+static esp_timer_handle_t s_ws_watchdog_timer = NULL;
 
 static wifi_ws_state_cb_t s_state_cb = NULL;
 static wifi_ws_rx_cb_t s_rx_cb = NULL;
@@ -83,8 +85,79 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         }
         break;
 
+    case WEBSOCKET_EVENT_CLOSED:
+        ESP_LOGW(TAG, "WebSocket Closed cleanly by server or client");
+        s_is_ws_connected = false;
+        if (s_is_wifi_connected) {
+            notify_state(WIFI_WS_STATE_WS_DISCONNECTED, "JETSON DISCONNECTED");
+        }
+        break;
+
     default:
         break;
+    }
+}
+
+static esp_err_t start_websocket_client_internal(void) {
+    if (s_ws_uri[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_ws_client != NULL) {
+        esp_websocket_client_stop(s_ws_client);
+        esp_websocket_client_destroy(s_ws_client);
+        s_ws_client = NULL;
+    }
+
+    esp_websocket_client_config_t ws_cfg = {};
+    ws_cfg.uri = s_ws_uri;
+    ws_cfg.reconnect_timeout_ms = 3000;
+    ws_cfg.network_timeout_ms = 10000;
+    ws_cfg.ping_interval_sec = 15;      // 공유기 NAT 세션 만료 방지용 15초 하트비트 Ping
+    ws_cfg.pingpong_timeout_sec = 20;   // 서버(Jetson) 부하/지연 고려하여 20초로 완화
+    ws_cfg.enable_close_reconnect = true; // Clean Close 프레임 수신 시에도 태스크 종료되지 않고 자동 재접속!
+    ws_cfg.task_stack = 8192;
+    ws_cfg.buffer_size = 8192;  // 카메라 JPEG 및 오디오 패킷 초고속 송수신 (8KB 청크)
+
+    ESP_LOGI(TAG, "Starting WebSocket client with URI: %s (Heap before init: %uKB)",
+             s_ws_uri, (unsigned int)(esp_get_free_internal_heap_size() / 1024));
+    s_ws_client = esp_websocket_client_init(&ws_cfg);
+    if (s_ws_client != NULL) {
+        esp_websocket_register_events(s_ws_client, WEBSOCKET_EVENT_ANY, websocket_event_handler, (void *)s_ws_client);
+        esp_websocket_client_start(s_ws_client);
+        notify_state(WIFI_WS_STATE_WS_CONNECTING, "CONNECTING TO JETSON...");
+        return ESP_OK;
+    } else {
+        ESP_LOGE(TAG, "esp_websocket_client_init failed! Out of memory? (FreeHeap: %uKB)",
+                 (unsigned int)(esp_get_free_internal_heap_size() / 1024));
+        return ESP_ERR_NO_MEM;
+    }
+}
+
+esp_err_t wifi_ws_check_and_reconnect(void) {
+    if (!s_is_wifi_connected || s_ws_uri[0] == '\0' || s_is_scanning) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_is_ws_connected && s_ws_client != NULL && esp_websocket_client_is_connected(s_ws_client)) {
+        return ESP_OK;
+    }
+
+    // 과도한 재시작 방지 (최소 4초 간격)
+    static uint32_t s_last_reconnect_attempt = 0;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (now - s_last_reconnect_attempt < 4000) {
+        return ESP_OK;
+    }
+    s_last_reconnect_attempt = now;
+
+    ESP_LOGW(TAG, "WebSocket is disconnected while Wi-Fi is OK. Triggering reconnect/restart...");
+    return start_websocket_client_internal();
+}
+
+static void ws_watchdog_timer_cb(void *arg) {
+    if (s_is_wifi_connected && !s_is_ws_connected && !s_is_scanning) {
+        wifi_ws_check_and_reconnect();
     }
 }
 
@@ -130,33 +203,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             esp_timer_start_once(s_wifi_disconn_timer, 2500000);
         }
 
-        static bool scanned_once = false;
-        if (reason == 201 && !scanned_once) {
-            scanned_once = true;
-            ESP_LOGI(TAG, "Scanning for visible 2.4GHz Wi-Fi networks nearby...");
-            wifi_scan_config_t scan_cfg = {};
-            esp_err_t scan_err = esp_wifi_scan_start(&scan_cfg, true);
-            if (scan_err == ESP_OK) {
-                uint16_t ap_num = 0;
-                esp_wifi_scan_get_ap_num(&ap_num);
-                if (ap_num > 0) {
-                    wifi_ap_record_t *ap_list = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * ap_num);
-                    if (ap_list) {
-                        esp_wifi_scan_get_ap_records(&ap_num, ap_list);
-                        ESP_LOGI(TAG, "==== Found %d 2.4GHz Wi-Fi APs ====", ap_num);
-                        for (int i = 0; i < ap_num && i < 20; i++) {
-                            ESP_LOGI(TAG, "  - SSID: '%s' (RSSI: %d, Ch: %d)",
-                                     ap_list[i].ssid, ap_list[i].rssi, ap_list[i].primary);
-                        }
-                        free(ap_list);
-                    }
-                } else {
-                    ESP_LOGW(TAG, "No Wi-Fi networks found in 2.4GHz scan!");
-                }
-            }
+        if (!s_is_scanning) {
+            esp_wifi_connect();
+        } else {
+            ESP_LOGI(TAG, "Wi-Fi disconnected event received during AP scan; suppressing auto-reconnect.");
         }
-
-        esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         esp_ip4addr_ntoa(&event->ip_info.ip, s_ip_str, sizeof(s_ip_str));
@@ -177,32 +228,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
         // IP를 받았으므로 WebSocket 접속 시작
         if (s_ws_uri[0] != '\0') {
-            if (s_ws_client != NULL) {
-                esp_websocket_client_stop(s_ws_client);
-                esp_websocket_client_destroy(s_ws_client);
-                s_ws_client = NULL;
-            }
-
-            esp_websocket_client_config_t ws_cfg = {};
-            ws_cfg.uri = s_ws_uri;
-            ws_cfg.reconnect_timeout_ms = 2000;
-            ws_cfg.network_timeout_ms = 8000;
-            ws_cfg.ping_interval_sec = 15;      // 공유기 NAT 세션 만료 방지용 15초 하트비트 Ping
-            ws_cfg.pingpong_timeout_sec = 10;
-            ws_cfg.task_stack = 8192;
-            ws_cfg.buffer_size = 8192;  // 카메라 JPEG 및 오디오 패킷 초고속 송수신 (8KB 청크)
-
-            ESP_LOGI(TAG, "Starting WebSocket client with URI: %s (Heap before init: %uKB)",
-                     s_ws_uri, (unsigned int)(esp_get_free_internal_heap_size() / 1024));
-            s_ws_client = esp_websocket_client_init(&ws_cfg);
-            if (s_ws_client != NULL) {
-                esp_websocket_register_events(s_ws_client, WEBSOCKET_EVENT_ANY, websocket_event_handler, (void *)s_ws_client);
-                esp_websocket_client_start(s_ws_client);
-                notify_state(WIFI_WS_STATE_WS_CONNECTING, "CONNECTING TO JETSON...");
-            } else {
-                ESP_LOGE(TAG, "esp_websocket_client_init failed! Out of memory? (FreeHeap: %uKB)",
-                         (unsigned int)(esp_get_free_internal_heap_size() / 1024));
-            }
+            start_websocket_client_internal();
         }
     }
 }
@@ -292,7 +318,16 @@ esp_err_t wifi_ws_start(const char *ssid, const char *pass, const char *ws_uri) 
     // 실시간 오디오 저지연 전송을 위해 절전 모드 비활성화
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
-    ESP_LOGI(TAG, "Wi-Fi STA started for SSID: %s (Power Save: NONE)", ssid);
+    // WebSocket 연결 상태 자동 복구 워치독 타이머 (4초 주기)
+    if (s_ws_watchdog_timer == NULL) {
+        esp_timer_create_args_t t_args = {};
+        t_args.callback = ws_watchdog_timer_cb;
+        t_args.name = "ws_watchdog";
+        esp_timer_create(&t_args, &s_ws_watchdog_timer);
+        esp_timer_start_periodic(s_ws_watchdog_timer, 4000000);
+    }
+
+    ESP_LOGI(TAG, "Wi-Fi STA started for SSID: %s (Power Save: NONE, WS Watchdog active)", ssid);
     return ESP_OK;
 }
 
@@ -362,27 +397,70 @@ int wifi_ws_scan_aps(wifi_ap_info_t *out_list, int max_aps) {
     if (!out_list || max_aps <= 0) return 0;
 
     ESP_LOGI(TAG, "Starting Wi-Fi AP scan for up to %d networks...", max_aps);
+
+    // 1. Wi-Fi 초기화 및 시작 상태 점검 (미시작 시 STA 모드로 자동 시작)
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_err_t mode_err = esp_wifi_get_mode(&mode);
+    if (mode_err != ESP_OK || mode == WIFI_MODE_NULL) {
+        ESP_LOGI(TAG, "Wi-Fi not started yet. Setting STA mode and starting...");
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_start();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    // 2. 스캔 플래그 활성화 -> 백그라운드 이벤트 루프의 재연결 시도 억제
+    s_is_scanning = true;
+
+    // 3. 미연결 상태일 때 기존 연결 시도(CONNECTING 상태)를 명시적으로 해제
+    // ESP-IDF는 Station이 CONNECTING 상태일 때 esp_wifi_scan_start()를 호출하면 ESP_ERR_WIFI_STATE를 반환함
+    if (!s_is_wifi_connected) {
+        ESP_LOGI(TAG, "Wi-Fi not connected: calling esp_wifi_disconnect() to stop ongoing connection attempts");
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+
+    // 4. 스캔 설정 (Active scan, 채널별 최소 100ms / 최대 200ms)
     wifi_scan_config_t scan_cfg = {};
     scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
     scan_cfg.scan_time.active.min = 100;
-    scan_cfg.scan_time.active.max = 250;
+    scan_cfg.scan_time.active.max = 200;
 
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+    if (err == ESP_ERR_WIFI_STATE) {
+        ESP_LOGW(TAG, "esp_wifi_scan_start returned ESP_ERR_WIFI_STATE, retrying after disconnect...");
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(200));
+        err = esp_wifi_scan_start(&scan_cfg, true);
+    }
+
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_scan_start failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "esp_wifi_scan_start failed: %s (0x%x)", esp_err_to_name(err), err);
+        s_is_scanning = false;
+        if (!s_is_wifi_connected) {
+            esp_wifi_connect();
+        }
         return 0;
     }
 
     uint16_t ap_num = 0;
     esp_wifi_scan_get_ap_num(&ap_num);
+    ESP_LOGI(TAG, "esp_wifi_scan_get_ap_num found %u APs", ap_num);
     if (ap_num == 0) {
         ESP_LOGW(TAG, "No Wi-Fi APs found in scan.");
+        s_is_scanning = false;
+        if (!s_is_wifi_connected) {
+            esp_wifi_connect();
+        }
         return 0;
     }
 
     wifi_ap_record_t *records = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * ap_num);
     if (!records) {
         ESP_LOGE(TAG, "Failed to allocate memory for AP scan records");
+        s_is_scanning = false;
+        if (!s_is_wifi_connected) {
+            esp_wifi_connect();
+        }
         return 0;
     }
 
@@ -411,8 +489,48 @@ int wifi_ws_scan_aps(wifi_ap_info_t *out_list, int max_aps) {
     }
 
     free(records);
+    s_is_scanning = false;
+
+    // 미연결 상태였다면 재연결 시도 재개
+    if (!s_is_wifi_connected) {
+        esp_wifi_connect();
+    }
+
     ESP_LOGI(TAG, "Scan finished: returned %d unique APs.", count);
     return count;
+}
+
+esp_err_t wifi_ws_reconnect_new_ap(const char *ssid, const char *pass) {
+    if (ssid == NULL || ssid[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_LOGI(TAG, "Reconnecting to new Wi-Fi AP: SSID='%s'", ssid);
+
+    // 기존 WebSocket 연결 종료
+    if (s_ws_client != NULL) {
+        esp_websocket_client_stop(s_ws_client);
+        esp_websocket_client_destroy(s_ws_client);
+        s_ws_client = NULL;
+    }
+    s_is_ws_connected = false;
+    s_is_wifi_connected = false;
+
+    // 기존 Wi-Fi 연결 해제 후 새 config 설정
+    esp_wifi_disconnect();
+
+    wifi_config_t wifi_config = {};
+    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    if (pass != NULL && pass[0] != '\0') {
+        strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password) - 1);
+    }
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wifi_config.sta.threshold.rssi = -95;
+    wifi_config.sta.threshold.authmode = (pass != NULL && pass[0] != '\0') ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    notify_state(WIFI_WS_STATE_WIFI_CONNECTING, "CONNECTING WIFI...");
+    return esp_wifi_connect();
 }
 
 esp_err_t wifi_ws_send_llm_type(uint8_t llm_type) {
