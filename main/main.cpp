@@ -387,6 +387,7 @@ extern "C" void app_main(void) {
     // [5] OV2640/OV3660 카메라 초기화 및 부팅 자가 진단
     esp_err_t cam_err = camera_io_init();
     if (cam_err == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(100)); // 센서 DVP 파이프라인 안정화 대기
         uint8_t *jpeg = NULL;
         size_t jpeg_len = 0;
         uint16_t w = 0, h = 0;
@@ -401,6 +402,12 @@ extern "C" void app_main(void) {
         // 자가 진단 완료 후, 카메라를 즉시 소프트웨어 저전력 대기(Software Standby) 상태로 전환!
         // 평상시(대기/시계/눈 모드) 센서 내부 ADC/픽셀 어레이를 꺼서 발열을 원천 차단하고 On-Demand로 필요할 때만 켭니다.
         camera_io_standby();
+
+        // 카메라 테스트 화면 표시 완료 후 부팅 시계 화면 복원
+        if (s_boot_clock_active) {
+            display_ui_show_clock_mode(true);
+            display_ui_update_clock();
+        }
     } else {
         ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
     }

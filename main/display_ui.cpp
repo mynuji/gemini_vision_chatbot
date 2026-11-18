@@ -989,6 +989,7 @@ void display_ui_show_camera_snapshot(const uint8_t *jpeg_buf, size_t jpeg_len, u
         lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_status_label, "CAMERA TEST OK");
         lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -15);
+        lv_obj_move_foreground(s_status_label);
       }
       lvgl_port_unlock();
     }

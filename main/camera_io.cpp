@@ -116,6 +116,16 @@ esp_err_t camera_io_init(void) {
         s->set_reg(s, 0x302C, 0xC0, 0x00);
     }
 
+    // Seeed Studio XIAO ESP32S3 Sense OV3660 센서 PLL 및 DVP 파이프라인 안정화 대기
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    // 기동 직후의 불완전한 첫 더미 프레임 플러시 (센서 워밍업)
+    camera_fb_t *dummy = esp_camera_fb_get();
+    if (dummy) {
+        esp_camera_fb_return(dummy);
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
+
     s_initialized = true;
     s_in_standby = false;
     xSemaphoreGive(s_cam_mutex);
