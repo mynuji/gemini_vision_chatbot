@@ -2039,8 +2039,9 @@ def calculate_remaining_sentences(sentences_info, played_bytes):
     """
     ESP32 스피커에서 실제 재생된 바이트 수(played_bytes)를 기준으로,
     사용자가 아직 듣지 못했거나 듣는 도중 중단된 문장들을 정확히 추출합니다.
+    - 문장을 다 들었거나(90% 이상 재생) 재생이 끝난 문장은 절대 다시 반복하지 않습니다.
     """
-    if not sentences_info:
+    if not sentences_info or played_bytes is None:
         return []
     
     cum_bytes = 0
@@ -2068,15 +2069,37 @@ def calculate_remaining_sentences(sentences_info, played_bytes):
         # 2. 이 문장 재생 도중에 끼어들기가 발생한 경우
         elif start_byte < played_bytes < end_byte:
             played_in_sent = played_bytes - start_byte
-            # 문장의 65% 미만만 들었다면 문장의 핵심을 놓쳤으므로 이 문장부터 다시 재생
-            if played_in_sent < 0.65 * pcm_len:
+            # 문장의 60% 미만만 들었다면 문장 앞부분에서 끊겼으므로 이 문장부터 이어말하기
+            if played_in_sent < 0.60 * pcm_len:
                 remaining.append(rem_entry)
-            # 65% 이상 들었더라도 뒤에 남은 문장이 없다면 마지막 문장을 다시 들려줌
-            elif idx == len(sentences_info) - 1:
-                remaining.append(rem_entry)
+            # 60% 이상 들었다면 이 문장은 이미 전달된 것으로 간주하고 제외 (반복 방지)
         # 3. 이 문장을 완전히 다 들은 경우 (played_bytes >= end_byte) -> 이미 청취 완료되었으므로 제외
         else:
             continue
+            
+    return remaining
+
+def get_valid_interrupted_session(interrupted_holder):
+    """
+    보관된 끼어들기 세션이 유효한지(10초 이내 생성 및 미재생 문장 존재) 검증하고 반환.
+    - AI가 발화를 이미 마쳤거나 10초가 지난 세션은 자동 무효화하여 이전 답변 반복을 차단합니다.
+    """
+    if not interrupted_holder or not isinstance(interrupted_holder, dict):
+        return None
+    session = interrupted_holder.get("session")
+    if not session:
+        return None
+    created_at = session.get("created_at", 0)
+    # 10초 이상 지난 끼어들기 세션은 만료 처리하여 직전 답변 반복 차단
+    if time.perf_counter() - created_at > 10.0:
+        print(f"[서버] 보관된 끼어들기 세션 만료 (10초 경과) -> 폐기")
+        interrupted_holder["session"] = None
+        return None
+    remaining = session.get("remaining_entries", [])
+    if not remaining and not session.get("was_thinking_only"):
+        interrupted_holder["session"] = None
+        return None
+    return session
             
     # 혹시 남은 문장이 계산되지 않았는데 끼어들기가 들어온 경우 마지막 문장 복원
     if not remaining and sentences_info:
@@ -2289,20 +2312,15 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
                 "t_playback_start": t_playback_start
             }
             interrupted_holder["active_ai_response"] = None
-            # 이미 끼어들기가 발생해 session이 설정되어 있는 경우 덮어써서 지우지 않음!
-            if interrupted_holder.get("session") is None:
-                interrupted_holder["session"] = None
+            # 정상 완료되었으므로 이어말하기 세션은 완전히 초기화하여 무음 반복 방지
+            interrupted_holder["session"] = None
 
-        # 끼어들기 세션이 이미 저장되어 있지 않은 정상 완료 시에만 DONE 전송
-        if interrupted_holder is None or interrupted_holder.get("session") is None:
-            print(f"[서버] AI 답변 전송 완료 (close_session={close_session_after}) -> DONE 전송 (클라이언트 스피커 재생 완료 대기)")
-            await websocket.send(json.dumps({
-                "type": "status",
-                "message": "DONE",
-                "close_session": close_session_after
-            }))
-        else:
-            print(f"[서버] AI 답변 전송 완료 시점에 이미 끼어들기 감지됨 -> DONE 전송 생략 및 이어말하기 세션 유지")
+        print(f"[서버] AI 답변 전송 완료 (close_session={close_session_after}) -> DONE 전송 (클라이언트 스피커 재생 완료 대기)")
+        await websocket.send(json.dumps({
+            "type": "status",
+            "message": "DONE",
+            "close_session": close_session_after
+        }))
 
     except asyncio.CancelledError:
         print(f"\n[Barge-in 감지] 이전 AI 발화 중단 및 오디오 플러시 완료")
@@ -2361,7 +2379,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
                     "close_session_after": close_session_after,
                     "was_thinking_only": False,
                     "completed_at": time.perf_counter(),
-                    "t_playback_start": t_playback_start
+                    "t_playback_start": t_playback_start,
+                    "created_at": time.perf_counter()
                 }
                 interrupted_holder["last_completed_session"] = interrupted_holder["session"]
                 rem_texts = " / ".join([e["text"] for e in remaining_entries])
@@ -2376,7 +2395,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
                     "close_session_after": close_session_after,
                     "was_thinking_only": True,
                     "completed_at": time.perf_counter(),
-                    "t_playback_start": None
+                    "t_playback_start": None,
+                    "created_at": time.perf_counter()
                 }
                 interrupted_holder["last_completed_session"] = interrupted_holder["session"]
                 print(f"[서버] THINKING 중 끼어들기 발생: 이전 질문('{user_text}') 보관 완료")
@@ -2516,17 +2536,13 @@ async def resume_ai_response(websocket, session_data, chat_history, interrupted_
                 "t_playback_start": t_playback_start
             }
             interrupted_holder["active_ai_response"] = None
-            if interrupted_holder.get("session") is None:
-                interrupted_holder["session"] = None
+            interrupted_holder["session"] = None
 
-        if interrupted_holder is None or interrupted_holder.get("session") is None:
-            await websocket.send(json.dumps({
-                "type": "status",
-                "message": "DONE",
-                "close_session": session_data.get("close_session_after", False)
-            }))
-        else:
-            print(f"[서버] AI 이어말하기 완료 시점에 이미 끼어들기 감지됨 -> DONE 전송 생략 및 세션 유지")
+        await websocket.send(json.dumps({
+            "type": "status",
+            "message": "DONE",
+            "close_session": session_data.get("close_session_after", False)
+        }))
 
     except asyncio.CancelledError:
         print("\n[Barge-in 감지] 이어말하기 도중 다시 끼어들기 발생")
@@ -2553,7 +2569,8 @@ async def resume_ai_response(websocket, session_data, chat_history, interrupted_
                 "close_session_after": session_data.get("close_session_after", False),
                 "was_thinking_only": False,
                 "completed_at": time.perf_counter(),
-                "t_playback_start": t_playback_start
+                "t_playback_start": t_playback_start,
+                "created_at": time.perf_counter()
             }
             interrupted_holder["last_completed_session"] = interrupted_holder["session"]
             rem_texts = " / ".join([e["text"] for e in remaining])
@@ -3078,9 +3095,10 @@ async def handler(websocket, path=None):
                                             )
                                         else:
                                             # TV 소리, 잡음, 무음 등 의미 있는 발화가 아님 -> 직전 답변 이어말하기 검토
-                                            if interrupted_holder.get("session") is not None:
-                                                saved_session = interrupted_holder["session"]
-                                                interrupted_holder["session"] = None
+                                            saved_session = get_valid_interrupted_session(interrupted_holder)
+                                            interrupted_holder["session"] = None
+                                            interrupted_holder["last_completed_session"] = None
+                                            if saved_session is not None:
                                                 print(f"[서버] 의미 있는 발화 없음 ('{user_text}'). 직전 AI 답변 이어서 재생!")
                                                 ai_task = asyncio.create_task(
                                                     resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
@@ -3090,9 +3108,10 @@ async def handler(websocket, path=None):
                                                 await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                     else:
                                         audio_buffer = []
-                                        if interrupted_holder.get("session") is not None:
-                                            saved_session = interrupted_holder["session"]
-                                            interrupted_holder["session"] = None
+                                        saved_session = get_valid_interrupted_session(interrupted_holder)
+                                        interrupted_holder["session"] = None
+                                        interrupted_holder["last_completed_session"] = None
+                                        if saved_session is not None:
                                             print("[서버] 오디오 버퍼 없음 -> 직전 AI 답변 이어서 재생!")
                                             ai_task = asyncio.create_task(
                                                 resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
@@ -3147,8 +3166,16 @@ async def handler(websocket, path=None):
                                             except asyncio.CancelledError:
                                                 pass
                                         
-                                        # 활성 응답 또는 직전 완료 응답에서 스피커 실제 재생 진도율에 맞는 남은 문장 추출
-                                        target_session = interrupted_holder.get("active_ai_response") or interrupted_holder.get("last_completed_session") or interrupted_holder.get("session")
+                                        # 활성 응답 또는 방금 전송되어 스피커 재생 중인 응답에서만 남은 문장 추출
+                                        target_session = interrupted_holder.get("active_ai_response")
+                                        if not target_session and interrupted_holder.get("last_completed_session"):
+                                            last_sess = interrupted_holder["last_completed_session"]
+                                            # 전송 완료 후 실제 스피커 재생 예상 시간 이내인 경우에만 끼어들기 인정
+                                            total_spk_sec = sum(len(e.get("pcm") or b"") for e in last_sess.get("sentences", [])) / 32000.0
+                                            elapsed_since_done = time.perf_counter() - last_sess.get("completed_at", 0)
+                                            if elapsed_since_done <= total_spk_sec + 0.3:
+                                                target_session = last_sess
+
                                         if target_session:
                                             sentences = target_session.get("sentences") or target_session.get("remaining_entries") or []
                                             t_start = target_session.get("t_playback_start")
@@ -3179,7 +3206,8 @@ async def handler(websocket, path=None):
                                                     "remaining_entries": remaining,
                                                     "full_answer": target_session.get("full_answer", ""),
                                                     "close_session_after": target_session.get("close_session_after", False),
-                                                    "was_thinking_only": False
+                                                    "was_thinking_only": False,
+                                                    "created_at": time.perf_counter()
                                                 }
                                                 rem_texts = " / ".join([e["text"] for e in remaining])
                                                 print(f"[서버] 이어말하기 세션 준비 완료 ({len(remaining)}개 문장): {rem_texts}")
@@ -3189,11 +3217,16 @@ async def handler(websocket, path=None):
                                                     "remaining_entries": [],
                                                     "full_answer": "",
                                                     "close_session_after": target_session.get("close_session_after", False),
-                                                    "was_thinking_only": True
+                                                    "was_thinking_only": True,
+                                                    "created_at": time.perf_counter()
                                                 }
                                                 print(f"[서버] THINKING 중단 복구 준비 완료: 이전 질문('{target_session.get('user_query')}')")
                                             else:
                                                 interrupted_holder["session"] = None
+                                        else:
+                                            # 이미 출력이 끝난 후의 인터럽트는 단순 상태 정리에 불과하므로 이전 답변 세션을 절대 만들지 않음
+                                            interrupted_holder["session"] = None
+                                            interrupted_holder["last_completed_session"] = None
 
                                     is_speaking = False
                                     silence_time = 0.0
@@ -3313,9 +3346,10 @@ async def handler(websocket, path=None):
                                                         handle_user_turn(user_text, asr_ms)
                                                     )
                                                 else:
-                                                    if interrupted_holder.get("session") is not None:
-                                                        saved_session = interrupted_holder["session"]
-                                                        interrupted_holder["session"] = None
+                                                    saved_session = get_valid_interrupted_session(interrupted_holder)
+                                                    interrupted_holder["session"] = None
+                                                    interrupted_holder["last_completed_session"] = None
+                                                    if saved_session is not None:
                                                         print(f"[서버] 의미 있는 발화 없음 ('{user_text}'). 직전 AI 답변 이어서 재생!")
                                                         ai_task = asyncio.create_task(
                                                             resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
@@ -3325,9 +3359,10 @@ async def handler(websocket, path=None):
                                                         await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                             else:
                                                 print("[서버] 유효한 음성 신호가 감지되지 않아 직전 답변 확인.")
-                                                if interrupted_holder.get("session") is not None:
-                                                    saved_session = interrupted_holder["session"]
-                                                    interrupted_holder["session"] = None
+                                                saved_session = get_valid_interrupted_session(interrupted_holder)
+                                                interrupted_holder["session"] = None
+                                                interrupted_holder["last_completed_session"] = None
+                                                if saved_session is not None:
                                                     print("[서버] 무음/미약 신호 -> 직전 AI 답변 이어서 재생!")
                                                     ai_task = asyncio.create_task(
                                                         resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
@@ -3336,9 +3371,10 @@ async def handler(websocket, path=None):
                                                     await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
                                     else:
                                         print("[제어 명령] 음성 발화 완료 요청되었으나 오디오 버퍼가 비어있음")
-                                        if interrupted_holder.get("session") is not None:
-                                            saved_session = interrupted_holder["session"]
-                                            interrupted_holder["session"] = None
+                                        saved_session = get_valid_interrupted_session(interrupted_holder)
+                                        interrupted_holder["session"] = None
+                                        interrupted_holder["last_completed_session"] = None
+                                        if saved_session is not None:
                                             print("[서버] 버퍼 비어있음 -> 직전 AI 답변 이어서 재생!")
                                             ai_task = asyncio.create_task(
                                                 resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
@@ -3402,9 +3438,10 @@ async def handler(websocket, path=None):
                                                     handle_user_turn(user_text, asr_ms, close_session_after=True)
                                                 )
                                             else:
-                                                if interrupted_holder.get("session") is not None:
-                                                    saved_session = interrupted_holder["session"]
-                                                    interrupted_holder["session"] = None
+                                                saved_session = get_valid_interrupted_session(interrupted_holder)
+                                                interrupted_holder["session"] = None
+                                                interrupted_holder["last_completed_session"] = None
+                                                if saved_session is not None:
                                                     ai_task = asyncio.create_task(
                                                         resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                                     )
@@ -3412,9 +3449,10 @@ async def handler(websocket, path=None):
                                                     print("[서버] 인식된 텍스트가 없어 대기 상태(DONE, 세션 종료)를 클라이언트로 전송합니다.")
                                                     await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": True}))
                                         else:
-                                            if interrupted_holder.get("session") is not None:
-                                                saved_session = interrupted_holder["session"]
-                                                interrupted_holder["session"] = None
+                                            saved_session = get_valid_interrupted_session(interrupted_holder)
+                                            interrupted_holder["session"] = None
+                                            interrupted_holder["last_completed_session"] = None
+                                            if saved_session is not None:
                                                 ai_task = asyncio.create_task(
                                                     resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                                 )

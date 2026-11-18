@@ -449,13 +449,14 @@ static void audio_fetch_task(void *pvParameters) {
             }
             int32_t l_rms = (l_num > 0) ? (int32_t)sqrt(l_sum_sq / l_num) : 0;
 
-            // [스피커 잔향 오인식 원천 차단]
-            // 스피커 재생 완료 직후 방 안의 물리적 잔향(Echo/Reverb) 및 DMA 지연음 소거를 위해
-            // LISTENING 모드 진입 후 최초 600ms 동안은 마이크 VAD 및 발화 감지를 강제 초기화!
-            if (now_ms - s_mic_stream_start_ms > 600) {
-                if (res->vad_state == VAD_SPEECH && l_peak >= 900 && l_rms >= 200) {
+            // [스피커 잔향 및 실내 배경 노이즈 오인식 원천 차단]
+            // 1) LISTENING 모드 진입 직후 700ms 동안은 잔류 반사음 소거 가드
+            // 2) 일반 실내 배경 노이즈(팬 소음, 호흡, 진동)를 넘어서는 명확한 사용자 육성(Peak >= 2200, RMS >= 450)
+            // 3) 연속 7프레임(약 224ms) 이상 실제 육성 에너지가 유지될 때만 발화 시작 인정
+            if (now_ms - s_mic_stream_start_ms > 700) {
+                if (res->vad_state == VAD_SPEECH && l_peak >= 2200 && l_rms >= 450) {
                     s_vad_speech_frames++;
-                    if (s_vad_speech_frames >= 5) {
+                    if (s_vad_speech_frames >= 7) {
                         s_last_speech_ms = now_ms;
                         if (!s_has_user_spoken) {
                             s_has_user_spoken = true;
@@ -465,6 +466,10 @@ static void audio_fetch_task(void *pvParameters) {
                         chat_state_activity_occurred(); // 60초 침묵 타이머 리셋
                     }
                 } else {
+                    if (s_has_user_spoken && res->vad_state == VAD_SPEECH && l_peak >= 1600 && l_rms >= 300) {
+                        // 이미 발화 중일 때는 문장 중간 음절 유지
+                        s_last_speech_ms = now_ms;
+                    }
                     s_vad_speech_frames = 0;
                 }
             } else {
@@ -474,23 +479,23 @@ static void audio_fetch_task(void *pvParameters) {
 
             if (s_has_user_spoken) {
                 // 발화 종료 판정:
-                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 700ms) 침묵이 650ms 이상 지속될 때
+                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 700ms 경과) 침묵이 700ms 이상 지속될 때
                 // 2) 최대 발화 제한: 사용자가 말을 시작한 시점(s_speech_start_ms)으로부터 15초 초과 시
-                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 700) && (now_ms - s_last_speech_ms > 650);
+                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 700) && (now_ms - s_last_speech_ms > 700);
                 bool max_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 15000);
 
                 if (silence_timeout || max_timeout) {
-                    uint32_t total_speech_dur = s_last_speech_ms - s_speech_start_ms;
+                    uint32_t total_speech_dur = (s_last_speech_ms >= s_speech_start_ms) ? (s_last_speech_ms - s_speech_start_ms) : 0;
                     s_has_user_spoken = false;
                     s_vad_speech_frames = 0;
                     s_speech_start_ms = 0;
 
-                    // 최소 350ms 이상의 실질적 발화 지속시간이 검증되었을 때만 서버로 speech_end 전송
-                    if (total_speech_dur >= 350) {
+                    // 최소 450ms 이상의 실질적 발화 지속시간이 검증되었을 때만 서버로 speech_end 전송
+                    if (total_speech_dur >= 450) {
                         ESP_LOGI(TAG, "User speech finished (duration=%ums) -> Forwarding speech_end", (unsigned int)total_speech_dur);
                         chat_state_handle_speech_end();
                     } else {
-                        ESP_LOGW(TAG, "Speech too short (%ums < 350ms) -> Ignored as background glitch/cough", (unsigned int)total_speech_dur);
+                        ESP_LOGW(TAG, "Speech too short (%ums < 450ms) -> Ignored as background glitch/cough", (unsigned int)total_speech_dur);
                     }
                 }
             } else {
