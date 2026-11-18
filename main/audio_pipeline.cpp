@@ -148,12 +148,16 @@ static void spk_play_task(void *pvParameters) {
                 prebuf_wait_count = 0;
                 if (chat_state_get() == CHAT_STATE_SPEAKING && cur_buffered == 0) {
                     empty_spk_count++;
-                    // 서버로부터 DONE이 이미 수신된 경우 신속히 완료(40ms), 아직 미수신(문장 간 합성 지연)인 경우 최대 3초(150*20ms) 대기
-                    int max_empty = s_server_done ? 2 : 150;
+                    // 서버로부터 DONE이 이미 수신된 경우: I2S DMA 버퍼(약 200ms)의 소리가 스피커에서 완전히 출력되도록
+                    // 최소 12회(240ms) 동안 대기 후 침묵(Silence)을 밀어넣어 잔여음을 완전히 소거!
+                    int max_empty = s_server_done ? 12 : 150;
                     if (empty_spk_count >= max_empty) {
                         empty_spk_count = 0;
                         s_is_speaker_playing = false;
                         s_server_done = false;
+                        // DMA 버퍼를 무음으로 완전히 밀어내어 틱/에코 차단
+                        audio_io_spk_write_silence(50);
+                        vTaskDelay(pdMS_TO_TICKS(150)); // 물리적 잔향 소거 대기 (150ms)
                         chat_state_handle_speaker_finished();
                     }
                 } else {
@@ -206,7 +210,8 @@ static void spk_play_task(void *pvParameters) {
             // 버퍼가 비어있음
             // 서버 완료 신호가 왔거나, 서버로부터 3초(150 * 20ms) 동안 후속 패킷이 없으면 재생 종료
             if (s_server_done || (chat_state_get() == CHAT_STATE_SPEAKING && empty_spk_count >= 150)) {
-                audio_io_spk_write_silence(20);
+                audio_io_spk_write_silence(50);
+                vTaskDelay(pdMS_TO_TICKS(150));
                 s_is_speaker_playing = false;
                 s_server_done = false;
                 prebuffering = true;
@@ -376,12 +381,14 @@ static void audio_fetch_task(void *pvParameters) {
             // 2) AI 생각 중(THINKING):
             //    스피커가 무음이므로 적정 음성 에너지(Peak >= 1200, RMS >= 300)와 연속 2프레임(약 64ms) 시 인정!
             bool voice_candidate = false;
-            int required_confirm_frames = 3;
+            int required_confirm_frames = 4;
 
             if (cur_state == CHAT_STATE_SPEAKING) {
-                if (res->vad_state == VAD_SPEECH && peak >= 2200 && rms >= 600) {
+                // 답변 완료 끝부분(s_server_done)에는 스피커 잔여음이 마이크로 들어가 끼어드는 현상 차단
+                // 재생 도중 끼어들기는 스피커 소리를 뚫고 들어오는 명확한 사용자 육성(Peak >= 4800, RMS >= 1400) 시에만 인정
+                if (!s_server_done && res->vad_state == VAD_SPEECH && peak >= 4800 && rms >= 1400) {
                     voice_candidate = true;
-                    required_confirm_frames = 3;
+                    required_confirm_frames = 4;
                 }
             } else if (cur_state == CHAT_STATE_THINKING) {
                 if (res->vad_state == VAD_SPEECH && peak >= 1200 && rms >= 300) {
@@ -442,10 +449,11 @@ static void audio_fetch_task(void *pvParameters) {
             }
             int32_t l_rms = (l_num > 0) ? (int32_t)sqrt(l_sum_sq / l_num) : 0;
 
-            // [무음 오인식 방지] 단순 VAD_SPEECH 외에 실제 육성 에너지(Peak >= 850, RMS >= 180) 동시 검증
-            // 최소 5프레임(약 160ms) 이상 연속 신호가 유지되어야 실제 사용자 발화 시작으로 판정
-            if (now_ms - s_mic_stream_start_ms > 400) {
-                if (res->vad_state == VAD_SPEECH && l_peak >= 850 && l_rms >= 180) {
+            // [스피커 잔향 오인식 원천 차단]
+            // 스피커 재생 완료 직후 방 안의 물리적 잔향(Echo/Reverb) 및 DMA 지연음 소거를 위해
+            // LISTENING 모드 진입 후 최초 600ms 동안은 마이크 VAD 및 발화 감지를 강제 초기화!
+            if (now_ms - s_mic_stream_start_ms > 600) {
+                if (res->vad_state == VAD_SPEECH && l_peak >= 900 && l_rms >= 200) {
                     s_vad_speech_frames++;
                     if (s_vad_speech_frames >= 5) {
                         s_last_speech_ms = now_ms;
@@ -459,6 +467,9 @@ static void audio_fetch_task(void *pvParameters) {
                 } else {
                     s_vad_speech_frames = 0;
                 }
+            } else {
+                s_vad_speech_frames = 0;
+                s_has_user_spoken = false;
             }
 
             if (s_has_user_spoken) {
