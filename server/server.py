@@ -123,6 +123,89 @@ print(f"[시스템] OpenAI Realtime 모델: {OPENAI_REALTIME_MODEL} (키 등록 
 
 VOICE = "ko-KR-SunHiNeural"
 
+# ==========================================
+# 0-1. 기기별(Device-specific) 대화 기억 영속화 관리자
+# ==========================================
+MEMORIES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memories")
+os.makedirs(MEMORIES_DIR, exist_ok=True)
+
+# 과거 대화 기억 보관 설정 (1520턴: 1턴 = 사용자 발화 1개 + AI 응답 1개 = 총 2개 메시지)
+MEMORY_MAX_TURNS = 1520                        # 기억할 최대 대화 턴 수 (1,520턴)
+MEMORY_MAX_MESSAGES = MEMORY_MAX_TURNS * 2     # 대화 메시지 수 (3,040개: 1,520턴)
+MEMORY_FILE_SAVE_LIMIT = MEMORY_MAX_MESSAGES   # 디스크 파일 영구 보관 한도 (1,520턴)
+
+def sanitize_device_id(dev_id: str) -> str:
+    """디바이스 MAC 주소나 ID를 안전한 파일명 문자열로 변환 (예: 'e0:72:a1:fb:4f:50' -> 'e0_72_a1_fb_4f_50')"""
+    if not dev_id:
+        return "default_device"
+    return re.sub(r'[^a-zA-Z0-9_\-]', '_', dev_id.strip().lower())
+
+def make_default_system_prompt():
+    today_str = time.strftime("%Y년 %m월 %d일")
+    return {
+        "role": "system",
+        "content": (
+            f"너의 이름은 '친구'야. 오늘 날짜는 {today_str}이야. "
+            "너는 음성으로 대화하는 친절하고 똑똑한 한국어 AI 비서야. "
+            "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 사람과 말하듯 자연스러운 구어체 문장으로만 대답해. "
+            "답변은 소리 내어 읽기 좋게 보통 두세 문장 이내로 간결하게 해. "
+            "사진이 함께 주어지면 그것은 네 카메라로 지금 앞을 찍은 장면이니, 보이는 것을 바탕으로 자연스럽게 설명해. "
+            "사용자가 이전에 한 말이나 이전 대화의 맥락을 반드시 잘 기억하고 이어서 대답해. "
+            "사용자가 모델 변경이나 볼륨 등 기기 설정을 요청하면 시스템 제어기가 음성 명령을 감지하여 직접 처리하므로 '설정을 변경할 수 없다'는 거절성 답변은 하지 마. "
+            "사용자가 '이제 그만하자', '대화 끝내자', '잘 가' 등 대화를 종료하자고 하면, '네, 좋은 하루 보내세요. 언제든 알렉사라고 불러주세요'처럼 다정하게 작별 인사를 한두 문장으로 해."
+        )
+    }
+
+def load_device_chat_history(device_id: str, max_messages: int = MEMORY_MAX_MESSAGES):
+    """
+    기기별 저장된 대화 이력을 불러와 시스템 프롬프트와 함께 반환합니다.
+    (최신 날짜의 시스템 프롬프트 1개 + 최근 max_messages개의 사용자/어시스턴트 대화, 기본 1,520턴/3,040개 메시지)
+    """
+    safe_id = sanitize_device_id(device_id)
+    file_path = os.path.join(MEMORIES_DIR, f"{safe_id}.json")
+    saved_history = []
+    
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "history" in data:
+                    raw_hist = data.get("history", [])
+                    saved_history = [m for m in raw_hist if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content")]
+                    saved_history = saved_history[-max_messages:]
+                    print(f"[메모리 로드] 🧠 디바이스 '{device_id}' 이전 대화 {len(saved_history)}개 메시지({len(saved_history)//2}턴) 복원 완료 ({file_path})")
+        except Exception as e:
+            print(f"[메모리 로드 경고] '{device_id}' 대화 이력 로드 실패: {e}")
+
+    return [make_default_system_prompt()] + saved_history
+
+def save_device_chat_history(device_id: str, chat_history: list, max_messages: int = MEMORY_FILE_SAVE_LIMIT):
+    """
+    기기별 대화 이력을 memories/{device_id}.json 파일에 영구 저장합니다. (기본 최대 1,520턴/3,040개 메시지)
+    """
+    if not device_id or not chat_history:
+        return
+    safe_id = sanitize_device_id(device_id)
+    file_path = os.path.join(MEMORIES_DIR, f"{safe_id}.json")
+    try:
+        conversation_turns = [
+            {"role": m["role"], "content": m["content"]}
+            for m in chat_history
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content")
+        ][-max_messages:]
+
+        payload = {
+            "device_id": device_id,
+            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "total_turns": len(conversation_turns) // 2,
+            "total_messages": len(conversation_turns),
+            "history": conversation_turns
+        }
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[메모리 저장 경고] '{device_id}' 대화 이력 저장 실패: {e}")
+
 SAMPLE_RATE = 16000
 VAD_THRESHOLD = 0.40  # TV 소음으로 인한 오작동 방지 및 음성 감도 최적화 (0.35 -> 0.40)
 SILENCE_LIMIT = 0.8   # 침묵 대기 시간 단축 (1.2s -> 0.8s)으로 AI 답변 지연 400ms 단축
@@ -609,7 +692,7 @@ async def stream_local_llm(messages, image_bytes=None):
 # ==========================================
 class GeminiLiveSession:
     """Gemini Multimodal Live WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None, on_adjust_audio=None, on_capture_image=None, allow_camera=True):
+    def __init__(self, esp_ws, api_key, model=GEMINI_REALTIME_MODEL, voice=GEMINI_REALTIME_VOICE, on_switch_llm=None, on_adjust_audio=None, on_capture_image=None, allow_camera=True, chat_history=None, device_id=None):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
@@ -618,6 +701,9 @@ class GeminiLiveSession:
         self.on_adjust_audio = on_adjust_audio
         self.on_capture_image = on_capture_image
         self.allow_camera = allow_camera
+        self.chat_history = chat_history if chat_history is not None else []
+        self.device_id = device_id
+        self.accumulated_model_text = []
         self.gemini_ws = None
         self.rx_task = None
         self.is_connected = False
@@ -633,6 +719,23 @@ class GeminiLiveSession:
             "사용자의 음성이 잘 들리지 않거나 불명확한 경우 절대로 날짜나 시간을 말하지 말고 '잘 못 들었어요, 다시 한 번 말씀해 주시겠어요?'라고 정중하게 물어봐. "
             "주변 잡음이나 침묵인 경우에는 절대 아무 말도 하지 마."
         )
+
+        # 이전 대화 기억(Context) 추출 및 주입
+        memory_str = ""
+        if self.chat_history:
+            turns = [m for m in self.chat_history if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
+            if turns:
+                recent_turns = turns[-MEMORY_MAX_MESSAGES:]
+                lines = []
+                for t in recent_turns:
+                    speaker = "사용자" if t["role"] == "user" else "너(친구)"
+                    lines.append(f"- {speaker}: {t['content']}")
+                memory_str = (
+                    "\n\n[중요: 이 기기 사용자와 이전에 나눈 실제 대화 기록]\n"
+                    + "\n".join(lines) + "\n"
+                    + "위 대화는 사용자가 너와 이전에 나눈 실제 대화 기록이야. 사용자가 이전 대화 내용(예: 이름, 있었던 일, 설정 등)을 묻거나 언급하면 반드시 위 기억을 바탕으로 연속해서 자연스럽게 대답해줘."
+                )
+
         if allow_camera:
             self.system_prompt = (
                 "너의 이름은 '친구'야. 너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
@@ -644,6 +747,7 @@ class GeminiLiveSession:
                 "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
                 "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
                 "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
+                + memory_str
             )
         else:
             self.system_prompt = (
@@ -655,6 +759,7 @@ class GeminiLiveSession:
                 "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
                 "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
                 "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
+                + memory_str
             )
 
     async def _resolve_supported_models(self):
@@ -886,6 +991,9 @@ class GeminiLiveSession:
         """텍스트 질문을 Gemini Live 세션으로 전달"""
         if not self.is_connected or not self.gemini_ws:
             return
+        if self.device_id and isinstance(self.chat_history, list):
+            self.chat_history.append({"role": "user", "content": text})
+            save_device_chat_history(self.device_id, self.chat_history)
         try:
             client_content = {
                 "clientContent": {
@@ -1073,12 +1181,20 @@ class GeminiLiveSession:
 
                         text_part = part.get("text", "")
                         if text_part:
+                            self.accumulated_model_text.append(text_part)
                             em = detect_emotion_from_text(text_part)
                             if em != "normal":
                                 await self.esp_ws.send(json.dumps({"type": "emotion", "emotion": em}))
 
                 if server_content.get("turnComplete"):
                     print("\n[Gemini Realtime] turnComplete 수신 -> DONE 전송")
+                    if self.accumulated_model_text:
+                        full_ans = "".join(self.accumulated_model_text).strip()
+                        self.accumulated_model_text = []
+                        if full_ans and self.device_id and isinstance(self.chat_history, list):
+                            self.chat_history.append({"role": "assistant", "content": full_ans})
+                            save_device_chat_history(self.device_id, self.chat_history)
+                            print(f"[Gemini Realtime] 답변 메모리 영구 저장 완료 ({len(full_ans)}자, 전체 {len(self.chat_history)}건)")
                     first_chunk = True
                     speaking_active = False
                     self.speaking_active = False
@@ -1120,7 +1236,7 @@ class GeminiLiveSession:
 # ==========================================
 class OpenAIRealtimeSession:
     """OpenAI Realtime WebSocket 세션: STT/TTS 없이 음성을 즉시 실시간 송수신"""
-    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE, on_switch_llm=None, on_adjust_audio=None, on_capture_image=None):
+    def __init__(self, esp_ws, api_key, model=OPENAI_REALTIME_MODEL, voice=OPENAI_VOICE, on_switch_llm=None, on_adjust_audio=None, on_capture_image=None, chat_history=None, device_id=None):
         self.esp_ws = esp_ws
         self.api_key = api_key
         self.model = model
@@ -1128,6 +1244,9 @@ class OpenAIRealtimeSession:
         self.on_switch_llm = on_switch_llm
         self.on_adjust_audio = on_adjust_audio
         self.on_capture_image = on_capture_image
+        self.chat_history = chat_history if chat_history is not None else []
+        self.device_id = device_id
+        self.accumulated_model_text = []
         self.openai_ws = None
         self.rx_task = None
         self.is_connected = False
@@ -1136,6 +1255,23 @@ class OpenAIRealtimeSession:
         self.replied_this_turn = False
         now_dt = datetime.datetime.now()
         time_str = now_dt.strftime("%Y년 %m월 %d일 %p %I시 %M분")
+
+        # 이전 대화 기억(Context) 추출 및 주입
+        memory_str = ""
+        if self.chat_history:
+            turns = [m for m in self.chat_history if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
+            if turns:
+                recent_turns = turns[-MEMORY_MAX_MESSAGES:]
+                lines = []
+                for t in recent_turns:
+                    speaker = "사용자" if t["role"] == "user" else "너(친구)"
+                    lines.append(f"- {speaker}: {t['content']}")
+                memory_str = (
+                    "\n\n[중요: 이 기기 사용자와 이전에 나눈 실제 대화 기록]\n"
+                    + "\n".join(lines) + "\n"
+                    + "위 대화는 사용자가 너와 이전에 나눈 실제 대화 기록이야. 사용자가 이전 대화 내용(예: 이름, 있었던 일, 설정 등)을 묻거나 언급하면 반드시 위 기억을 바탕으로 연속해서 자연스럽게 대답해줘."
+                )
+
         self.system_prompt = (
             f"너의 이름은 '친구'야. 현재 시각은 {time_str}이야. "
             "너는 음성으로 대화하는 친절하고 다정한 한국어 AI 비서야. "
@@ -1147,6 +1283,7 @@ class OpenAIRealtimeSession:
             "사용자가 다른 모델이나 LLM 타입으로 바꿔달라고 하면 switch_llm_type 도구를 호출해줘. "
             "사용자가 볼륨(소리 크기)을 조절해달라고 하면 set_volume 도구를 호출해줘. "
             "사용자가 마이크 감도나 민감도를 조절해달라고 하면 set_mic_sensitivity 도구를 호출해줘."
+            + memory_str
         )
 
     async def start(self):
@@ -1892,7 +2029,7 @@ def calculate_remaining_sentences(sentences_info, played_bytes):
         
     return remaining
 
-async def process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms=0.0, close_session_after=False, interrupted_holder=None, image_bytes=None, llm_type="gemini api", direct_answer=None):
+async def process_ai_response(websocket, user_text, chat_history, t_speech_end, asr_ms=0.0, close_session_after=False, interrupted_holder=None, image_bytes=None, llm_type="gemini api", direct_answer=None, device_id=None):
     full_answer = ""
     sentences_info = []  # [{"text": str, "pcm": bytes, "status": "pending"|"sending"|"done"}]
     sentence_buffer = ""
@@ -1913,7 +2050,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
         await websocket.send(json.dumps({"type": "status", "message": "THINKING..."}))
         
         chat_history.append({"role": "user", "content": user_text})
-        recent_messages = [chat_history[0]] + chat_history[-12:]
+        conversation_turns = [m for m in chat_history[1:] if m.get("role") in ("user", "assistant")]
+        recent_messages = [chat_history[0]] + conversation_turns[-MEMORY_MAX_MESSAGES:]
 
         t_llm_start = time.perf_counter()
         t_first_token = None
@@ -2079,6 +2217,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
         await sender_task
                     
         chat_history.append({"role": "assistant", "content": full_answer})
+        if device_id:
+            save_device_chat_history(device_id, chat_history)
         if interrupted_holder is not None:
             # 전송이 끝난 직후라도 ESP32 스피커에서 문장들이 여전히 재생 중일 수 있음!
             # 재생 중 기침/소음 등으로 끼어들기 발생 시 정확한 진도율 복원을 위해 전체 sentences와 t_playback_start 보관
@@ -2187,6 +2327,8 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
                 interrupted_holder["session"] = None
         if full_answer.strip():
             chat_history.append({"role": "assistant", "content": full_answer.strip()})
+            if device_id:
+                save_device_chat_history(device_id, chat_history)
         raise
     except Exception as e:
         print(f"\n[오류] AI 처리 중 에러: {e}")
@@ -2224,7 +2366,7 @@ async def process_ai_response(websocket, user_text, chat_history, t_speech_end, 
                 "close_session": close_session_after
             }))
 
-async def resume_ai_response(websocket, session_data, chat_history, interrupted_holder=None):
+async def resume_ai_response(websocket, session_data, chat_history, interrupted_holder=None, device_id=None):
     """TV 소음/잡음 등으로 끼어들기가 오인식되었을 때 직전 AI 답변의 남은 부분을 이어서 말함"""
     try:
         if session_data.get("was_thinking_only"):
@@ -2233,7 +2375,8 @@ async def resume_ai_response(websocket, session_data, chat_history, interrupted_
             await process_ai_response(
                 websocket, user_query, chat_history, time.perf_counter(),
                 asr_ms=0.0, close_session_after=session_data.get("close_session_after", False),
-                interrupted_holder=interrupted_holder
+                interrupted_holder=interrupted_holder,
+                device_id=device_id
             )
             return
 
@@ -2371,7 +2514,10 @@ async def resume_ai_response(websocket, session_data, chat_history, interrupted_
 # 4. 메인 웹소켓 핸들러
 # ==========================================
 async def handler(websocket, path=None):
-    print(f"\n[클라이언트 연결됨: {getattr(websocket, 'remote_address', 'ESP32')}]")
+    remote_addr = getattr(websocket, 'remote_address', None)
+    remote_ip = remote_addr[0] if remote_addr and isinstance(remote_addr, tuple) else "unknown"
+    current_device_id = f"esp32_{remote_ip}"
+    print(f"\n[클라이언트 연결됨: {remote_addr or 'ESP32'}] (기본 디바이스 ID: {current_device_id})")
     
     audio_buffer = []
     is_speaking = False
@@ -2552,22 +2698,7 @@ async def handler(websocket, path=None):
         if current_llm_type in REALTIME_LLM_TYPES:
             await switch_realtime_session(current_llm_type)
 
-    today_str = time.strftime("%Y년 %m월 %d일")
-    chat_history = [
-        {
-            "role": "system", 
-            "content": (
-                f"너의 이름은 '친구'야. 오늘 날짜는 {today_str}이야. "
-                "너는 음성으로 대화하는 친절하고 똑똑한 한국어 AI 비서야. "
-                "절대 마크다운 기호(*, #, -)나 이모지를 쓰지 말고, 사람과 말하듯 자연스러운 구어체 문장으로만 대답해. "
-                "답변은 소리 내어 읽기 좋게 보통 두세 문장 이내로 간결하게 해. "
-                "사진이 함께 주어지면 그것은 네 카메라로 지금 앞을 찍은 장면이니, 보이는 것을 바탕으로 자연스럽게 설명해. "
-                "사용자가 이전에 한 말을 반드시 기억하고 문맥에 맞게 대답해. "
-                "사용자가 모델 변경이나 볼륨 등 기기 설정을 요청하면 시스템 제어기가 음성 명령을 감지하여 직접 처리하므로 '설정을 변경할 수 없다'는 거절성 답변은 하지 마. "
-                "사용자가 '이제 그만하자', '대화 끝내자', '잘 가' 등 대화를 종료하자고 하면, '네, 좋은 하루 보내세요. 언제든 알렉사라고 불러주세요'처럼 다정하게 작별 인사를 한두 문장으로 해."
-            )
-        }
-    ]
+    chat_history = load_device_chat_history(current_device_id)
 
     pending_image_future = None
     t_last_user_request = 0.0
@@ -2621,7 +2752,7 @@ async def handler(websocket, path=None):
             active_realtime_session = None
 
         if target_type == "gemini realtime api":
-            print(f"[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중... (모델: {GEMINI_REALTIME_MODEL}, 카메라 지원)")
+            print(f"[세션 전환] Gemini Realtime (Live WebSocket) 세션 초기화 중... (기기: {current_device_id}, 이전 대화 {len(chat_history)}건 주입, 카메라 지원)")
             active_realtime_session = GeminiLiveSession(
                 websocket,
                 GEMINI_API_KEY,
@@ -2629,11 +2760,13 @@ async def handler(websocket, path=None):
                 on_switch_llm=switch_and_notify_llm,
                 on_adjust_audio=adjust_audio_settings,
                 on_capture_image=capture_and_analyze_for_realtime,
-                allow_camera=True
+                allow_camera=True,
+                chat_history=chat_history,
+                device_id=current_device_id
             )
             await active_realtime_session.start()
         elif target_type in ("gemini native audio", "gemini-live-2.5-flash-native-audio"):
-            print(f"[세션 전환] Gemini Native Audio (Live WebSocket) 세션 초기화 중... (모델: {GEMINI_NATIVE_AUDIO_MODEL}, 음성 전용/카메라 미사용)")
+            print(f"[세션 전환] Gemini Native Audio (Live WebSocket) 세션 초기화 중... (기기: {current_device_id}, 이전 대화 {len(chat_history)}건 주입, 음성 전용/카메라 미사용)")
             active_realtime_session = GeminiLiveSession(
                 websocket,
                 GEMINI_API_KEY,
@@ -2641,17 +2774,21 @@ async def handler(websocket, path=None):
                 on_switch_llm=switch_and_notify_llm,
                 on_adjust_audio=adjust_audio_settings,
                 on_capture_image=None,
-                allow_camera=False
+                allow_camera=False,
+                chat_history=chat_history,
+                device_id=current_device_id
             )
             await active_realtime_session.start()
         elif target_type == "chatgpt realtime api":
-            print("[세션 전환] ChatGPT Realtime (OpenAI WebSocket) 세션 초기화 중...")
+            print(f"[세션 전환] ChatGPT Realtime (OpenAI WebSocket) 세션 초기화 중... (기기: {current_device_id}, 이전 대화 {len(chat_history)}건 주입)")
             active_realtime_session = OpenAIRealtimeSession(
                 websocket,
                 OPENAI_API_KEY,
                 on_switch_llm=switch_and_notify_llm,
                 on_adjust_audio=adjust_audio_settings,
-                on_capture_image=capture_and_analyze_for_realtime
+                on_capture_image=capture_and_analyze_for_realtime,
+                chat_history=chat_history,
+                device_id=current_device_id
             )
             await active_realtime_session.start()
         else:
@@ -2704,7 +2841,8 @@ async def handler(websocket, path=None):
                     time.perf_counter(), asr_ms,
                     close_session_after=should_close,
                     interrupted_holder=interrupted_holder,
-                    direct_answer=time_speech
+                    direct_answer=time_speech,
+                    device_id=current_device_id
                 )
                 return
 
@@ -2718,7 +2856,8 @@ async def handler(websocket, path=None):
                     time.perf_counter(), asr_ms,
                     close_session_after=should_close,
                     interrupted_holder=interrupted_holder,
-                    direct_answer=native_warn
+                    direct_answer=native_warn,
+                    device_id=current_device_id
                 )
                 return
             else:
@@ -2743,12 +2882,13 @@ async def handler(websocket, path=None):
             close_session_after=should_close,
             interrupted_holder=interrupted_holder,
             image_bytes=image_bytes,
-            llm_type=current_llm_type
+            llm_type=current_llm_type,
+            device_id=current_device_id
         )
 
         if should_close:
-            chat_history[:] = [chat_history[0]] if chat_history else []
-            print("[대화 세션 종료] 대화 이력 초기화 완료 -> 다음 Alexa 호출 대기")
+            save_device_chat_history(current_device_id, chat_history)
+            print(f"[대화 세션 대기] 기기({current_device_id}) 대화 기억 보존 완료 ({len(chat_history)}건) -> 다음 Alexa 호출 대기")
 
     try:
         async for message in websocket:
@@ -2872,7 +3012,7 @@ async def handler(websocket, path=None):
                                                 interrupted_holder["session"] = None
                                                 print(f"[서버] 의미 있는 발화 없음 ('{user_text}'). 직전 AI 답변 이어서 재생!")
                                                 ai_task = asyncio.create_task(
-                                                    resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
+                                                    resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                                 )
                                             else:
                                                 print("[서버] 인식된 텍스트가 없어 대기 상태(DONE)를 클라이언트로 전송합니다.")
@@ -2884,7 +3024,7 @@ async def handler(websocket, path=None):
                                             interrupted_holder["session"] = None
                                             print("[서버] 오디오 버퍼 없음 -> 직전 AI 답변 이어서 재생!")
                                             ai_task = asyncio.create_task(
-                                                resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
+                                                resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                             )
                                         else:
                                             await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
@@ -3087,7 +3227,7 @@ async def handler(websocket, path=None):
                                                         interrupted_holder["session"] = None
                                                         print(f"[서버] 의미 있는 발화 없음 ('{user_text}'). 직전 AI 답변 이어서 재생!")
                                                         ai_task = asyncio.create_task(
-                                                            resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
+                                                            resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                                         )
                                                     else:
                                                         print("[서버] 인식된 텍스트가 없어 대기 상태(DONE)를 클라이언트로 전송합니다.")
@@ -3099,7 +3239,7 @@ async def handler(websocket, path=None):
                                                     interrupted_holder["session"] = None
                                                     print("[서버] 무음/미약 신호 -> 직전 AI 답변 이어서 재생!")
                                                     ai_task = asyncio.create_task(
-                                                        resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
+                                                        resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                                     )
                                                 else:
                                                     await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
@@ -3110,7 +3250,7 @@ async def handler(websocket, path=None):
                                             interrupted_holder["session"] = None
                                             print("[서버] 버퍼 비어있음 -> 직전 AI 답변 이어서 재생!")
                                             ai_task = asyncio.create_task(
-                                                resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
+                                                resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                             )
                                         elif not is_ai_busy:
                                             await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
@@ -3118,7 +3258,7 @@ async def handler(websocket, path=None):
                                 # [C] 음성 호출어 ('Alexa') 감지 알림
                                 elif msg_type == "wake_word":
                                     word = ctrl_json.get("word", "alexa")
-                                    print(f"\n[제어 명령] 🗣️ 호출어 '{word}' 감지 -> 새 대화 시작 (이전 세션 정리)")
+                                    print(f"\n[제어 명령] 🗣️ 호출어 '{word}' 감지 -> 새 질문 경청 (재생 중 오디오 플러시, 대화 기억 {len(chat_history)}건 유지)")
                                     interrupted_holder["session"] = None
                                     interrupted_holder["last_completed_session"] = None
                                     interrupted_holder["active_ai_response"] = None
@@ -3175,7 +3315,7 @@ async def handler(websocket, path=None):
                                                     saved_session = interrupted_holder["session"]
                                                     interrupted_holder["session"] = None
                                                     ai_task = asyncio.create_task(
-                                                        resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
+                                                        resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                                     )
                                                 else:
                                                     print("[서버] 인식된 텍스트가 없어 대기 상태(DONE, 세션 종료)를 클라이언트로 전송합니다.")
@@ -3185,7 +3325,7 @@ async def handler(websocket, path=None):
                                                 saved_session = interrupted_holder["session"]
                                                 interrupted_holder["session"] = None
                                                 ai_task = asyncio.create_task(
-                                                    resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder)
+                                                    resume_ai_response(websocket, saved_session, chat_history, interrupted_holder=interrupted_holder, device_id=current_device_id)
                                                 )
                                             else:
                                                 print("[서버] 유효한 음성 신호가 없어 대기 상태(DONE, 세션 종료)를 전송합니다.")
@@ -3236,6 +3376,20 @@ async def handler(websocket, path=None):
 
                                 # [G] 클라이언트 전체 설정 동기화 수신 (LLM, Volume, Mic Gain, Brightness, NTP, TZ, Lang 등)
                                 elif msg_type in ("client_info", "settings_update"):
+                                    # 디바이스 고유 식별자(device_id / mac_address) 수신 및 대화 기억 동기화
+                                    raw_dev_id = ctrl_json.get("device_id") or ctrl_json.get("mac_address")
+                                    if raw_dev_id:
+                                        sanitized_id = sanitize_device_id(str(raw_dev_id))
+                                        if sanitized_id and sanitized_id != current_device_id:
+                                            save_device_chat_history(current_device_id, chat_history)
+                                            print(f"\n[기기 식별] 디바이스 식별자 확정: {current_device_id} -> {sanitized_id}")
+                                            current_device_id = sanitized_id
+                                            client_settings["device_id"] = current_device_id
+                                            loaded_hist = load_device_chat_history(current_device_id)
+                                            chat_history.clear()
+                                            chat_history.extend(loaded_hist)
+                                            print(f"[기기 기억 로드] {current_device_id}의 이전 대화 기억 {len(chat_history)}건을 불러왔습니다.")
+
                                     if "volume" in ctrl_json:
                                         current_volume = int(ctrl_json["volume"])
                                         client_settings["volume"] = current_volume
@@ -3275,7 +3429,7 @@ async def handler(websocket, path=None):
                                             VOICE = "ko-KR-SunHiNeural"
 
                                     print("\n=======================================================")
-                                    print(" [클라이언트 설정 동기화] ESP32 최신 설정값 수신 완료:")
+                                    print(f" [클라이언트 설정 동기화] ESP32 ({current_device_id}) 최신 설정값 수신 완료:")
                                     print(f"  • 볼륨(Volume)        : {client_settings.get('volume')}%")
                                     print(f"  • 마이크 감도(Gain)   : {client_settings.get('mic_gain')} ({client_settings.get('mic_gain', 35)/10:.1f}x)")
                                     print(f"  • 화면 밝기(Brightness): {client_settings.get('brightness')}%")
@@ -3319,7 +3473,7 @@ async def handler(websocket, path=None):
                             if len(user_text.strip()) <= 25:
                                 time_speech = get_korean_time_speech()
                                 ai_task = asyncio.create_task(
-                                    process_ai_response(websocket, user_text, chat_history, t_speech_end, 0.0, interrupted_holder=interrupted_holder, direct_answer=time_speech)
+                                    process_ai_response(websocket, user_text, chat_history, t_speech_end, 0.0, interrupted_holder=interrupted_holder, direct_answer=time_speech, device_id=current_device_id)
                                 )
                                 continue
 
@@ -3334,7 +3488,7 @@ async def handler(websocket, path=None):
                         
                         await websocket.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
                         ai_task = asyncio.create_task(
-                            process_ai_response(websocket, user_text, chat_history, t_speech_end, 0.0, interrupted_holder=interrupted_holder, llm_type=current_llm_type)
+                            process_ai_response(websocket, user_text, chat_history, t_speech_end, 0.0, interrupted_holder=interrupted_holder, llm_type=current_llm_type, device_id=current_device_id)
                         )
 
             except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):
@@ -3348,12 +3502,13 @@ async def handler(websocket, path=None):
     except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):
         pass
     finally:
+        save_device_chat_history(current_device_id, chat_history)
         if rt_watchdog_task and not rt_watchdog_task.done():
             rt_watchdog_task.cancel()
         if active_realtime_session:
             await active_realtime_session.close()
             active_realtime_session = None
-        print("[클라이언트 연결 종료]")
+        print(f"[클라이언트 연결 종료: {current_device_id}] 대화 기억 저장 완료")
 
 async def main():
     print("실시간 음성 비서 서버(ws://0.0.0.0:8765) 시작 중 (PCM 전송 모드)...")

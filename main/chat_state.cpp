@@ -457,6 +457,13 @@ void chat_state_handle_wake_word(void) {
         return;
     }
 
+    // 이미 사용자의 발화를 경청 중(LISTENING)일 때는 문장 중에 "알렉사"가 포함되어도
+    // 삑 소리를 내거나 녹음을 리셋하지 않고 일반 대화 내용으로 자연스럽게 처리
+    if (s_chat_state == CHAT_STATE_LISTENING) {
+        ESP_LOGD(TAG, "Wake word ignored: already in LISTENING state (treated as speech text)");
+        return;
+    }
+
     ESP_LOGI(TAG, ">>> Wake word 'Alexa' DETECTED! Current state: %d", (int)s_chat_state);
     if (s_temp_clock_active) {
         s_temp_clock_active = false;

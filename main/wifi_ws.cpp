@@ -8,6 +8,7 @@
 #include "esp_system.h"
 #include "esp_websocket_client.h"
 #include "esp_wifi.h"
+#include "esp_mac.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -554,9 +555,18 @@ esp_err_t wifi_ws_send_client_info(void) {
     const timezone_info_t *tz_info = time_sync_get_timezone(cfg->timezone_idx);
     const char *lang_str = (cfg->language == APP_LANG_KO) ? "ko" : "en";
 
-    char buf[512];
+    // 기기 고유 Wi-Fi STA MAC 주소 취득 (디바이스 ID로 사용)
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char mac_str[18] = {0};
+    snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    char buf[640];
     snprintf(buf, sizeof(buf),
              "{\"type\":\"client_info\","
+             "\"device_id\":\"%s\","
+             "\"mac_address\":\"%s\","
              "\"volume\":%u,"
              "\"mic_gain\":%u,"
              "\"brightness\":%u,"
@@ -570,6 +580,8 @@ esp_err_t wifi_ws_send_client_info(void) {
              "\"timezone_idx\":%u,"
              "\"language\":\"%s\","
              "\"language_idx\":%u}",
+             mac_str,
+             mac_str,
              (unsigned int)cfg->volume,
              (unsigned int)cfg->mic_gain,
              (unsigned int)cfg->brightness,

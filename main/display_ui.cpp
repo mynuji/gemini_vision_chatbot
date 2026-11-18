@@ -713,28 +713,12 @@ static void auto_blink_task(void *pvParameters) {
       s_is_animating = true;
 
       if (cur_left == UI_EMOTION_SPEAKING_HAPPY) {
-        // [HAPPY: 기쁨 / 웃음 / 반가움 / 칭찬]
+        // [HAPPY: 기쁨 / 웃음 / 반가움] 눈웃음 발화 후 자연스러운 깜빡임 1회
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_speaking_100);
         lv_img_set_src(s_right_eye, &eye_speaking_100);
         lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(180));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_HAPPY) { s_is_animating = false; continue; }
-
-        // 신나서 눈 찡긋/윙크
-        bool wink_l = (esp_random() % 2) == 0;
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, wink_l ? &eye_half_blink_100 : &eye_speaking_100);
-        lv_img_set_src(s_right_eye, wink_l ? &eye_speaking_100 : &eye_half_blink_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(130));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_HAPPY) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_speaking_100);
-        lv_img_set_src(s_right_eye, &eye_speaking_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(180));
+        vTaskDelay(pdMS_TO_TICKS(400));
         if (s_current_left_emotion != UI_EMOTION_SPEAKING_HAPPY) { s_is_animating = false; continue; }
 
         // 살짝 눈웃음 깜빡임
@@ -742,160 +726,119 @@ static void auto_blink_task(void *pvParameters) {
         lv_img_set_src(s_left_eye, &eye_half_blink_100);
         lv_img_set_src(s_right_eye, &eye_half_blink_100);
         lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(40));
+        vTaskDelay(pdMS_TO_TICKS(50));
         if (s_current_left_emotion != UI_EMOTION_SPEAKING_HAPPY) { s_is_animating = false; continue; }
 
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_blink_100);
         lv_img_set_src(s_right_eye, &eye_blink_100);
         lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(70));
+        vTaskDelay(pdMS_TO_TICKS(80));
         if (s_current_left_emotion != UI_EMOTION_SPEAKING_HAPPY) { s_is_animating = false; continue; }
 
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_speaking_100);
         lv_img_set_src(s_right_eye, &eye_speaking_100);
         lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(160));
 
       } else if (cur_left == UI_EMOTION_SPEAKING_SAD) {
-        // [SAD: 슬픔 / 시무룩함 / 축 처진 눈]
+        // [SAD: 슬픔 / 시무룩함] 처진 눈 유지 후 지그시 눈 깜빡임 1회
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_droopy_l_100);
         lv_img_set_src(s_right_eye, &eye_droopy_r_100);
         lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(280));
+        vTaskDelay(pdMS_TO_TICKS(500));
         if (s_current_left_emotion != UI_EMOTION_SPEAKING_SAD) { s_is_animating = false; continue; }
 
-        // 시무룩하게 지그시 눈 깜빡임
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_half_blink_100);
         lv_img_set_src(s_right_eye, &eye_half_blink_100);
         lvgl_port_unlock();
         vTaskDelay(pdMS_TO_TICKS(60));
         if (s_current_left_emotion != UI_EMOTION_SPEAKING_SAD) { s_is_animating = false; continue; }
+
+        lvgl_port_lock(-1);
+        lv_img_set_src(s_left_eye, &eye_blink_100);
+        lv_img_set_src(s_right_eye, &eye_blink_100);
+        lvgl_port_unlock();
+        vTaskDelay(pdMS_TO_TICKS(100));
+        if (s_current_left_emotion != UI_EMOTION_SPEAKING_SAD) { s_is_animating = false; continue; }
+
+        lvgl_port_lock(-1);
+        lv_img_set_src(s_left_eye, &eye_droopy_l_100);
+        lv_img_set_src(s_right_eye, &eye_droopy_r_100);
+        lvgl_port_unlock();
+
+      } else if (cur_left == UI_EMOTION_SPEAKING_CRYING) {
+        // [CRYING: 울먹임 / 눈물] 눈물 맺힌 눈 유지 후 눈 질끈 1회
+        lvgl_port_lock(-1);
+        lv_img_set_src(s_left_eye, &eye_crying_l_100);
+        lv_img_set_src(s_right_eye, &eye_crying_r_100);
+        lvgl_port_unlock();
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (s_current_left_emotion != UI_EMOTION_SPEAKING_CRYING) { s_is_animating = false; continue; }
+
+        lvgl_port_lock(-1);
+        lv_img_set_src(s_left_eye, &eye_half_blink_100);
+        lv_img_set_src(s_right_eye, &eye_half_blink_100);
+        lvgl_port_unlock();
+        vTaskDelay(pdMS_TO_TICKS(60));
+        if (s_current_left_emotion != UI_EMOTION_SPEAKING_CRYING) { s_is_animating = false; continue; }
 
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_blink_100);
         lv_img_set_src(s_right_eye, &eye_blink_100);
         lvgl_port_unlock();
         vTaskDelay(pdMS_TO_TICKS(120));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_SAD) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_half_blink_100);
-        lv_img_set_src(s_right_eye, &eye_half_blink_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(50));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_SAD) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_droopy_l_100);
-        lv_img_set_src(s_right_eye, &eye_droopy_r_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(240));
-
-      } else if (cur_left == UI_EMOTION_SPEAKING_CRYING) {
-        // [CRYING: 울먹임 / 눈물 글썽글썽]
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_crying_l_100);
-        lv_img_set_src(s_right_eye, &eye_crying_r_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(250));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_CRYING) { s_is_animating = false; continue; }
-
-        // 울컥하며 눈을 질끈 감았다 뜨는 애니메이션
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_half_blink_100);
-        lv_img_set_src(s_right_eye, &eye_half_blink_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(50));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_CRYING) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_blink_100);
-        lv_img_set_src(s_right_eye, &eye_blink_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(140));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_CRYING) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_half_blink_100);
-        lv_img_set_src(s_right_eye, &eye_half_blink_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(50));
         if (s_current_left_emotion != UI_EMOTION_SPEAKING_CRYING) { s_is_animating = false; continue; }
 
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_crying_l_100);
         lv_img_set_src(s_right_eye, &eye_crying_r_100);
         lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(260));
 
       } else if (cur_left == UI_EMOTION_SPEAKING_SURPRISED) {
-        // [SURPRISED: 놀람 / 신기함 / 감탄]
+        // [SURPRISED: 놀람 / 신기함] 동그란 눈 유지 후 깜빡임 1회
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_listening_100);
         lv_img_set_src(s_right_eye, &eye_listening_100);
         lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(180));
+        vTaskDelay(pdMS_TO_TICKS(400));
         if (s_current_left_emotion != UI_EMOTION_SPEAKING_SURPRISED) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_blink_100);
-        lv_img_set_src(s_right_eye, &eye_blink_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(60));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_SURPRISED) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_speaking_100);
-        lv_img_set_src(s_right_eye, &eye_speaking_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(180));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING_SURPRISED) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_listening_100);
-        lv_img_set_src(s_right_eye, &eye_listening_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(200));
-
-      } else {
-        // [DEFAULT: 일반 발화 설명]
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_speaking_100);
-        lv_img_set_src(s_right_eye, &eye_speaking_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(200));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_idle_100);
-        lv_img_set_src(s_right_eye, &eye_idle_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(180));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_speaking_100);
-        lv_img_set_src(s_right_eye, &eye_speaking_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(180));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING) { s_is_animating = false; continue; }
-
-        lvgl_port_lock(-1);
-        lv_img_set_src(s_left_eye, &eye_half_blink_100);
-        lv_img_set_src(s_right_eye, &eye_half_blink_100);
-        lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(40));
-        if (s_current_left_emotion != UI_EMOTION_SPEAKING) { s_is_animating = false; continue; }
 
         lvgl_port_lock(-1);
         lv_img_set_src(s_left_eye, &eye_blink_100);
         lv_img_set_src(s_right_eye, &eye_blink_100);
         lvgl_port_unlock();
         vTaskDelay(pdMS_TO_TICKS(70));
+        if (s_current_left_emotion != UI_EMOTION_SPEAKING_SURPRISED) { s_is_animating = false; continue; }
+
+        lvgl_port_lock(-1);
+        lv_img_set_src(s_left_eye, &eye_speaking_100);
+        lv_img_set_src(s_right_eye, &eye_speaking_100);
+        lvgl_port_unlock();
+
+      } else {
+        // [DEFAULT: 일반 발화] 말하는 눈(eye_speaking_100)을 안정적으로 유지하고 가끔 자연스럽게 1회 깜빡임
+        lvgl_port_lock(-1);
+        lv_img_set_src(s_left_eye, &eye_speaking_100);
+        lv_img_set_src(s_right_eye, &eye_speaking_100);
+        lvgl_port_unlock();
+        vTaskDelay(pdMS_TO_TICKS(350));
+        if (s_current_left_emotion != UI_EMOTION_SPEAKING) { s_is_animating = false; continue; }
+
+        lvgl_port_lock(-1);
+        lv_img_set_src(s_left_eye, &eye_half_blink_100);
+        lv_img_set_src(s_right_eye, &eye_half_blink_100);
+        lvgl_port_unlock();
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if (s_current_left_emotion != UI_EMOTION_SPEAKING) { s_is_animating = false; continue; }
+
+        lvgl_port_lock(-1);
+        lv_img_set_src(s_left_eye, &eye_blink_100);
+        lv_img_set_src(s_right_eye, &eye_blink_100);
+        lvgl_port_unlock();
+        vTaskDelay(pdMS_TO_TICKS(80));
         if (s_current_left_emotion != UI_EMOTION_SPEAKING) { s_is_animating = false; continue; }
 
         lvgl_port_lock(-1);
@@ -909,10 +852,12 @@ static void auto_blink_task(void *pvParameters) {
         lv_img_set_src(s_left_eye, &eye_speaking_100);
         lv_img_set_src(s_right_eye, &eye_speaking_100);
         lvgl_port_unlock();
-        vTaskDelay(pdMS_TO_TICKS(160));
       }
 
       s_is_animating = false;
+      // 발화 중 눈 깜빡임 간격: 2.8초 ~ 4.8초 동안 편안하게 눈을 뜨고 발화 유지 (LVGL 버스 경합 및 오디오 버벅임 방지)
+      uint32_t spk_wait_ms = 2800 + (esp_random() % 2000);
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(spk_wait_ms));
       continue;
     }
 

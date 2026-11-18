@@ -28,7 +28,7 @@ static const char *TAG = "AUDIO_PIPE";
 #define SPK_RINGBUF_SIZE (256 * 1024)
 #define REF_RINGBUF_SIZE (16 * 1024)
 #define TX_RINGBUF_SIZE  (128 * 1024) // 1.2초 프리버퍼 일괄 투입을 수용하기 위해 128KB로 확장
-#define SPK_PREBUFFER_THRESHOLD (2 * 1024) // 약 64ms 분량 (신속한 첫 음절 출력)
+#define SPK_PREBUFFER_THRESHOLD (4 * 1024) // 약 128ms 분량 (네트워크 지터 흡수 및 버벅임/음절 끊김 방지)
 
 static RingbufHandle_t s_spk_ringbuf = NULL;
 static RingbufHandle_t s_ref_ringbuf = NULL;
