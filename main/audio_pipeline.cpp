@@ -38,6 +38,7 @@ static const esp_afe_sr_iface_t *s_afe_handle = NULL;
 static esp_afe_sr_data_t *s_afe_data = NULL;
 
 static volatile bool s_is_speaker_playing = false;
+static volatile uint32_t s_spk_play_start_ms = 0;
 static volatile bool s_server_done = false;
 static volatile bool s_mic_streaming_enabled = false;
 static volatile bool s_pipeline_initialized = false;
@@ -113,6 +114,7 @@ static void spk_play_task(void *pvParameters) {
                 empty_spk_count = 0;
                 prebuf_wait_count = 0;
                 s_is_speaker_playing = true;
+                s_spk_play_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
                 if (chat_state_get() != CHAT_STATE_SPEAKING) {
                     chat_state_set(CHAT_STATE_SPEAKING);
                 }
@@ -127,6 +129,7 @@ static void spk_play_task(void *pvParameters) {
                     prebuf_wait_count = 0;
                     empty_spk_count = 0;
                     s_is_speaker_playing = true;
+                    s_spk_play_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
                     if (chat_state_get() != CHAT_STATE_SPEAKING) {
                         chat_state_set(CHAT_STATE_SPEAKING);
                     }
@@ -385,12 +388,15 @@ static void audio_fetch_task(void *pvParameters) {
             int required_confirm_frames = 3;
 
             if (cur_state == CHAT_STATE_SPEAKING) {
-                // 스피커가 출력 중인 전 구간에서 끼어들기 허용!
-                // (서버 전송이 완료된 s_server_done 상태라도 스피커 링버퍼에 오디오가 남아 재생 중이면 끝까지 끼어들기 가능)
+                // [자가 끼어들기(Self Barge-in) 원천 차단]
+                // 1) 발화 시작 직후 500ms 동안은 스피커 앰프 기동 및 첫 음절 진동 충격음 가드
+                uint32_t spk_elapsed_ms = (now_ms >= s_spk_play_start_ms) ? (now_ms - s_spk_play_start_ms) : 1000;
+                // 2) 스피커 자체 출력(AEC 통과 후 최대 Peak 4500, RMS 1200)을 확실히 상회하는 사용자 육성 기준
+                //    Peak >= 5600, RMS >= 1500, 연속 5프레임(약 160ms) 이상 유지 시에만 인정!
                 bool spk_playing = (s_spk_buffered_bytes > 0) || s_is_speaker_playing;
-                if (spk_playing && res->vad_state == VAD_SPEECH && peak >= 3400 && rms >= 800) {
+                if (spk_playing && spk_elapsed_ms > 500 && res->vad_state == VAD_SPEECH && peak >= 5600 && rms >= 1500) {
                     voice_candidate = true;
-                    required_confirm_frames = 3; // 약 96ms 연속 유지 시 즉각 인정
+                    required_confirm_frames = 5; // 약 160ms 연속 유지 시 인정
                 }
             } else if (cur_state == CHAT_STATE_THINKING) {
                 if (res->vad_state == VAD_SPEECH && peak >= 1200 && rms >= 300) {
