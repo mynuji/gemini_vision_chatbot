@@ -55,6 +55,7 @@ static uint32_t s_speech_start_ms = 0;
 static uint32_t s_last_speech_ms = 0;
 static bool s_has_user_spoken = false;
 static int s_vad_speech_frames = 0;
+static volatile bool s_is_barge_in_listen = false;
 
 // 끼어들기(Barge-in) 시 앞 음절 손실 방지용 롤링 프리버퍼 (20프레임 = 약 640ms 분량, PSRAM에 명시적 할당)
 #define BARGE_IN_PRE_CHUNKS 20
@@ -381,14 +382,15 @@ static void audio_fetch_task(void *pvParameters) {
             // 2) AI 생각 중(THINKING):
             //    스피커가 무음이므로 적정 음성 에너지(Peak >= 1200, RMS >= 300)와 연속 2프레임(약 64ms) 시 인정!
             bool voice_candidate = false;
-            int required_confirm_frames = 4;
+            int required_confirm_frames = 3;
 
             if (cur_state == CHAT_STATE_SPEAKING) {
-                // 답변 완료 끝부분(s_server_done)에는 스피커 잔여음이 마이크로 들어가 끼어드는 현상 차단
-                // 재생 도중 끼어들기는 스피커 소리를 뚫고 들어오는 명확한 사용자 육성(Peak >= 4800, RMS >= 1400) 시에만 인정
-                if (!s_server_done && res->vad_state == VAD_SPEECH && peak >= 4800 && rms >= 1400) {
+                // 스피커가 출력 중인 전 구간에서 끼어들기 허용!
+                // (서버 전송이 완료된 s_server_done 상태라도 스피커 링버퍼에 오디오가 남아 재생 중이면 끝까지 끼어들기 가능)
+                bool spk_playing = (s_spk_buffered_bytes > 0) || s_is_speaker_playing;
+                if (spk_playing && res->vad_state == VAD_SPEECH && peak >= 3400 && rms >= 800) {
                     voice_candidate = true;
-                    required_confirm_frames = 4;
+                    required_confirm_frames = 3; // 약 96ms 연속 유지 시 즉각 인정
                 }
             } else if (cur_state == CHAT_STATE_THINKING) {
                 if (res->vad_state == VAD_SPEECH && peak >= 1200 && rms >= 300) {
@@ -450,23 +452,28 @@ static void audio_fetch_task(void *pvParameters) {
             int32_t l_rms = (l_num > 0) ? (int32_t)sqrt(l_sum_sq / l_num) : 0;
 
             // [스피커 잔향 및 실내 배경 노이즈 오인식 원천 차단]
-            // 1) LISTENING 모드 진입 직후 700ms 동안은 잔류 반사음 소거 가드
-            // 2) 일반 실내 배경 노이즈(팬 소음, 호흡, 진동)를 넘어서는 명확한 사용자 육성(Peak >= 2200, RMS >= 450)
-            // 3) 연속 7프레임(약 224ms) 이상 실제 육성 에너지가 유지될 때만 발화 시작 인정
-            if (now_ms - s_mic_stream_start_ms > 700) {
-                if (res->vad_state == VAD_SPEECH && l_peak >= 2200 && l_rms >= 450) {
+            // 일반 대기 진입 시: 잔향 소거 가드 650ms 적용
+            // 끼어들기(Barge-in) 직후 진입 시: 이미 하드웨어 음소거되었으므로 가드를 120ms로 대폭 단축하여 첫 음절 손실 방지!
+            uint32_t guard_ms = s_is_barge_in_listen ? 120 : 650;
+            if (now_ms - s_mic_stream_start_ms > guard_ms) {
+                int confirm_needed = s_is_barge_in_listen ? 4 : 7;
+                int32_t th_peak = s_is_barge_in_listen ? 1800 : 2200;
+                int32_t th_rms = s_is_barge_in_listen ? 380 : 450;
+
+                if (res->vad_state == VAD_SPEECH && l_peak >= th_peak && l_rms >= th_rms) {
                     s_vad_speech_frames++;
-                    if (s_vad_speech_frames >= 7) {
+                    if (s_vad_speech_frames >= confirm_needed) {
                         s_last_speech_ms = now_ms;
                         if (!s_has_user_spoken) {
                             s_has_user_spoken = true;
                             s_speech_start_ms = now_ms;
-                            ESP_LOGI(TAG, "User speech started! (peak=%ld, rms=%ld)", (long)l_peak, (long)l_rms);
+                            ESP_LOGI(TAG, "User speech started! (barge_in_mode=%d, peak=%ld, rms=%ld)",
+                                     (int)s_is_barge_in_listen, (long)l_peak, (long)l_rms);
                         }
                         chat_state_activity_occurred(); // 60초 침묵 타이머 리셋
                     }
                 } else {
-                    if (s_has_user_spoken && res->vad_state == VAD_SPEECH && l_peak >= 1600 && l_rms >= 300) {
+                    if (s_has_user_spoken && res->vad_state == VAD_SPEECH && l_peak >= 1400 && l_rms >= 280) {
                         // 이미 발화 중일 때는 문장 중간 음절 유지
                         s_last_speech_ms = now_ms;
                     }
@@ -479,9 +486,9 @@ static void audio_fetch_task(void *pvParameters) {
 
             if (s_has_user_spoken) {
                 // 발화 종료 판정:
-                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 700ms 경과) 침묵이 700ms 이상 지속될 때
-                // 2) 최대 발화 제한: 사용자가 말을 시작한 시점(s_speech_start_ms)으로부터 15초 초과 시
-                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 700) && (now_ms - s_last_speech_ms > 700);
+                // 끼어들기 직후에는 사용자가 다음 단어를 생각하고 말할 수 있도록 침묵 감지를 1100ms로 여유 부여
+                uint32_t required_silence = s_is_barge_in_listen ? 1100 : 700;
+                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 700) && (now_ms - s_last_speech_ms > required_silence);
                 bool max_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 15000);
 
                 if (silence_timeout || max_timeout) {
@@ -489,13 +496,14 @@ static void audio_fetch_task(void *pvParameters) {
                     s_has_user_spoken = false;
                     s_vad_speech_frames = 0;
                     s_speech_start_ms = 0;
+                    s_is_barge_in_listen = false; // 발화 종료 시 끼어들기 청취 모드 해제
 
-                    // 최소 450ms 이상의 실질적 발화 지속시간이 검증되었을 때만 서버로 speech_end 전송
-                    if (total_speech_dur >= 450) {
+                    // 최소 350ms 이상의 실질적 발화 지속시간이 검증되었을 때만 서버로 speech_end 전송
+                    if (total_speech_dur >= 350) {
                         ESP_LOGI(TAG, "User speech finished (duration=%ums) -> Forwarding speech_end", (unsigned int)total_speech_dur);
                         chat_state_handle_speech_end();
                     } else {
-                        ESP_LOGW(TAG, "Speech too short (%ums < 450ms) -> Ignored as background glitch/cough", (unsigned int)total_speech_dur);
+                        ESP_LOGW(TAG, "Speech too short (%ums < 350ms) -> Ignored as background glitch/cough", (unsigned int)total_speech_dur);
                     }
                 }
             } else {
@@ -503,6 +511,7 @@ static void audio_fetch_task(void *pvParameters) {
                 if (now_ms - s_mic_stream_start_ms > 60000) {
                     ESP_LOGI(TAG, "Silence timeout (60s) in LISTENING -> Auto returning to IDLE");
                     s_vad_speech_frames = 0;
+                    s_is_barge_in_listen = false;
                     chat_state_set(CHAT_STATE_IDLE);
                 }
             }
@@ -758,4 +767,9 @@ void audio_pipeline_set_mic_gain(uint8_t gain) {
 
 uint8_t audio_pipeline_get_mic_gain(void) {
     return s_mic_gain;
+}
+
+void audio_pipeline_notify_barge_in(void) {
+    s_is_barge_in_listen = true;
+    ESP_LOGI(TAG, "Barge-in listen mode activated (guard 120ms, silence timeout 1100ms)");
 }

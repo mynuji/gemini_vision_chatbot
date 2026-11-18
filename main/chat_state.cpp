@@ -388,6 +388,7 @@ void chat_state_barge_in(void) {
 
     // 2. 스피커 버퍼 및 I2S 즉각 침묵
     audio_pipeline_clear_audio();
+    audio_pipeline_notify_barge_in(); // 끼어들기 직후 청취 가드 120ms 단축 & 발화 대기 시간 여유 부여
 
     // 3. 젯슨 서버에 인터럽트 통보 (음성 끼어들기: reason=voice, played_bytes 포함)
     char msg[128];

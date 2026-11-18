@@ -1714,6 +1714,25 @@ def get_korean_time_speech():
     m = now.minute
     return f"현재 시간은 {ampm} {h}시 {m}분입니다."
 
+STOP_COMMAND_KEYWORDS = (
+    "그만", "그만해", "그만하자", "그만해줘", "그만요",
+    "스톱", "stop", "스탑", "멈춰", "멈춰줘", "멈춰라",
+    "잠깐", "잠깐만", "잠시만", "잠시", "타임",
+    "조용히", "조용", "조용히해", "말하지마", "닥쳐", "쉿",
+    "취소", "취소해줘", "됐어", "됐다", "아니야", "아니요", "아냐"
+)
+
+def is_stop_command(text):
+    """사용자가 끼어들어서 AI의 발화를 멈추고자 하는 중단 명령인지 판정"""
+    if not text:
+        return False
+    stripped = text.strip().replace(".", "").replace("!", "").replace("?", "").replace("~", "").replace(" ", "").lower()
+    for kw in STOP_COMMAND_KEYWORDS:
+        kw_clean = kw.replace(" ", "").lower()
+        if stripped == kw_clean or stripped == kw_clean + "요" or stripped.startswith(kw_clean):
+            return True
+    return False
+
 def is_meaningful_speech(text):
     """TV 소음, 비언어 잡음, 괄호 환각, 무의미한 단발성 소리(기침, 헛기침 등)를 필터링하여 유효한 사용자의 발화인지 판정"""
     if not text:
@@ -1721,6 +1740,10 @@ def is_meaningful_speech(text):
     stripped = text.strip()
     if not stripped:
         return False
+    
+    # 중단/정지 명령 키워드는 무조건 유효한 발화로 인정
+    if is_stop_command(stripped):
+        return True
     
     # 1. 비언어 잡음 또는 괄호 환각: (음악), [박수], (기침), [재채기], (아과쉬...), etc.
     if (stripped.startswith("(") and stripped.endswith(")")) or \
@@ -1730,7 +1753,7 @@ def is_meaningful_speech(text):
     # 2. 한글, 영문, 숫자 외 기호 제거
     alphanumeric = re.sub(r'[^가-힣a-zA-Z0-9]', '', stripped)
     # 의미 있는 단음절 대답(네, 응, 예, 왜, 뭐 등)은 허용하되, 단순 추임새나 목가다듬기 소리("어", "음", "아")는 단독 발화로 인정하지 않음
-    meaningful_single_words = {"네", "응", "예", "아니", "왜", "뭐"}
+    meaningful_single_words = {"네", "응", "예", "아니", "왜", "뭐", "쉿", "스톱", "스탑", "그만"}
     if len(alphanumeric) < 2 and alphanumeric not in meaningful_single_words:
         return False
     
@@ -2902,6 +2925,15 @@ async def handler(websocket, path=None):
         if aud_cmd:
             print(f"\n[음성 명령 감지] 오디오 설정 변경: '{user_text}' -> {aud_cmd}={aud_val}")
             await adjust_audio_settings(aud_cmd, aud_val, aud_resp)
+            return
+
+        # 중단 / 그만 / 스톱 / 잠깐 등 끼어들기 중단 명령 감지
+        if is_stop_command(user_text):
+            print(f"\n[중단 명령 감지] '{user_text}' -> 이전 답변 이어말하기 즉시 폐기 및 대기 전환")
+            interrupted_holder["session"] = None
+            interrupted_holder["last_completed_session"] = None
+            interrupted_holder["active_ai_response"] = None
+            await websocket.send(json.dumps({"type": "status", "message": "DONE"}))
             return
 
         interrupted_holder["session"] = None

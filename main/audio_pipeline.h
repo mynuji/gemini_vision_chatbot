@@ -69,6 +69,11 @@ void audio_pipeline_set_mic_gain(uint8_t gain);
  */
 uint8_t audio_pipeline_get_mic_gain(void);
 
+/**
+ * @brief 음성 끼어들기 발생 알림 (끼어들기 직후 청취 가드 단축 및 발화 대기 최적화)
+ */
+void audio_pipeline_notify_barge_in(void);
+
 #ifdef __cplusplus
 }
 #endif
