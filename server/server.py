@@ -182,9 +182,15 @@ def load_device_chat_history(device_id: str, max_messages: int = MEMORY_MAX_MESS
 def save_device_chat_history(device_id: str, chat_history: list, max_messages: int = MEMORY_FILE_SAVE_LIMIT):
     """
     기기별 대화 이력을 memories/{device_id}.json 파일에 영구 저장합니다. (기본 최대 1,520턴/3,040개 메시지)
+    - 임시 IP 주소(esp32_192...) 형태의 더미 파일 저장을 방지하고, 고유 MAC 주소 확정 시에만 저장
+    - 실제 주고받은 대화가 없는 빈 기록(0개)은 빈 파일로 디스크를 생성/오염시키지 않음
     """
     if not device_id or not chat_history:
         return
+    # 임시 IP 주소 형태는 저장 방지 (고유 MAC 주소로 확정된 후에만 영구 저장)
+    if device_id.startswith("esp32_"):
+        return
+
     safe_id = sanitize_device_id(device_id)
     file_path = os.path.join(MEMORIES_DIR, f"{safe_id}.json")
     try:
@@ -193,6 +199,10 @@ def save_device_chat_history(device_id: str, chat_history: list, max_messages: i
             for m in chat_history
             if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content")
         ][-max_messages:]
+
+        # 실제 주고받은 대화 내용이 전혀 없으면 빈 파일 생성 방지
+        if not conversation_turns:
+            return
 
         payload = {
             "device_id": device_id,
@@ -2563,8 +2573,9 @@ async def resume_ai_response(websocket, session_data, chat_history, interrupted_
 async def handler(websocket, path=None):
     remote_addr = getattr(websocket, 'remote_address', None)
     remote_ip = remote_addr[0] if remote_addr and isinstance(remote_addr, tuple) else "unknown"
-    current_device_id = f"esp32_{remote_ip}"
-    print(f"\n[클라이언트 연결됨: {remote_addr or 'ESP32'}] (기본 디바이스 ID: {current_device_id})")
+    current_device_id = None
+    default_temp_id = f"esp32_{remote_ip}"
+    print(f"\n[클라이언트 연결됨: {remote_addr or 'ESP32'}] (기기 고유 식별 대기 중)")
     
     audio_buffer = []
     is_speaking = False
@@ -2745,7 +2756,19 @@ async def handler(websocket, path=None):
         if current_llm_type in REALTIME_LLM_TYPES:
             await switch_realtime_session(current_llm_type)
 
-    chat_history = load_device_chat_history(current_device_id)
+    chat_history = []
+    history_loaded = False
+
+    def ensure_chat_history_loaded():
+        nonlocal current_device_id, history_loaded
+        if not history_loaded:
+            target_id = current_device_id or default_temp_id
+            loaded_hist = load_device_chat_history(target_id)
+            chat_history.clear()
+            chat_history.extend(loaded_hist)
+            history_loaded = True
+            return loaded_hist
+        return chat_history
 
     pending_image_future = None
     t_last_user_request = 0.0
@@ -2843,6 +2866,7 @@ async def handler(websocket, path=None):
 
     async def handle_user_turn(user_text, asr_ms=0.0, close_session_after=False):
         nonlocal pending_image_future, t_last_user_request
+        ensure_chat_history_loaded()
         now = time.perf_counter()
         if now - t_last_user_request < 1.2:
             print(f"[서버 보호] 직전 요청과 간격이 너무 짧음({now - t_last_user_request:.2f}s < 1.2s) -> 중복 요청 무시")
@@ -3447,15 +3471,18 @@ async def handler(websocket, path=None):
                                     raw_dev_id = ctrl_json.get("device_id") or ctrl_json.get("mac_address")
                                     if raw_dev_id:
                                         sanitized_id = sanitize_device_id(str(raw_dev_id))
-                                        if sanitized_id and sanitized_id != current_device_id:
-                                            save_device_chat_history(current_device_id, chat_history)
-                                            print(f"\n[기기 식별] 디바이스 식별자 확정: {current_device_id} -> {sanitized_id}")
+                                        if sanitized_id:
+                                            prev_id = current_device_id
                                             current_device_id = sanitized_id
                                             client_settings["device_id"] = current_device_id
-                                            loaded_hist = load_device_chat_history(current_device_id)
-                                            chat_history.clear()
-                                            chat_history.extend(loaded_hist)
-                                            print(f"[기기 기억 로드] {current_device_id}의 이전 대화 기억 {len(chat_history)}건을 불러왔습니다.")
+
+                                            # 기기 식별 완료: 이전 대화 기억을 단 1회 깨끗하게 로드 (임시 IP 중복 로드 원천 차단)
+                                            if not history_loaded or prev_id != current_device_id:
+                                                loaded_hist = load_device_chat_history(current_device_id)
+                                                chat_history.clear()
+                                                chat_history.extend(loaded_hist)
+                                                history_loaded = True
+                                                print(f"\n[기기 식별 및 기억 로드] 고유 ID: {current_device_id} (이전 대화 기록 {len(chat_history)}건 로드)")
 
                                     if "volume" in ctrl_json:
                                         current_volume = int(ctrl_json["volume"])
@@ -3512,6 +3539,7 @@ async def handler(websocket, path=None):
 
                     # ★ 순수 텍스트 질의인 경우에만 LLM 처리
                     if not is_control_packet:
+                        ensure_chat_history_loaded()
                         user_text = raw_text
                         t_speech_end = time.perf_counter()
                         print(f"\n[텍스트 입력 수신 (LLM 질의)] {user_text}")
