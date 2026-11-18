@@ -820,11 +820,12 @@ void chat_state_tick(uint32_t now_ms) {
     }
     uint32_t elapsed = cur_ms - s_last_activity_ms;
 
-    if (s_session_active && s_chat_state == CHAT_STATE_LISTENING) {
-        // 대화 세션 종료 조건: 60초(60,000ms) 동안 아무런 음성이 들리지 않았을 때만 적용
+    if (s_chat_state == CHAT_STATE_LISTENING) {
+        // 대화 세션 종료 조건: 60초(60,000ms) 동안 아무런 사용자 발화가 전혀 없을 때 대기모드(IDLE)로 자동 복귀
         if (elapsed >= 60000) {
-            ESP_LOGI(TAG, ">>> 60 seconds of silence timeout! Ending conversation session -> IDLE");
+            ESP_LOGI(TAG, ">>> 60 seconds of silence timeout! Returning to IDLE");
             s_session_active = false;
+            s_close_session_after_speaking = false;
             chat_state_set(CHAT_STATE_IDLE);
         }
     } else if (s_chat_state == CHAT_STATE_THINKING) {

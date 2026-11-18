@@ -483,9 +483,9 @@ static void audio_fetch_task(void *pvParameters) {
                     }
                 }
             } else {
-                // 8초 동안 아무런 유효 사용자 발화가 없으면 조용히 IDLE 상태로 복귀 (무음 상태 무한 답변 루프 원천 차단)
-                if (now_ms - s_mic_stream_start_ms > 8000) {
-                    ESP_LOGI(TAG, "Silence timeout (8s) in LISTENING -> Auto returning to IDLE");
+                // 60초 동안 아무런 유효 사용자 발화가 없으면 조용히 IDLE 대기 상태로 복귀
+                if (now_ms - s_mic_stream_start_ms > 60000) {
+                    ESP_LOGI(TAG, "Silence timeout (60s) in LISTENING -> Auto returning to IDLE");
                     s_vad_speech_frames = 0;
                     chat_state_set(CHAT_STATE_IDLE);
                 }
