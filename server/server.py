@@ -293,6 +293,8 @@ async def convert_mp3_to_pcm(mp3_bytes):
         if process.returncode != 0:
             print(f"[경고] FFmpeg 변환 에러: {stderr.decode()}")
             return b""
+        if stdout and len(stdout) % 2 != 0:
+            stdout = stdout[:-1]
         return stdout
     except Exception as e:
         print(f"[오류] PCM 변환 중 예외 발생: {e}")
@@ -560,15 +562,20 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
 # ==========================================
 def resample_24k_to_16k(pcm24k_bytes):
     """24kHz 16-bit Mono PCM -> 16kHz 16-bit Mono PCM (3:2 초고속 선형 다운샘플링)"""
-    if not pcm24k_bytes:
+    if not pcm24k_bytes or len(pcm24k_bytes) < 2:
         return b""
+    if len(pcm24k_bytes) % 2 != 0:
+        pcm24k_bytes = pcm24k_bytes[:-1]
     audio24 = np.frombuffer(pcm24k_bytes, dtype=np.int16)
     n_out = int(len(audio24) * 2 / 3)
     if n_out <= 0:
         return b""
     x_old = np.linspace(0, len(audio24) - 1, len(audio24))
     x_new = np.linspace(0, len(audio24) - 1, n_out)
-    return np.interp(x_new, x_old, audio24).astype(np.int16).tobytes()
+    res = np.interp(x_new, x_old, audio24).astype(np.int16).tobytes()
+    if len(res) % 2 != 0:
+        res = res[:-1]
+    return res
 
 def resample_16k_to_24k(pcm16k_bytes):
     """16kHz 16-bit Mono PCM -> 24kHz 16-bit Mono PCM (2:3 초고속 선형 업샘플링)"""

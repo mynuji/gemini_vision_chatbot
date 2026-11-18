@@ -163,13 +163,19 @@ static void spk_play_task(void *pvParameters) {
         uint8_t *item = (uint8_t *)xRingbufferReceiveUpTo(s_spk_ringbuf, &item_size, pdMS_TO_TICKS(50), chunk_bytes);
 
         if (item != NULL && item_size > 0) {
+            // 16비트 오디오(2바이트/샘플) 정렬 보장: 홀수 바이트 수신 시 짝수 샘플만 처리하여 상/하위 바이트 반전("쏴~~" 백색소음) 방지
+            size_t aligned_size = item_size & ~1;
+            if (aligned_size == 0) {
+                vRingbufferReturnItem(s_spk_ringbuf, item);
+                continue;
+            }
             empty_spk_count = 0;
             chat_state_activity_occurred(); // 실제 스피커 출력 재생 중 -> 타임아웃 타이머 리셋!
-            memcpy(play_buf, item, item_size);
+            memcpy(play_buf, item, aligned_size);
             vRingbufferReturnItem(s_spk_ringbuf, item);
             s_spk_buffered_bytes = (s_spk_buffered_bytes >= item_size) ? (s_spk_buffered_bytes - item_size) : 0;
 
-            size_t valid_samples = item_size / sizeof(int16_t);
+            size_t valid_samples = aligned_size / sizeof(int16_t);
             float vol_scale = (float)settings_manager_get()->volume / 100.0f;
             if (vol_scale < 0.1f) vol_scale = 0.1f;
             if (vol_scale > 1.0f) vol_scale = 1.0f;
@@ -586,11 +592,17 @@ void audio_pipeline_feed_tts_audio(const uint8_t *data, size_t len) {
 
     chat_state_activity_occurred(); // 활성 오디오 수신 -> 타임아웃 타이머 리셋!
 
-    BaseType_t sent = xRingbufferSend(s_spk_ringbuf, data, len, pdMS_TO_TICKS(50));
+    // 16비트 오디오(2바이트/샘플) 정렬 보장: 홀수 바이트 수신 시 짝수 샘플만 투입하여 상/하위 바이트 반전("쏴~~" 백색소음) 방지
+    size_t aligned_len = len & ~1;
+    if (aligned_len == 0) {
+        return;
+    }
+
+    BaseType_t sent = xRingbufferSend(s_spk_ringbuf, data, aligned_len, pdMS_TO_TICKS(50));
     if (sent == pdTRUE) {
-        s_spk_buffered_bytes += len;
+        s_spk_buffered_bytes += aligned_len;
     } else {
-        ESP_LOGW(TAG, "spk_ringbuf full, dropping %d bytes", (int)len);
+        ESP_LOGW(TAG, "spk_ringbuf full, dropping %d bytes", (int)aligned_len);
     }
 }
 

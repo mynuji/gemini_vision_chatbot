@@ -333,6 +333,7 @@ void chat_state_set(chat_state_t new_state) {
                 } else if (!wifi_ws_is_connected()) {
                     idle_status = is_ko ? "서버 접속 끊김" : "SERVER DISCONNECTED";
                 }
+                display_ui_pause_auto_blink(false);
                 display_ui_set_emotion(UI_EMOTION_IDLE, UI_EMOTION_IDLE, idle_status);
             }
             break;
@@ -358,7 +359,8 @@ void chat_state_set(chat_state_t new_state) {
         case CHAT_STATE_SPEAKING:
             audio_pipeline_enable_mic_streaming(false);
             if (!s_camera_preview_active) {
-                display_ui_pause_auto_blink(false);
+                // AI 발화 중에는 눈 애니메이션 태스크를 완전히 정지하여 디스플레이 CPU 및 락 점유율 0% 유지 (음성 버벅임 원천 차단)
+                display_ui_pause_auto_blink(true);
                 display_ui_set_emotion(s_speaking_emotion, s_speaking_emotion, is_ko ? "말하는 중..." : "SPEAKING...");
             }
             break;
