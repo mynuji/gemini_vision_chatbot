@@ -560,22 +560,58 @@ async def stream_gemini(messages, image_bytes=None, image_mime="image/jpeg"):
 # ==========================================
 # 2-1. 실시간 오디오 리샘플링 (16kHz <-> 24kHz)
 # ==========================================
+class Resampler24kTo16k:
+    """24kHz 16-bit Mono PCM -> 16kHz 16-bit Mono PCM 스트리밍 리샘플러
+    - 홀수 바이트 잔여물 이월(Carry-over)로 상/하위 바이트 반전('쏴~~' 백색소음) 원천 방지
+    - np.clip을 통한 16비트 정수 오버플로우/랩어라운드 디지털 파열음 방지
+    """
+    def __init__(self):
+        self.residual_bytes = b""
+
+    def reset(self):
+        self.residual_bytes = b""
+
+    def process(self, pcm24k_bytes):
+        if not pcm24k_bytes:
+            return b""
+        
+        data = self.residual_bytes + pcm24k_bytes
+        if len(data) < 2:
+            self.residual_bytes = data
+            return b""
+        
+        # 16-bit PCM 2바이트 짝수 정렬 보장 및 홀수 바이트는 다음 청크로 이월
+        if len(data) % 2 != 0:
+            self.residual_bytes = data[-1:]
+            data = data[:-1]
+        else:
+            self.residual_bytes = b""
+        
+        audio24 = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+        n_in = len(audio24)
+        if n_in == 0:
+            return b""
+        
+        # 3:2 비율 출력 샘플 수
+        n_out = int(n_in * 2 / 3)
+        if n_out <= 0:
+            self.residual_bytes = data + self.residual_bytes
+            return b""
+        
+        # 선형 보간 (경계 보존)
+        x_old = np.linspace(0, n_in - 1, n_in)
+        x_new = np.linspace(0, n_in - 1, n_out)
+        interp_samples = np.interp(x_new, x_old, audio24)
+        
+        # [핵심] 오버플로우 방지 클램핑: 32767 초과 / -32768 미만 wrap-around로 인한 거대 화이트 노이즈 방지
+        clipped = np.clip(interp_samples, -32768.0, 32767.0).astype(np.int16)
+        res_bytes = clipped.tobytes()
+        return res_bytes
+
+_global_resampler_24_to_16 = Resampler24kTo16k()
+
 def resample_24k_to_16k(pcm24k_bytes):
-    """24kHz 16-bit Mono PCM -> 16kHz 16-bit Mono PCM (3:2 초고속 선형 다운샘플링)"""
-    if not pcm24k_bytes or len(pcm24k_bytes) < 2:
-        return b""
-    if len(pcm24k_bytes) % 2 != 0:
-        pcm24k_bytes = pcm24k_bytes[:-1]
-    audio24 = np.frombuffer(pcm24k_bytes, dtype=np.int16)
-    n_out = int(len(audio24) * 2 / 3)
-    if n_out <= 0:
-        return b""
-    x_old = np.linspace(0, len(audio24) - 1, len(audio24))
-    x_new = np.linspace(0, len(audio24) - 1, n_out)
-    res = np.interp(x_new, x_old, audio24).astype(np.int16).tobytes()
-    if len(res) % 2 != 0:
-        res = res[:-1]
-    return res
+    return _global_resampler_24_to_16.process(pcm24k_bytes)
 
 def resample_16k_to_24k(pcm16k_bytes):
     """16kHz 16-bit Mono PCM -> 24kHz 16-bit Mono PCM (2:3 초고속 선형 업샘플링)"""
@@ -711,6 +747,7 @@ class GeminiLiveSession:
         self.chat_history = chat_history if chat_history is not None else []
         self.device_id = device_id
         self.accumulated_model_text = []
+        self.resampler = Resampler24kTo16k()
         self.gemini_ws = None
         self.rx_task = None
         self.is_connected = False
@@ -1164,6 +1201,7 @@ class GeminiLiveSession:
                 # 사용자가 끼어들었음을 Gemini 서버가 감지했을 때
                 if server_content.get("interrupted"):
                     print("\n[Gemini Realtime] 사용자 끼어들기 감지(interrupted) -> 스피커 플러시")
+                    self.resampler.reset()
                     await self.esp_ws.send(json.dumps({"type": "interrupt", "message": "CLEAR_AUDIO"}))
                     first_chunk = True
                     speaking_active = False
@@ -1177,14 +1215,15 @@ class GeminiLiveSession:
                             b64_pcm = inline.get("data", "")
                             if b64_pcm:
                                 pcm24 = base64.b64decode(b64_pcm)
-                                pcm16 = resample_24k_to_16k(pcm24)
-                                speaking_active = True
-                                self.speaking_active = True
-                                self.replied_this_turn = True
-                                if first_chunk:
-                                    first_chunk = False
-                                    await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING...", "emotion": "normal"}))
-                                await self.esp_ws.send(pcm16)
+                                pcm16 = self.resampler.process(pcm24)
+                                if pcm16:
+                                    speaking_active = True
+                                    self.speaking_active = True
+                                    self.replied_this_turn = True
+                                    if first_chunk:
+                                        first_chunk = False
+                                        await self.esp_ws.send(json.dumps({"type": "status", "message": "SPEAKING...", "emotion": "normal"}))
+                                    await self.esp_ws.send(pcm16)
 
                         text_part = part.get("text", "")
                         if text_part:
@@ -1195,6 +1234,7 @@ class GeminiLiveSession:
 
                 if server_content.get("turnComplete"):
                     print("\n[Gemini Realtime] turnComplete 수신 -> DONE 전송")
+                    self.resampler.reset()
                     if self.accumulated_model_text:
                         full_ans = "".join(self.accumulated_model_text).strip()
                         self.accumulated_model_text = []
@@ -3148,7 +3188,27 @@ async def handler(websocket, path=None):
                                 # [B] 음성 발화 완료 신호 (클라이언트 VAD 감지)
                                 elif msg_type == "speech_end":
                                     if current_llm_type in REALTIME_LLM_TYPES:
-                                        print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 ({current_llm_type} 턴 완료 전송)")
+                                        # [핵심] 최근 수신된 오디오의 음향 에너지(Peak/RMS) 검증
+                                        # 가만히 있거나 무음/미세 배경 노이즈 상태에서 전송된 speech_end는 턴 완료 전송을 차단!
+                                        has_valid_speech = False
+                                        peak_amp = 0.0
+                                        rms_amp = 0.0
+                                        if audio_buffer:
+                                            recent_audio = np.concatenate(audio_buffer[-30:]) if len(audio_buffer) > 30 else np.concatenate(audio_buffer)
+                                            if len(recent_audio) > 0:
+                                                peak_amp = float(np.max(np.abs(recent_audio)))
+                                                rms_amp = float(np.sqrt(np.mean(recent_audio ** 2)))
+                                                # 유효 발화 기준: Peak >= 0.035 또는 RMS >= 0.009
+                                                if peak_amp >= 0.035 or rms_amp >= 0.009:
+                                                    has_valid_speech = True
+
+                                        if not has_valid_speech:
+                                            print(f"\n[제어 명령] ⏱️ 클라이언트 speech_end 수신했으나 유효 발화 없음 (Peak={peak_amp:.3f}, RMS={rms_amp:.3f}) -> 무음 무시 (턴 완료 차단 및 세션 종료 통보)")
+                                            audio_buffer = []
+                                            await websocket.send(json.dumps({"type": "status", "message": "DONE", "close_session": True}))
+                                            continue
+
+                                        print(f"\n[제어 명령] ⏱️ 클라이언트 음성 발화 완료(speech_end) 수신 (Peak={peak_amp:.3f}, RMS={rms_amp:.3f}) -> ({current_llm_type} 턴 완료 전송)")
                                         if active_realtime_session and active_realtime_session.is_connected:
                                             await active_realtime_session.commit_audio()
 

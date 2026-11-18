@@ -64,6 +64,12 @@ static size_t *s_barge_in_presizes = NULL;
 static int s_barge_in_prebuf_idx = 0;
 static int s_barge_in_prebuf_count = 0;
 
+// 16비트 오디오(2바이트/샘플) 홀수 바이트 잔여물 이월 버퍼
+// 네트워크 패킷 경계로 1바이트가 남았을 때 절대 버리지 않고 다음 청크 앞머리에 결합하여
+// 상/하위 바이트 반전(MSB/LSB swap -> '쏴~~~' 백색소음) 원천 차단!
+static uint8_t s_feed_residual_byte = 0;
+static bool s_has_feed_residual = false;
+
 // ============================================================================
 // [1] 스피커 재생 태스크 (Core 0, Priority 4)
 // ============================================================================
@@ -355,27 +361,42 @@ static void audio_fetch_task(void *pvParameters) {
             int16_t *samples = (int16_t *)res->data;
             int num_samples = res->data_size / sizeof(int16_t);
             int32_t peak = 0;
+            int64_t sum_sq = 0;
             for (int i = 0; i < num_samples; i++) {
                 int32_t val = abs(samples[i]);
                 if (val > peak) peak = val;
+                sum_sq += (int64_t)val * val;
             }
+            int32_t rms = (num_samples > 0) ? (int32_t)sqrt(sum_sq / num_samples) : 0;
 
             // 끼어들기(Barge-in) 감지 정책:
-            // 1) AI 응답 생성 중(THINKING): 직전 질문 발화의 잔여 음향 및 작은 주변 소음/기침 등으로 인한
-            //    불필요한 자기 중단(Self-abort) 루프를 방지하기 위해 마이크 에너지 기반 끼어들기는 비활성화합니다.
-            //    (생각 중 즉각 취소는 고정밀 WakeNet 신경망 모델 'Alexa' 호출어 또는 물리적 '화면 터치'로 안전하게 동작)
-            // 2) AI 음성 출력 중(SPEAKING): 스피커 재생 음향의 마이크 피드백 오작동을 방지하기 위해,
-            //    AEC가 적용된 WakeNet 호출어 'Alexa' 또는 화면 터치로 즉각 중단됩니다.
+            // 1) AI 음성 출력 중(SPEAKING):
+            //    스피커 잔여 에코(AEC 통과 후)를 상회하는 실제 사람의 육성 에너지(Peak >= 2200, RMS >= 600)와
+            //    연속 3프레임(약 96ms) 이상 실제 음성이 유지될 때만 끼어들기로 인정하여 즉각 음소거 및 청취 전환!
+            // 2) AI 생각 중(THINKING):
+            //    스피커가 무음이므로 적정 음성 에너지(Peak >= 1200, RMS >= 300)와 연속 2프레임(약 64ms) 시 인정!
             bool voice_candidate = false;
-            int required_confirm_frames = 2;
+            int required_confirm_frames = 3;
+
+            if (cur_state == CHAT_STATE_SPEAKING) {
+                if (res->vad_state == VAD_SPEECH && peak >= 2200 && rms >= 600) {
+                    voice_candidate = true;
+                    required_confirm_frames = 3;
+                }
+            } else if (cur_state == CHAT_STATE_THINKING) {
+                if (res->vad_state == VAD_SPEECH && peak >= 1200 && rms >= 300) {
+                    voice_candidate = true;
+                    required_confirm_frames = 2;
+                }
+            }
 
             if (voice_candidate) {
                 barge_in_confirm_count++;
                 if (barge_in_confirm_count >= required_confirm_frames) {
                     barge_in_confirm_count = 0;
-                    ESP_LOGW(TAG, ">>> VOICE BARGE-IN DETECTED in %s! (peak=%ld, prebuf_count=%d)",
+                    ESP_LOGW(TAG, ">>> VOICE BARGE-IN DETECTED in %s! (peak=%ld, rms=%ld, prebuf_count=%d)",
                              (cur_state == CHAT_STATE_SPEAKING ? "SPEAKING" : "THINKING"),
-                             (long)peak, s_barge_in_prebuf_count);
+                             (long)peak, (long)rms, s_barge_in_prebuf_count);
                     chat_state_handle_voice_barge_in();
 
                     // 앞 음절 전체를 즉시 송신 링버퍼에 투입하여 앞 단어 유실 방지
@@ -410,15 +431,28 @@ static void audio_fetch_task(void *pvParameters) {
                 xRingbufferSend(s_tx_ringbuf, res->data, res->data_size, 0); // 논블로킹
             }
 
-            // 비프음 및 단발성 주변 소음 방지: 500ms 안정화 후 3프레임(약 96ms) 연속 음성 신호 시 실제 발화로 판정
-            if (now_ms - s_mic_stream_start_ms > 500) {
-                if (res->vad_state == VAD_SPEECH) {
+            int16_t *l_samples = (int16_t *)res->data;
+            int l_num = res->data_size / sizeof(int16_t);
+            int32_t l_peak = 0;
+            int64_t l_sum_sq = 0;
+            for (int i = 0; i < l_num; i++) {
+                int32_t v = abs(l_samples[i]);
+                if (v > l_peak) l_peak = v;
+                l_sum_sq += (int64_t)v * v;
+            }
+            int32_t l_rms = (l_num > 0) ? (int32_t)sqrt(l_sum_sq / l_num) : 0;
+
+            // [무음 오인식 방지] 단순 VAD_SPEECH 외에 실제 육성 에너지(Peak >= 850, RMS >= 180) 동시 검증
+            // 최소 5프레임(약 160ms) 이상 연속 신호가 유지되어야 실제 사용자 발화 시작으로 판정
+            if (now_ms - s_mic_stream_start_ms > 400) {
+                if (res->vad_state == VAD_SPEECH && l_peak >= 850 && l_rms >= 180) {
                     s_vad_speech_frames++;
-                    if (s_vad_speech_frames >= 3) {
+                    if (s_vad_speech_frames >= 5) {
                         s_last_speech_ms = now_ms;
                         if (!s_has_user_spoken) {
                             s_has_user_spoken = true;
                             s_speech_start_ms = now_ms;
+                            ESP_LOGI(TAG, "User speech started! (peak=%ld, rms=%ld)", (long)l_peak, (long)l_rms);
                         }
                         chat_state_activity_occurred(); // 60초 침묵 타이머 리셋
                     }
@@ -429,16 +463,31 @@ static void audio_fetch_task(void *pvParameters) {
 
             if (s_has_user_spoken) {
                 // 발화 종료 판정:
-                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 800ms) 침묵이 650ms 이상 지속될 때
-                // 2) 최대 발화 제한: 사용자가 말을 시작한 시점(s_speech_start_ms)으로부터 15초 초과 시 (대기 시간과 무관!)
-                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 800) && (now_ms - s_last_speech_ms > 650);
+                // 1) 침묵 감지: 사용자가 말을 시작한 후(최소 700ms) 침묵이 650ms 이상 지속될 때
+                // 2) 최대 발화 제한: 사용자가 말을 시작한 시점(s_speech_start_ms)으로부터 15초 초과 시
+                bool silence_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 700) && (now_ms - s_last_speech_ms > 650);
                 bool max_timeout = (s_speech_start_ms > 0 && now_ms - s_speech_start_ms > 15000);
 
                 if (silence_timeout || max_timeout) {
+                    uint32_t total_speech_dur = s_last_speech_ms - s_speech_start_ms;
                     s_has_user_spoken = false;
                     s_vad_speech_frames = 0;
                     s_speech_start_ms = 0;
-                    chat_state_handle_speech_end();
+
+                    // 최소 350ms 이상의 실질적 발화 지속시간이 검증되었을 때만 서버로 speech_end 전송
+                    if (total_speech_dur >= 350) {
+                        ESP_LOGI(TAG, "User speech finished (duration=%ums) -> Forwarding speech_end", (unsigned int)total_speech_dur);
+                        chat_state_handle_speech_end();
+                    } else {
+                        ESP_LOGW(TAG, "Speech too short (%ums < 350ms) -> Ignored as background glitch/cough", (unsigned int)total_speech_dur);
+                    }
+                }
+            } else {
+                // 8초 동안 아무런 유효 사용자 발화가 없으면 조용히 IDLE 상태로 복귀 (무음 상태 무한 답변 루프 원천 차단)
+                if (now_ms - s_mic_stream_start_ms > 8000) {
+                    ESP_LOGI(TAG, "Silence timeout (8s) in LISTENING -> Auto returning to IDLE");
+                    s_vad_speech_frames = 0;
+                    chat_state_set(CHAT_STATE_IDLE);
                 }
             }
         }
@@ -592,17 +641,40 @@ void audio_pipeline_feed_tts_audio(const uint8_t *data, size_t len) {
 
     chat_state_activity_occurred(); // 활성 오디오 수신 -> 타임아웃 타이머 리셋!
 
-    // 16비트 오디오(2바이트/샘플) 정렬 보장: 홀수 바이트 수신 시 짝수 샘플만 투입하여 상/하위 바이트 반전("쏴~~" 백색소음) 방지
-    size_t aligned_len = len & ~1;
-    if (aligned_len == 0) {
+    const uint8_t *cur_ptr = data;
+    size_t cur_len = len;
+
+    // [핵심: '쏴~~~' 백색소음 원천 차단]
+    // 이전 청크에서 홀수 바이트로 인해 남은 1바이트가 있다면 새 데이터의 첫 1바이트와 합쳐서 온전한 1개 샘플(2바이트) 완성
+    if (s_has_feed_residual) {
+        uint8_t two_bytes[2] = { s_feed_residual_byte, data[0] };
+        s_has_feed_residual = false;
+        BaseType_t sent = xRingbufferSend(s_spk_ringbuf, two_bytes, 2, pdMS_TO_TICKS(20));
+        if (sent == pdTRUE) {
+            s_spk_buffered_bytes += 2;
+        }
+        cur_ptr = data + 1;
+        cur_len = len - 1;
+    }
+
+    if (cur_len == 0) {
         return;
     }
 
-    BaseType_t sent = xRingbufferSend(s_spk_ringbuf, data, aligned_len, pdMS_TO_TICKS(50));
-    if (sent == pdTRUE) {
-        s_spk_buffered_bytes += aligned_len;
-    } else {
-        ESP_LOGW(TAG, "spk_ringbuf full, dropping %d bytes", (int)aligned_len);
+    // 현재 남은 바이트 수가 홀수라면, 마지막 1바이트는 절대 버리지 않고 다음 청크를 위해 이월 보관!
+    if (cur_len % 2 != 0) {
+        s_feed_residual_byte = cur_ptr[cur_len - 1];
+        s_has_feed_residual = true;
+        cur_len -= 1;
+    }
+
+    if (cur_len > 0) {
+        BaseType_t sent = xRingbufferSend(s_spk_ringbuf, cur_ptr, cur_len, pdMS_TO_TICKS(50));
+        if (sent == pdTRUE) {
+            s_spk_buffered_bytes += cur_len;
+        } else {
+            ESP_LOGW(TAG, "spk_ringbuf full, dropping %d bytes", (int)cur_len);
+        }
     }
 }
 
@@ -614,6 +686,7 @@ void audio_pipeline_clear_audio(void) {
     s_server_done = false;
     s_spk_buffered_bytes = 0;
     s_barge_in_prebuf_count = 0;
+    s_has_feed_residual = false; // 홀수 바이트 이월 상태 초기화
 
     // 해당 버퍼의 유일한 컨슈머 태스크들에 플러시 플래그 설정 (FreeRTOS Ringbuffer 멀티 컨슈머 데드락 원천 차단)
     s_spk_flush_requested = true;
