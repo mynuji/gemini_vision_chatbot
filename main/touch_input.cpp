@@ -2,6 +2,8 @@
 #include "ui_settings.h"
 #include "bsp_board.h"
 #include "audio_io.h"
+#include "audio_pipeline.h"
+#include "chat_state.h"
 
 #include "driver/i2c.h"
 #include "driver/gpio.h"
@@ -33,6 +35,11 @@ static volatile bool s_chat_touch_event_flag = false;
 static int16_t s_last_x = 120;
 static int16_t s_last_y = 120;
 static bool s_is_pressed = false;
+
+// 고스트 터치(스피커 앰프 노이즈/전원 글리치) 방지용 시간 지속성 필터 변수
+static int s_consecutive_press_count = 0;
+static uint32_t s_touch_press_start_ms = 0;
+static bool s_touch_event_dispatched_for_press = false;
 
 // 상단 10회 연속 터치 감지 변수
 static int s_top_tap_count = 0;
@@ -144,9 +151,9 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
         return false;
     }
 
-    bool pressed = false;
-    int16_t x = s_last_x;
-    int16_t y = s_last_y;
+    bool raw_pressed = false;
+    int16_t raw_x = s_last_x;
+    int16_t raw_y = s_last_y;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
     if (s_chip_type == TOUCH_CHIP_CHSC6X) {
@@ -158,14 +165,14 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
             // data[0] == 0x01 (Touch Down / Active), 0x03 (Contact / Move)
             // data[0] == 0x02 (Lift / Release), 0x00 (None / Idle)
             if (data[0] == 0x01 || data[0] == 0x03) {
-                x = (int16_t)data[2]; // 정방향 (오른쪽으로 밀면 증가)
-                y = (int16_t)data[4];
-                pressed = true;
+                raw_x = (int16_t)data[2]; // 정방향 (오른쪽으로 밀면 증가)
+                raw_y = (int16_t)data[4];
+                raw_pressed = true;
             } else {
-                pressed = false;
+                raw_pressed = false;
             }
         } else {
-            pressed = false; // I2C 통신 오류 시 절대 터치로 오인식하지 않음
+            raw_pressed = false; // I2C 통신 오류 시 절대 터치로 오인식하지 않음
         }
     } else if (s_chip_type == TOUCH_CHIP_CST816S) {
         uint8_t data[6] = {0};
@@ -173,11 +180,11 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
         esp_err_t ret = i2c_master_write_read_device(I2C_TOUCH_PORT, s_detected_addr,
                                                      &reg, 1, data, 5, pdMS_TO_TICKS(20));
         if (ret == ESP_OK && data[0] > 0) {
-            x = ((data[1] & 0x0F) << 8) | data[2];
-            y = ((data[3] & 0x0F) << 8) | data[4];
-            pressed = true;
+            raw_x = ((data[1] & 0x0F) << 8) | data[2];
+            raw_y = ((data[3] & 0x0F) << 8) | data[4];
+            raw_pressed = true;
         } else {
-            pressed = false;
+            raw_pressed = false;
         }
     } else if (s_chip_type == TOUCH_CHIP_FT6236) {
         uint8_t data[5] = {0};
@@ -185,55 +192,104 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
         esp_err_t ret = i2c_master_write_read_device(I2C_TOUCH_PORT, s_detected_addr,
                                                      &reg, 1, data, 5, pdMS_TO_TICKS(20));
         if (ret == ESP_OK && (data[0] & 0x0F) > 0) {
-            x = ((data[1] & 0x0F) << 8) | data[2];
-            y = ((data[3] & 0x0F) << 8) | data[4];
-            pressed = true;
+            raw_x = ((data[1] & 0x0F) << 8) | data[2];
+            raw_y = ((data[3] & 0x0F) << 8) | data[4];
+            raw_pressed = true;
         } else {
-            pressed = false;
+            raw_pressed = false;
         }
     } else {
-        pressed = false;
-        x = 120;
-        y = 120;
+        raw_pressed = false;
+        raw_x = 120;
+        raw_y = 120;
     }
 
     // 좌표 경계 클램프 (240x240)
-    if (x < 0) x = 0;
-    if (x > 239) x = 239;
-    if (y < 0) y = 0;
-    if (y > 239) y = 239;
+    if (raw_x < 0) raw_x = 0;
+    if (raw_x > 239) raw_x = 239;
+    if (raw_y < 0) raw_y = 0;
+    if (raw_y > 239) raw_y = 239;
 
-    // 상단 10회 연속 터치 감지 (설정 메뉴 진입 전용: 화면 상단 가장자리 한정)
-    if (pressed && !s_is_pressed && !ui_settings_is_active()) {
-        // 상단 특정 범위 정의: 상단 Wi-Fi 아이콘 및 최상단 영역 (Y <= 55, X: 60 ~ 180)
-        bool is_top_area = (y <= 55 && x >= 60 && x <= 180);
-
-        if (is_top_area) {
-            // 상단 영역 내에서 1.5초 이내에 연속해서 탭할 때만 카운트 증가
-            if (now - s_last_top_tap_time < 1500) {
-                s_top_tap_count++;
-            } else {
-                s_top_tap_count = 1;
+    // [노이즈 필터 1] 원형 화면 유효 반경(R=120) 및 (0,0) 노이즈 검증
+    if (raw_pressed) {
+        if (raw_x == 0 && raw_y == 0) {
+            raw_pressed = false;
+        } else {
+            int32_t c_dx = (int32_t)raw_x - 120;
+            int32_t c_dy = (int32_t)raw_y - 120;
+            if (c_dx * c_dx + c_dy * c_dy > (126 * 126)) {
+                raw_pressed = false; // 디스플레이 원형 베젤 밖의 비정상 값 필터링
             }
-            s_last_top_tap_time = now;
+        }
+    }
 
-            ESP_LOGI(TAG, "Top settings area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
-            audio_io_play_tone(2400.0f, 15);
+    // [노이즈 필터 2] 스피커 대음량 출력/전원 스파이크로 인한 단발성 고스트 터치 완벽 제거
+    bool filtered_pressed = false;
+    int16_t x = s_last_x;
+    int16_t y = s_last_y;
 
-            if (s_top_tap_count >= 10) {
-                s_top_tap_count = 0;
-                ESP_LOGW(TAG, ">>> 10 TOP TAPS DETECTED! TRIGGERING SETTINGS MENU <<<");
-                audio_io_play_tone(1500.0f, 100);
-                if (s_settings_cb) {
-                    s_settings_cb();
+    if (raw_pressed) {
+        s_consecutive_press_count++;
+        if (s_touch_press_start_ms == 0) {
+            s_touch_press_start_ms = now;
+        }
+        uint32_t press_duration = now - s_touch_press_start_ms;
+
+        // 최소 2회 연속 샘플링(약 40ms 이상) 감지되어야 물리적 누름으로 승격
+        if (s_consecutive_press_count >= 2) {
+            filtered_pressed = true;
+            x = raw_x;
+            y = raw_y;
+        }
+
+        // 대화 제어용 터치 이벤트 발생 조건:
+        // AI가 발화 중(CHAT_STATE_SPEAKING)이거나 스피커가 출력 중일 때는 앰프 노이즈/전원 간섭이 극심하므로
+        // 단발성 고스트 터치를 완벽 차단하기 위해 최소 80ms 이상 물리적으로 꾹 누르고 있어야만 터치 중단으로 확정!
+        // 일반 대기 상태(IDLE 등)에서도 최소 40ms 이상 확실히 누르고 있어야 함.
+        bool is_speaking = (chat_state_get() == CHAT_STATE_SPEAKING || audio_pipeline_is_speaker_playing());
+        uint32_t min_req_duration = is_speaking ? 80 : 40;
+
+        if (filtered_pressed && !s_touch_event_dispatched_for_press && press_duration >= min_req_duration) {
+            s_touch_event_dispatched_for_press = true;
+
+            // 상단 10회 연속 터치 감지 (설정 메뉴 진입 전용: 화면 상단 가장자리 한정)
+            if (!ui_settings_is_active()) {
+                bool is_top_area = (y <= 55 && x >= 60 && x <= 180);
+
+                if (is_top_area) {
+                    if (now - s_last_top_tap_time < 1500) {
+                        s_top_tap_count++;
+                    } else {
+                        s_top_tap_count = 1;
+                    }
+                    s_last_top_tap_time = now;
+
+                    ESP_LOGI(TAG, "Top settings area tapped! Count: %d / 10 (at x=%d, y=%d)", s_top_tap_count, x, y);
+                    audio_io_play_tone(2400.0f, 15);
+
+                    if (s_top_tap_count >= 10) {
+                        s_top_tap_count = 0;
+                        ESP_LOGW(TAG, ">>> 10 TOP TAPS DETECTED! TRIGGERING SETTINGS MENU <<<");
+                        audio_io_play_tone(1500.0f, 100);
+                        if (s_settings_cb) {
+                            s_settings_cb();
+                        }
+                    }
+                } else {
+                    // 상단 이외의 화면 영역 터치 -> 대화 제어 이벤트 발생 (최소 유지시간 검증 완료)
+                    s_top_tap_count = 0;
+                    s_chat_touch_event_flag = true;
+                    ESP_LOGI(TAG, "Chat touch confirmed (duration=%ums, x=%d, y=%d, speaking=%d) -> Chat event flagged",
+                             (unsigned int)press_duration, x, y, is_speaking ? 1 : 0);
                 }
             }
-        } else {
-            // 상단 이외의 화면 영역(중앙, 눈/시계 영역, 하단 등) 터치는 100% 대화(발화 시작 / 중단) 이벤트로 즉각 처리!
-            s_top_tap_count = 0;
-            s_chat_touch_event_flag = true;
-            ESP_LOGI(TAG, "Chat touch area tapped (x=%d, y=%d) -> Chat event flagged", x, y);
         }
+    } else {
+        // 터치 해제 (Release)
+        s_consecutive_press_count = 0;
+        s_touch_press_start_ms = 0;
+        s_touch_event_dispatched_for_press = false;
+        filtered_pressed = false;
     }
 
     static int16_t s_anchor_x = 0;
@@ -241,7 +297,7 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
     static bool s_vertical_scroll_active = false;
     static bool s_horizontal_drag_active = false;
 
-    if (pressed && !s_is_pressed) {
+    if (filtered_pressed && !s_is_pressed) {
         // 새 터치 시작: 앵커 좌표 기록 및 스크롤/드래그 플래그 초기화
         s_anchor_x = x;
         s_anchor_y = y;
@@ -250,7 +306,7 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
         // 터치 시작 시에는 최초 탭 좌표로 고정
         x = s_anchor_x;
         y = s_anchor_y;
-    } else if (pressed && s_is_pressed) {
+    } else if (filtered_pressed && s_is_pressed) {
         int32_t dx = (int32_t)x - s_anchor_x;
         int32_t dy = (int32_t)y - s_anchor_y;
         int32_t abs_dx = (dx < 0) ? -dx : dx;
@@ -278,20 +334,20 @@ bool touch_input_read_coords(int16_t *out_x, int16_t *out_y, bool *out_pressed) 
                 y = s_anchor_y;
             }
         }
-    } else if (!pressed) {
+    } else if (!filtered_pressed) {
         s_vertical_scroll_active = false;
         s_horizontal_drag_active = false;
     }
 
-    s_is_pressed = pressed;
+    s_is_pressed = filtered_pressed;
     s_last_x = x;
     s_last_y = y;
 
     if (out_x) *out_x = x;
     if (out_y) *out_y = y;
-    if (out_pressed) *out_pressed = pressed;
+    if (out_pressed) *out_pressed = filtered_pressed;
 
-    return pressed;
+    return filtered_pressed;
 }
 
 static void lvgl_touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
