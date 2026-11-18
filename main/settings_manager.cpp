@@ -96,6 +96,8 @@ static void set_defaults(app_settings_t *cfg) {
     cfg->ntp_server_idx = 0; // 기본값: pool.ntp.org
     cfg->timezone_idx = 0;   // 기본값: Seoul (GMT+9)
     cfg->language = APP_LANG_KO; // 기본값: 한국어
+    strncpy(cfg->github_repo, "mynuji/gemini_vision_chatbot", sizeof(cfg->github_repo) - 1);
+    cfg->github_token[0] = '\0';
 }
 
 static const char *s_llm_names[] = {
@@ -322,6 +324,24 @@ esp_err_t settings_manager_set_ntp_server(uint8_t ntp_server_idx) {
 
 esp_err_t settings_manager_set_timezone(uint8_t timezone_idx) {
     s_settings.timezone_idx = timezone_idx;
+    return settings_manager_save_internal(&s_settings, true, false);
+}
+
+esp_err_t settings_manager_set_github_repo(const char *repo) {
+    if (!repo || repo[0] == '\0') {
+        strncpy(s_settings.github_repo, "mynuji/gemini_vision_chatbot", sizeof(s_settings.github_repo) - 1);
+    } else {
+        strncpy(s_settings.github_repo, repo, sizeof(s_settings.github_repo) - 1);
+    }
+    return settings_manager_save_internal(&s_settings, true, false);
+}
+
+esp_err_t settings_manager_set_github_token(const char *token) {
+    if (!token) {
+        s_settings.github_token[0] = '\0';
+    } else {
+        strncpy(s_settings.github_token, token, sizeof(s_settings.github_token) - 1);
+    }
     return settings_manager_save_internal(&s_settings, true, false);
 }
 

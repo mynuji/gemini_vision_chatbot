@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SETTINGS_MAGIC 0x53455433 // "SET3"
+#define SETTINGS_MAGIC 0x53455434 // "SET4"
 
 typedef enum {
     LLM_TYPE_GEMINI_API = 0,
@@ -37,6 +37,8 @@ typedef struct {
     uint8_t  ntp_server_idx;  // 0: google, 1: cloudflare, 2: pool.ntp.org, 3: ms, 4: apple
     uint8_t  timezone_idx;    // 0: Seoul (GMT+9), 1: GMT-11, ...
     uint8_t  language;        // 0: 한국어, 1: English
+    char     github_repo[64];   // GitHub 저장소 ("owner/repo", 기본값: "mynuji/gemini_vision_chatbot")
+    char     github_token[128]; // GitHub Personal Access Token (PAT)
 } app_settings_t;
 
 const char* settings_manager_get_llm_type_name(uint8_t type);
@@ -124,6 +126,16 @@ esp_err_t settings_manager_set_ntp_server(uint8_t ntp_server_idx);
  * @brief 타임존(지역) 인덱스 변경 및 저장
  */
 esp_err_t settings_manager_set_timezone(uint8_t timezone_idx);
+
+/**
+ * @brief GitHub 저장소 ("owner/repo") 설정 및 저장
+ */
+esp_err_t settings_manager_set_github_repo(const char *repo);
+
+/**
+ * @brief GitHub 토큰(PAT) 설정 및 저장
+ */
+esp_err_t settings_manager_set_github_token(const char *token);
 
 #ifdef __cplusplus
 }

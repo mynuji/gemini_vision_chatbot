@@ -2,6 +2,7 @@
 #include "settings_manager.h"
 #include "time_sync.h"
 #include "ui_settings.h"
+#include "license_manager.h"
 #include "bsp_board.h"
 #include "display_ui.h"
 #include "audio_io.h"
@@ -341,6 +342,13 @@ extern "C" void app_main(void) {
 
     // [0-2] 설정 변경 시 서버 실시간 동기화 콜백 등록
     settings_manager_set_change_callback(on_settings_changed);
+
+    // [0-3] 기기 고유 시그니처 기반 라이선스 검증 (sos_gateway 호환)
+    license_manager_init();
+    if (!license_manager_validate()) {
+        ESP_LOGW(TAG, "Device license not provisioned yet. Auto-provisioning this device...");
+        license_manager_auto_provision();
+    }
 
     // [1] 디스플레이 및 LVGL 초기화
     ESP_ERROR_CHECK(display_ui_init());

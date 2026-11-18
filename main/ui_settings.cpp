@@ -6,6 +6,8 @@
 #include "audio_pipeline.h"
 #include "bsp_board.h"
 #include "wifi_ws.h"
+#include "ota_updater.h"
+#include "license_manager.h"
 #include "lv_font_nanum.h"
 
 #include "esp_log.h"
@@ -37,7 +39,9 @@ typedef enum {
     SUBVIEW_NTP_SERVER,
     SUBVIEW_TIMEZONE,
     SUBVIEW_LANGUAGE,
-    SUBVIEW_INFO
+    SUBVIEW_INFO,
+    SUBVIEW_OTA,
+    SUBVIEW_LICENSE
 } subview_t;
 
 static subview_t s_current_view = SUBVIEW_MAIN;
@@ -45,7 +49,7 @@ static subview_t s_return_view = SUBVIEW_MAIN;
 
 // 임시 편집 버퍼
 static app_settings_t s_edit_cfg;
-static char s_input_target_buf[65] = {0};
+static char s_input_target_buf[130] = {0};
 static char *s_input_target_ptr = NULL;
 static size_t s_input_max_len = 32;
 static lv_obj_t *s_text_display_label = NULL;
@@ -64,6 +68,8 @@ static void create_ntp_server_view(lv_obj_t *parent);
 static void create_timezone_view(lv_obj_t *parent);
 static void create_language_view(lv_obj_t *parent);
 static void create_info_view(lv_obj_t *parent);
+static void create_ota_view(lv_obj_t *parent);
+static void create_license_view(lv_obj_t *parent);
 
 esp_err_t ui_settings_init(void) {
     ESP_LOGI(TAG, "Initializing UI Settings module...");
@@ -179,6 +185,12 @@ static void show_view(subview_t view) {
         case SUBVIEW_INFO:
             create_info_view(s_settings_container);
             break;
+        case SUBVIEW_OTA:
+            create_ota_view(s_settings_container);
+            break;
+        case SUBVIEW_LICENSE:
+            create_license_view(s_settings_container);
+            break;
     }
 }
 
@@ -233,13 +245,14 @@ static void on_menu_btn_event(lv_event_t *e) {
         else if (id == 8) show_view(SUBVIEW_LLM_TYPE);
         else if (id == 9) show_view(SUBVIEW_LANGUAGE);
         else if (id == 10) show_view(SUBVIEW_INFO);
-        else if (id == 11) {
+        else if (id == 11) show_view(SUBVIEW_OTA);
+        else if (id == 12) {
             // 저장 후 재부팅
             settings_manager_save_sync(&s_edit_cfg);
             audio_io_play_tone(1600.0f, 150);
             vTaskDelay(pdMS_TO_TICKS(200));
             esp_restart();
-        } else if (id == 12) {
+        } else if (id == 13) {
             // 기본값 복원
             settings_manager_reset_to_default();
             audio_io_play_tone(600.0f, 150);
@@ -306,8 +319,9 @@ static void create_main_menu(lv_obj_t *parent) {
         "8. LLM모델 선택",
         "9. 언어설정",
         "10. 시스템 정보",
-        "11. 재부팅",
-        "12. 공장초기화"
+        "11. 펌웨어 업데이트",
+        "12. 재부팅",
+        "13. 공장초기화"
     };
 
     const char *items_en[] = {
@@ -321,13 +335,14 @@ static void create_main_menu(lv_obj_t *parent) {
         "8. LLM Model Selection",
         "9. Language",
         "10. System Info",
-        "11. Reboot",
-        "12. Factory Reset"
+        "11. Firmware Update",
+        "12. Reboot",
+        "13. Factory Reset"
     };
 
     const char **items = is_ko ? items_ko : items_en;
 
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 13; i++) {
         lv_obj_t *btn = lv_list_add_btn(list, NULL, items[i]);
         lv_obj_set_size(btn, lv_pct(100), 42); // 38px -> 42px로 확대하여 터치 정확도 대폭 향상
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A2A), 0);
@@ -1816,30 +1831,201 @@ static void create_info_view(lv_obj_t *parent) {
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, is_ko ? "시스템 정보" : "SYSTEM INFO");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
+    bool is_lic = license_manager_validate();
     lv_obj_t *info_lbl = lv_label_create(parent);
-    char buf[256];
+    char buf[280];
     char time_str[32];
     time_sync_get_date_time_str(time_str, sizeof(time_str));
     uint32_t free_heap_kb = esp_get_free_heap_size() / 1024;
-    snprintf(buf, sizeof(buf), "Time: %s\nSSID: %s\nIP: %s\nPORT: %u\nLLM: %s\nNTP: %s\nTZ: %s\nHeap: %uKB | WS: %s",
+    snprintf(buf, sizeof(buf),
+             "Time: %s\nSSID: %s\nIP: %s\nMAC: %s\nLIC: %s\nLLM: %s\nHeap: %uKB | WS: %s",
              time_str,
              s_edit_cfg.wifi_ssid,
              wifi_ws_get_ip_str() ? wifi_ws_get_ip_str() : "N/A",
-             (unsigned int)s_edit_cfg.server_port,
+             license_manager_get_mac(),
+             is_lic ? "ACTIVE (OK)" : "UNREGISTERED",
              settings_manager_get_llm_type_name(s_edit_cfg.llm_type),
-             time_sync_get_ntp_server_name(s_edit_cfg.ntp_server_idx),
-             time_sync_get_timezone_name(s_edit_cfg.timezone_idx),
              (unsigned int)free_heap_kb,
              wifi_ws_is_connected() ? "ON" : "OFF");
     lv_label_set_text(info_lbl, buf);
     lv_obj_set_style_text_color(info_lbl, lv_color_white(), 0);
-    lv_obj_align(info_lbl, LV_ALIGN_CENTER, 0, 4);
+    lv_obj_align(info_lbl, LV_ALIGN_CENTER, 0, 0);
 
+    // [라이선스 관리] 버튼
+    lv_obj_t *lic_btn = lv_btn_create(parent);
+    lv_obj_set_size(lic_btn, 84, 28);
+    lv_obj_align(lic_btn, LV_ALIGN_BOTTOM_MID, -46, -18);
+    lv_obj_set_style_bg_color(lic_btn, lv_color_hex(0x282828), 0);
+    lv_obj_set_style_bg_color(lic_btn, lv_color_hex(0x007ACC), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(lic_btn, 6);
+    lv_obj_t *lic_lbl = lv_label_create(lic_btn);
+    lv_label_set_text(lic_lbl, is_ko ? "라이선스" : "LICENSE");
+    lv_obj_center(lic_lbl);
+    lv_obj_add_event_cb(lic_btn, (lv_event_cb_t)[](lv_event_t *e){
+        audio_io_play_tone(1000.0f, 30);
+        show_view(SUBVIEW_LICENSE);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // [뒤로] 버튼
     lv_obj_t *back_btn = lv_btn_create(parent);
-    lv_obj_set_size(back_btn, 80, 30);
-    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_MID, 0, -22);
+    lv_obj_set_size(back_btn, 70, 28);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_MID, 46, -18);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 6);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
+        revert_edit_config();
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+}
+
+// ----------------------------------------------------------------------------
+// [11] 펌웨어 OTA 업데이트 화면 (Public GitHub Releases 기반, 토큰 불필요)
+// ----------------------------------------------------------------------------
+static ota_release_info_t s_latest_release;
+static bool s_has_checked_release = false;
+static lv_obj_t *s_ota_status_label = NULL;
+static lv_obj_t *s_ota_bar = NULL;
+static lv_obj_t *s_ota_update_btn = NULL;
+static lv_obj_t *s_ota_check_btn = NULL;
+
+static void ota_ui_progress_cb(ota_state_t state, int progress_pct, const char *msg) {
+    if (lvgl_port_lock(500)) {
+        if (s_ota_status_label) {
+            lv_label_set_text(s_ota_status_label, msg ? msg : "");
+        }
+        if (s_ota_bar) {
+            if (state == OTA_STATE_DOWNLOADING || state == OTA_STATE_FINISHING || state == OTA_STATE_SUCCESS) {
+                lv_obj_clear_flag(s_ota_bar, LV_OBJ_FLAG_HIDDEN);
+                lv_bar_set_value(s_ota_bar, progress_pct, LV_ANIM_OFF);
+            }
+        }
+        lvgl_port_unlock();
+    }
+}
+
+static void ota_check_worker_task(void *pvParam) {
+    if (lvgl_port_lock(500)) {
+        if (s_ota_status_label) lv_label_set_text(s_ota_status_label, "CHECKING REPO...");
+        lvgl_port_unlock();
+    }
+
+    esp_err_t err = ota_updater_check_latest_version(OTA_DEFAULT_PROJECT_NAME, &s_latest_release);
+    if (lvgl_port_lock(500)) {
+        if (err == ESP_OK) {
+            s_has_checked_release = true;
+            char buf[64];
+            if (s_latest_release.has_update) {
+                snprintf(buf, sizeof(buf), "NEW: v%s (UPDATE READY)", s_latest_release.latest_version);
+            } else {
+                snprintf(buf, sizeof(buf), "v%s (UP TO DATE)", s_latest_release.latest_version);
+            }
+            if (s_ota_status_label) lv_label_set_text(s_ota_status_label, buf);
+            if (s_ota_update_btn && s_latest_release.has_update) {
+                lv_obj_clear_flag(s_ota_update_btn, LV_OBJ_FLAG_HIDDEN);
+            }
+        } else {
+            if (s_ota_status_label) {
+                lv_label_set_text(s_ota_status_label, s_latest_release.error_msg[0] ? s_latest_release.error_msg : "CHECK FAILED");
+            }
+        }
+        if (s_ota_check_btn) lv_obj_clear_state(s_ota_check_btn, LV_STATE_DISABLED);
+        lvgl_port_unlock();
+    }
+    vTaskDelete(NULL);
+}
+
+static void create_ota_view(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
+
+    lv_obj_t *title = lv_label_create(parent);
+    lv_label_set_text(title, is_ko ? "온라인 업데이트" : "ONLINE OTA");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    // 현재 버전 표시
+    lv_obj_t *cur_lbl = lv_label_create(parent);
+    char cur_buf[48];
+    snprintf(cur_buf, sizeof(cur_buf), "Cur: v%s", ota_updater_get_current_version());
+    lv_label_set_text(cur_lbl, cur_buf);
+    lv_obj_set_style_text_color(cur_lbl, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_align(cur_lbl, LV_ALIGN_TOP_MID, 0, 32);
+
+    // 상태 메시지 라벨
+    s_ota_status_label = lv_label_create(parent);
+    if (s_has_checked_release && s_latest_release.latest_version[0] != '\0') {
+        char buf[64];
+        if (s_latest_release.has_update) {
+            snprintf(buf, sizeof(buf), "NEW: v%s (UPDATE READY)", s_latest_release.latest_version);
+        } else {
+            snprintf(buf, sizeof(buf), "v%s (UP TO DATE)", s_latest_release.latest_version);
+        }
+        lv_label_set_text(s_ota_status_label, buf);
+    } else {
+        lv_label_set_text(s_ota_status_label, is_ko ? "최신 버전 확인을 눌러주세요" : "Press CHECK to fetch version");
+    }
+    lv_obj_set_style_text_color(s_ota_status_label, lv_color_hex(0x00FFC0), 0);
+    lv_obj_align(s_ota_status_label, LV_ALIGN_TOP_MID, 0, 52);
+
+    // 프로그레스 바 (너비 160, 높이 8)
+    s_ota_bar = lv_bar_create(parent);
+    lv_obj_set_size(s_ota_bar, 160, 8);
+    lv_obj_align(s_ota_bar, LV_ALIGN_TOP_MID, 0, 72);
+    lv_bar_set_range(s_ota_bar, 0, 100);
+    lv_bar_set_value(s_ota_bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_ota_bar, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_bg_color(s_ota_bar, lv_color_hex(0x00D1FF), LV_PART_INDICATOR);
+    lv_obj_add_flag(s_ota_bar, LV_OBJ_FLAG_HIDDEN);
+
+    // 1. [CHECK VERSION] 버튼
+    s_ota_check_btn = lv_btn_create(parent);
+    lv_obj_set_size(s_ota_check_btn, 160, 30);
+    lv_obj_align(s_ota_check_btn, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_bg_color(s_ota_check_btn, lv_color_hex(0x282828), 0);
+    lv_obj_set_style_bg_color(s_ota_check_btn, lv_color_hex(0x383838), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(s_ota_check_btn, lv_color_hex(0x181818), LV_STATE_DISABLED);
+    lv_obj_set_ext_click_area(s_ota_check_btn, 6);
+    lv_obj_t *ch_lbl = lv_label_create(s_ota_check_btn);
+    lv_label_set_text(ch_lbl, is_ko ? "최신 버전 확인" : "CHECK LATEST VERSION");
+    lv_obj_center(ch_lbl);
+    lv_obj_add_event_cb(s_ota_check_btn, (lv_event_cb_t)[](lv_event_t *e){
+        if (ota_updater_is_running()) return;
+        lv_obj_add_state(s_ota_check_btn, LV_STATE_DISABLED);
+        audio_io_play_tone(1100.0f, 30);
+        xTaskCreate(ota_check_worker_task, "ota_chk", 4096, NULL, 5, NULL);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // 2. [START UPDATE] 버튼 (새 버전 있을 때 활성화)
+    s_ota_update_btn = lv_btn_create(parent);
+    lv_obj_set_size(s_ota_update_btn, 160, 30);
+    lv_obj_align(s_ota_update_btn, LV_ALIGN_TOP_MID, 0, 130);
+    lv_obj_set_style_bg_color(s_ota_update_btn, lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(s_ota_update_btn, lv_color_hex(0x0098FF), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(s_ota_update_btn, 6);
+    lv_obj_t *up_lbl = lv_label_create(s_ota_update_btn);
+    lv_label_set_text(up_lbl, is_ko ? "업데이트 시작" : "START UPDATE");
+    lv_obj_center(up_lbl);
+    if (!s_has_checked_release || !s_latest_release.has_update) {
+        lv_obj_add_flag(s_ota_update_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_add_event_cb(s_ota_update_btn, (lv_event_cb_t)[](lv_event_t *e){
+        if (ota_updater_is_running()) return;
+        audio_io_play_tone(1400.0f, 60);
+        lv_obj_add_flag(s_ota_update_btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_state(s_ota_check_btn, LV_STATE_DISABLED);
+        ota_updater_start(s_latest_release.download_url, ota_ui_progress_cb);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // [뒤로가기] 버튼
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 70, 26);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_MID, 0, -12);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(back_btn, 8);
@@ -1847,7 +2033,84 @@ static void create_info_view(lv_obj_t *parent) {
     lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
     lv_obj_center(blbl);
     lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
-        revert_edit_config();
+        if (ota_updater_is_running()) return;
+        audio_io_play_tone(900.0f, 30);
+        show_view(SUBVIEW_MAIN);
+    }, LV_EVENT_CLICKED, NULL);
+}
+
+// ----------------------------------------------------------------------------
+// [12] 시그니처 기반 기기 라이선스 관리 화면 (sos_gateway 호환)
+// ----------------------------------------------------------------------------
+static void create_license_view(lv_obj_t *parent) {
+    bool is_ko = (s_edit_cfg.language == APP_LANG_KO);
+
+    lv_obj_t *title = lv_label_create(parent);
+    lv_label_set_text(title, is_ko ? "라이선스 관리" : "DEVICE LICENSE");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00D1FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    bool is_valid = license_manager_validate();
+
+    // 상태 라벨
+    lv_obj_t *status_lbl = lv_label_create(parent);
+    if (is_valid) {
+        lv_label_set_text(status_lbl, is_ko ? "✅ 정품 인증 완료" : "✅ LICENSED DEVICE");
+        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x00FF88), 0);
+    } else {
+        lv_label_set_text(status_lbl, is_ko ? "🚨 미인증 기기" : "🚨 UNLICENSED DEVICE");
+        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xFF3333), 0);
+    }
+    lv_obj_align(status_lbl, LV_ALIGN_TOP_MID, 0, 36);
+
+    // MAC 주소 라벨
+    lv_obj_t *mac_lbl = lv_label_create(parent);
+    char mbuf[48];
+    snprintf(mbuf, sizeof(mbuf), "MAC: %s", license_manager_get_mac());
+    lv_label_set_text(mac_lbl, mbuf);
+    lv_obj_set_style_text_color(mac_lbl, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_align(mac_lbl, LV_ALIGN_TOP_MID, 0, 60);
+
+    // 라이선스 키 라벨 (앞/뒤 일부만 표시)
+    lv_obj_t *key_lbl = lv_label_create(parent);
+    const char *stored = license_manager_get_stored_license();
+    char kbuf[64];
+    if (stored && stored[0] != '\0') {
+        snprintf(kbuf, sizeof(kbuf), "KEY: %.6s...%.6s", stored, stored + strlen(stored) - 6);
+    } else {
+        snprintf(kbuf, sizeof(kbuf), "KEY: [NONE]");
+    }
+    lv_label_set_text(key_lbl, kbuf);
+    lv_obj_set_style_text_color(key_lbl, lv_color_hex(0x888888), 0);
+    lv_obj_align(key_lbl, LV_ALIGN_TOP_MID, 0, 84);
+
+    // [정품 자가 등록 / PROVISION] 버튼
+    lv_obj_t *prov_btn = lv_btn_create(parent);
+    lv_obj_set_size(prov_btn, 170, 32);
+    lv_obj_align(prov_btn, LV_ALIGN_TOP_MID, 0, 114);
+    lv_obj_set_style_bg_color(prov_btn, is_valid ? lv_color_hex(0x282828) : lv_color_hex(0x007ACC), 0);
+    lv_obj_set_style_bg_color(prov_btn, lv_color_hex(0x0098FF), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(prov_btn, 6);
+    lv_obj_t *plbl = lv_label_create(prov_btn);
+    lv_label_set_text(plbl, is_ko ? "정품 키 자가 등록" : "AUTO-PROVISION KEY");
+    lv_obj_center(plbl);
+    lv_obj_add_event_cb(prov_btn, (lv_event_cb_t)[](lv_event_t *e){
+        license_manager_auto_provision();
+        audio_io_play_tone(1500.0f, 100);
+        show_view(SUBVIEW_LICENSE);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // [뒤로가기] 버튼
+    lv_obj_t *back_btn = lv_btn_create(parent);
+    lv_obj_set_size(back_btn, 80, 28);
+    lv_obj_align(back_btn, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x666666), LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(back_btn, 8);
+    lv_obj_t *blbl = lv_label_create(back_btn);
+    lv_label_set_text(blbl, is_ko ? "뒤로" : "BACK");
+    lv_obj_center(blbl);
+    lv_obj_add_event_cb(back_btn, (lv_event_cb_t)[](lv_event_t *e){
         audio_io_play_tone(900.0f, 30);
         show_view(SUBVIEW_MAIN);
     }, LV_EVENT_CLICKED, NULL);
