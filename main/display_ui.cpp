@@ -944,6 +944,8 @@ void display_ui_draw_preview_frame(const uint16_t *rgb565_buf) {
 
 void display_ui_show_camera_snapshot(const uint8_t *jpeg_buf, size_t jpeg_len, uint32_t display_ms) {
   if (jpeg_buf == NULL || jpeg_len == 0 || s_crop_buf == NULL) {
+    ESP_LOGW(TAG, "display_ui_show_camera_snapshot: invalid args (buf=%p, len=%u, crop=%p)",
+             jpeg_buf, (unsigned int)jpeg_len, s_crop_buf);
     return;
   }
 
@@ -953,9 +955,21 @@ void display_ui_show_camera_snapshot(const uint8_t *jpeg_buf, size_t jpeg_len, u
   void *work_buf = heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
   if (dec_buf == NULL || work_buf == NULL) {
+    ESP_LOGE(TAG, "Failed to allocate memory for JPEG decode (dec=%p, work=%p)", dec_buf, work_buf);
     if (dec_buf) free(dec_buf);
     if (work_buf) free(work_buf);
     return;
+  }
+
+  esp_jpeg_image_cfg_t probe_cfg = {};
+  probe_cfg.indata = (uint8_t *)jpeg_buf;
+  probe_cfg.indata_size = (uint32_t)jpeg_len;
+  esp_jpeg_image_output_t probe_info = {};
+  esp_jpeg_image_scale_t scale = JPEG_IMAGE_SCALE_0;
+  if (esp_jpeg_get_image_info(&probe_cfg, &probe_info) == ESP_OK) {
+    if (probe_info.width > 320) {
+      scale = JPEG_IMAGE_SCALE_1_2;
+    }
   }
 
   esp_jpeg_image_cfg_t jpeg_cfg = {};
@@ -964,13 +978,16 @@ void display_ui_show_camera_snapshot(const uint8_t *jpeg_buf, size_t jpeg_len, u
   jpeg_cfg.outbuf = (uint8_t *)dec_buf;
   jpeg_cfg.outbuf_size = (uint32_t)dec_sz;
   jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB565;
-  jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_0;
+  jpeg_cfg.out_scale = scale;
   jpeg_cfg.flags.swap_color_bytes = 1;
   jpeg_cfg.advanced.working_buffer = work_buf;
   jpeg_cfg.advanced.working_buffer_size = work_sz;
 
   esp_jpeg_image_output_t out_info = {};
-  if (esp_jpeg_decode(&jpeg_cfg, &out_info) == ESP_OK) {
+  esp_err_t jerr = esp_jpeg_decode(&jpeg_cfg, &out_info);
+  if (jerr == ESP_OK) {
+    ESP_LOGI(TAG, "Camera snapshot decoded successfully (%ux%u). Showing on LCD for %u ms",
+             (unsigned int)out_info.width, (unsigned int)out_info.height, (unsigned int)display_ms);
     // [시계방향 90도 정방향 회전하여 240x240 정사각 화면에 채움]
     for (int y = 0; y < 240; y++) {
       int src_x = 279 - y;
@@ -996,6 +1013,8 @@ void display_ui_show_camera_snapshot(const uint8_t *jpeg_buf, size_t jpeg_len, u
 
     vTaskDelay(pdMS_TO_TICKS(display_ms));
     display_ui_stop_camera_preview();
+  } else {
+    ESP_LOGE(TAG, "esp_jpeg_decode failed with error %d", jerr);
   }
 
   free(dec_buf);

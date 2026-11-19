@@ -355,7 +355,42 @@ extern "C" void app_main(void) {
     display_ui_set_brightness(cfg->brightness);
     display_ui_set_wifi_state(UI_WIFI_DISCONNECTED);
 
-    // [1-1] 부팅 즉시 시계 화면 활성화 (NTP 동기화 대기 최대 30초, 동기화 완료 시 5초 카운트다운)
+    // [2] OV2640/OV3660 카메라 초기화 및 부팅 자가 진단 (부팅 시 1.5초간 카메라 스냅샷 화면 최우선 표출!)
+    // (오디오 DMA 및 Wi-Fi 시작 이전 클린 상태에서 최우선 실행하여 버스 충돌 차단 및 사용자 시각 피드백 즉시 제공)
+    esp_err_t cam_err = camera_io_init();
+    if (cam_err == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(150)); // 센서 DVP 파이프라인 안정화 대기
+        uint8_t *jpeg = NULL;
+        size_t jpeg_len = 0;
+        uint16_t w = 0, h = 0;
+        if (camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h) == ESP_OK) {
+            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes -> Displaying on LCD", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
+            display_ui_show_camera_snapshot(jpeg, jpeg_len, 1500);
+            free(jpeg);
+        } else {
+            ESP_LOGW(TAG, "Camera self-test capture failed");
+        }
+        // 자가 진단 완료 후, 카메라를 소프트웨어 저전력 대기(Software Standby) 상태로 전환하여 발열 차단
+        camera_io_standby();
+    } else {
+        ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
+    }
+
+    // [3] 터치 센서 초기화 및 상단 10회 터치 콜백 등록
+    ESP_ERROR_CHECK(touch_input_init());
+    touch_input_set_settings_trigger_cb(ui_settings_open);
+
+    // [4] 오디오 I/O (PDM RX 마이크 + I2S TX 스피커) 초기화
+    ESP_ERROR_CHECK(audio_io_init());
+
+    // 스피커 동작 확인: '도-미-솔' 부팅 멜로디
+    audio_io_play_boot_melody();
+
+    // [5] 실시간 오디오 파이프라인 및 esp-sr WakeNet(wn10_alexa) 최우선 초기화
+    // (AES 복호화에 내부 SRAM이 필요하므로 Wi-Fi 연결 이전 내부 메모리 가용 시점에 로드)
+    ESP_ERROR_CHECK(audio_pipeline_init());
+
+    // [6] 카메라 테스트 완료 후 부팅 시계 화면 활성화 (NTP 동기화 대기 최대 30초, 동기화 완료 시 5초 카운트다운)
     display_ui_show_clock_mode(true);
     s_boot_clock_active = true;
     s_boot_clock_synced_seen = time_sync_is_synced();
@@ -369,53 +404,12 @@ extern "C" void app_main(void) {
         s_boot_clock_end_time = 0;
         s_idle_clock_start_time = boot_now + 30000;
     }
+    display_ui_update_clock();
 
-    // [2] 터치 센서 초기화 및 상단 10회 터치 콜백 등록
-    ESP_ERROR_CHECK(touch_input_init());
-    touch_input_set_settings_trigger_cb(ui_settings_open);
-
-    // [3] 오디오 I/O (PDM RX 마이크 + I2S TX 스피커) 초기화
-    ESP_ERROR_CHECK(audio_io_init());
-
-    // 스피커 동작 확인: '도-미-솔' 부팅 멜로디
-    audio_io_play_boot_melody();
-
-    // [4] 실시간 오디오 파이프라인 및 esp-sr WakeNet(wn10_alexa) 최우선 초기화
-    // (AES 복호화에 내부 SRAM이 필요하므로 Wi-Fi/카메라 이전 200KB+ 가용 시점에 최우선 로드!)
-    ESP_ERROR_CHECK(audio_pipeline_init());
-
-    // [5] OV2640/OV3660 카메라 초기화 및 부팅 자가 진단
-    esp_err_t cam_err = camera_io_init();
-    if (cam_err == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(100)); // 센서 DVP 파이프라인 안정화 대기
-        uint8_t *jpeg = NULL;
-        size_t jpeg_len = 0;
-        uint16_t w = 0, h = 0;
-        if (camera_io_capture_jpeg(&jpeg, &jpeg_len, &w, &h) == ESP_OK) {
-            ESP_LOGI(TAG, "Camera self-test OK: %ux%u JPEG, %u bytes -> Displaying on LCD", (unsigned int)w, (unsigned int)h, (unsigned int)jpeg_len);
-            // [요구사항 3] 부팅 시 카메라 촬영 시험 이미지를 LCD 화면에 1.5초간 표출
-            display_ui_show_camera_snapshot(jpeg, jpeg_len, 1500);
-            free(jpeg);
-        } else {
-            ESP_LOGW(TAG, "Camera self-test capture failed");
-        }
-        // 자가 진단 완료 후, 카메라를 즉시 소프트웨어 저전력 대기(Software Standby) 상태로 전환!
-        // 평상시(대기/시계/눈 모드) 센서 내부 ADC/픽셀 어레이를 꺼서 발열을 원천 차단하고 On-Demand로 필요할 때만 켭니다.
-        camera_io_standby();
-
-        // 카메라 테스트 화면 표시 완료 후 부팅 시계 화면 복원
-        if (s_boot_clock_active) {
-            display_ui_show_clock_mode(true);
-            display_ui_update_clock();
-        }
-    } else {
-        ESP_LOGW(TAG, "Camera init failed (%s). Continuing without vision.", esp_err_to_name(cam_err));
-    }
-
-    // [6] 자동 깜빡임 태스크 시작 (이후 캐릭터 눈으로 전환될 때 동작)
+    // [7] 자동 깜빡임 태스크 시작 (이후 캐릭터 눈으로 전환될 때 동작)
     display_ui_start_auto_blink();
 
-    // [7] 대화 상태 머신 초기화
+    // [8] 대화 상태 머신 초기화
     chat_state_init();
 
     // [8] 네트워크 (Wi-Fi + WebSocket) 드라이버 초기화 (내부 SRAM 잔여 버퍼 사용)
